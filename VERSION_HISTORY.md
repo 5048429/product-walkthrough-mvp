@@ -1,5 +1,19 @@
 # Version History
 
+## v0.4.5 - 2026-06-11
+
+Status: verification handoff made resilient after browser-use redirects to login.
+
+### Fixed
+
+- Automatic verification no longer relies only on the initial profile preflight. If the formal browser-use walkthrough still hits login, Altcha, CAPTCHA, or a manual verification blocker, the run opens a visible browser, asks the user to complete verification, and then retries the walkthrough once.
+- Verification preflight now refreshes a `prodwalk_storage_state.json` file beside the browser profile and passes it into browser-use, reducing mismatch between the checked profile and browser-use's temporary copied profile.
+- Browser-use task instructions now tell the agent to stop after one failed manual verification attempt and return `manual_verification_required: true`, rather than spending many steps retrying Altcha.
+
+### Validation
+
+- Unit tests cover automatic storage-state selection and the manual-verification retry wrapper.
+
 ## v0.4.4 - 2026-06-11
 
 Status: one-command human verification handoff added.

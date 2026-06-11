@@ -6,17 +6,18 @@ from datetime import datetime
 from pathlib import Path
 
 from .agents.director import ResearchDirector
-from .agents.walker import BrowserUseLocalWalker, MockBrowserWalker
+from .agents.walker import BrowserUseLocalWalker, BrowserWalker, MockBrowserWalker
 from .auth_session import (
     AuthSessionRequest,
     add_auth_session_subcommand,
     ensure_auth_session,
     handle_auth_session_command,
+    run_manual_auth_session,
     resolve_user_data_dir,
 )
 from .config_loader import load_research_plan
 from .credentials import add_credential_subcommands, handle_credential_command
-from .models import ResearchPlan
+from .models import ProductTarget, ResearchPlan, Scenario, WalkthroughResult
 
 
 def main() -> None:
@@ -96,18 +97,27 @@ async def _run(args: argparse.Namespace) -> None:
     plan = load_research_plan(args.config)
     is_browser_use = args.mode in {"browser-use", "browser-use-local"}
     concurrency = args.concurrency if args.concurrency is not None else (1 if is_browser_use else 3)
-    browser_user_data_dir = await _prepare_verification_checkpoints(plan, args, is_browser_use)
+    browser_user_data_dir, browser_storage_state = await _prepare_verification_checkpoints(plan, args, is_browser_use)
     walker = (
         BrowserUseLocalWalker(
             model=args.browser_model,
             max_steps=args.browser_max_steps,
             run_timeout_sec=args.browser_timeout_sec,
             user_data_dir=browser_user_data_dir,
-            storage_state=args.browser_storage_state,
+            storage_state=browser_storage_state,
         )
         if is_browser_use
         else MockBrowserWalker()
     )
+    if is_browser_use and args.verification_mode == "auto":
+        walker = HumanVerificationRetryWalker(
+            inner=walker,
+            user_data_dir=browser_user_data_dir,
+            storage_state=browser_storage_state,
+            success_url_contains=list(args.verification_success_url_contains or []),
+            login_url_contains=args.verification_login_url_contains,
+            timeout_sec=args.verification_timeout_sec,
+        )
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = Path(args.out) / f"run-{timestamp}"
     director = ResearchDirector(walker=walker, concurrency=concurrency, report_language=args.report_language)
@@ -123,13 +133,14 @@ async def _prepare_verification_checkpoints(
     plan: ResearchPlan,
     args: argparse.Namespace,
     is_browser_use: bool,
-) -> str | None:
+) -> tuple[str | None, str | None]:
+    browser_storage_state = getattr(args, "browser_storage_state", None)
     if not is_browser_use or args.verification_mode == "off":
-        return args.browser_user_data_dir
+        return args.browser_user_data_dir, browser_storage_state
 
     products = [product for product in plan.products if product.credentials_ref]
     if not products:
-        return args.browser_user_data_dir
+        return args.browser_user_data_dir, browser_storage_state
 
     user_data_dir = args.browser_user_data_dir
     if not user_data_dir:
@@ -139,9 +150,12 @@ async def _prepare_verification_checkpoints(
                 "Multiple credential refs are configured. Pass --browser-user-data-dir explicitly "
                 "or use --verification-mode off for this run."
             )
-            return args.browser_user_data_dir
+            return args.browser_user_data_dir, browser_storage_state
         user_data_dir = str(resolve_user_data_dir(None, products[0].credentials_ref, products[0].url))
         print(f"Using verification browser profile: {user_data_dir}")
+
+    storage_state = browser_storage_state or str(Path(user_data_dir) / "prodwalk_storage_state.json")
+    print(f"Using verification storage state: {storage_state}")
 
     checked_refs: set[str] = set()
     for product in products:
@@ -154,7 +168,7 @@ async def _prepare_verification_checkpoints(
                 url=product.url,
                 credentials_ref=product.credentials_ref,
                 user_data_dir=user_data_dir,
-                storage_state=args.browser_storage_state,
+                storage_state=storage_state,
                 success_url_contains=list(args.verification_success_url_contains or []),
                 login_url_contains=args.verification_login_url_contains,
                 timeout_sec=args.verification_timeout_sec,
@@ -162,7 +176,112 @@ async def _prepare_verification_checkpoints(
             )
         )
 
-    return user_data_dir
+    return user_data_dir, storage_state
+
+
+class HumanVerificationRetryWalker(BrowserWalker):
+    def __init__(
+        self,
+        *,
+        inner: BrowserWalker,
+        user_data_dir: str | None,
+        storage_state: str | None,
+        success_url_contains: list[str],
+        login_url_contains: str,
+        timeout_sec: float,
+    ) -> None:
+        self.inner = inner
+        self.user_data_dir = user_data_dir
+        self.storage_state = storage_state
+        self.success_url_contains = success_url_contains
+        self.login_url_contains = login_url_contains
+        self.timeout_sec = timeout_sec
+        self._retried_refs: set[str] = set()
+
+    async def walk(self, product: ProductTarget, scenario: Scenario) -> WalkthroughResult:
+        result = await self.inner.walk(product, scenario)
+        if not self._should_retry_with_manual_verification(product, result):
+            return result
+
+        ref = str(product.credentials_ref)
+        self._retried_refs.add(ref)
+        print("")
+        print("=" * 72)
+        print("Manual verification required during the walkthrough.")
+        print("A visible browser will open. Complete Altcha/captcha/login there.")
+        print("When the authenticated product page is visible, return here and press Enter.")
+        print("=" * 72)
+        print("")
+        await run_manual_auth_session(
+            AuthSessionRequest(
+                url=product.url,
+                credentials_ref=product.credentials_ref,
+                user_data_dir=self.user_data_dir,
+                storage_state=self.storage_state,
+                success_url_contains=self.success_url_contains,
+                login_url_contains=self.login_url_contains,
+                timeout_sec=self.timeout_sec,
+                manual_confirm=True,
+            )
+        )
+        retry = await self.inner.walk(product, scenario)
+        retry.metrics["manual_verification_retries"] = int(retry.metrics.get("manual_verification_retries", 0)) + 1
+        retry.metrics["pre_retry_status"] = result.status
+        return retry
+
+    def _should_retry_with_manual_verification(
+        self,
+        product: ProductTarget,
+        result: WalkthroughResult,
+    ) -> bool:
+        if not product.credentials_ref or not self.user_data_dir:
+            return False
+        if str(product.credentials_ref) in self._retried_refs:
+            return False
+
+        text_parts: list[str] = [result.status]
+        text_parts.extend(result.errors)
+        for step in result.steps:
+            text_parts.extend([step.action, step.observation, step.url])
+        for item in result.evidence:
+            text_parts.extend([item.summary, item.url])
+            final_output = item.data.get("final_output")
+            if isinstance(final_output, str):
+                text_parts.append(final_output)
+            urls = item.data.get("urls")
+            if isinstance(urls, list):
+                text_parts.extend(str(url) for url in urls)
+            errors = item.data.get("errors")
+            if isinstance(errors, list):
+                text_parts.extend(str(error) for error in errors)
+
+        text = " ".join(part for part in text_parts if part).lower()
+        auth_markers = [
+            "manual_verification_required",
+            "/auth/login",
+            "altcha",
+            "captcha",
+            "verification expired",
+            "authentication is required",
+            "login page",
+            "login failed",
+            "login did not complete",
+            "no authenticated dashboard",
+        ]
+        if not any(marker in text for marker in auth_markers):
+            return False
+        if result.status == "blocked":
+            return True
+        return any(
+            marker in text
+            for marker in (
+                "manual_verification_required",
+                "verification expired",
+                "login failed",
+                "login did not complete",
+                "no authenticated dashboard",
+            )
+        )
 
 
 if __name__ == "__main__":

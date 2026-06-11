@@ -132,7 +132,9 @@ python -m prodwalk.cli run --config examples/clink_uat_full_continuous_plan.json
 
 Use `BROWSER_USE_HEADLESS="false"` only when debugging the browser visually. For normal PM research runs, headless mode is recommended.
 
-The main `run` command also performs an automatic verification checkpoint by default. It first checks whether the configured browser profile is already authenticated. If the product is still on login, Altcha, CAPTCHA, or another verification page, the command opens a visible browser, fills stored credentials when available, and waits for you to complete verification. After the authenticated product page is visible, return to the terminal and press Enter; the same run command then continues into the headless browser-use walkthrough.
+The main `run` command also performs an automatic verification checkpoint by default. It first checks whether the configured browser profile is already authenticated and refreshes a run-local `prodwalk_storage_state.json` beside that profile. If the product is still on login, Altcha, CAPTCHA, or another verification page, the command opens a visible browser, fills stored credentials when available, and waits for you to complete verification. After the authenticated product page is visible, return to the terminal and press Enter; the same run command then continues into the headless browser-use walkthrough.
+
+There is also a second safety net during the formal browser-use walkthrough. If browser-use is redirected back to login or reports that Altcha/CAPTCHA/manual verification is required, the run pauses, opens a visible browser, asks you to complete verification, and retries the walkthrough once.
 
 Disable this checkpoint for public or fully automated runs:
 

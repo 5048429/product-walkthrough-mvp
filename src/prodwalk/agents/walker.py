@@ -375,9 +375,12 @@ notable_copy, urls_seen, and evidence_needed. Do not perform destructive actions
 payments, or irreversible account changes. Stay on the product's own allowed
 domains. Do not open external documentation, GitHub, support, or provider links;
 record visible link labels or URLs only when useful. If login verification,
-loading, or an external-domain block prevents progress, stop and return a
-partial summary instead of retrying indefinitely. Keep the run focused and stop
-after roughly {self.max_steps} meaningful browser steps.
+Altcha, CAPTCHA, or a manual challenge blocks progress after one login submit
+attempt, stop immediately and return a partial summary with
+manual_verification_required: true. Do not repeatedly retry human verification
+inside browser-use. If loading or an external-domain block prevents progress,
+stop and return a partial summary instead of retrying indefinitely. Keep the run
+focused and stop after roughly {self.max_steps} meaningful browser steps.
 """.strip()
 
     async def _run_browser_use_local(self, task: str) -> dict[str, Any]:

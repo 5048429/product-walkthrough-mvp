@@ -14,9 +14,9 @@ from pydantic import BaseModel
 from prodwalk.agents.analyst import ProductAnalyst
 from prodwalk.agents.director import ResearchDirector
 from prodwalk.agents.evidence import EvidenceExtractor
-from prodwalk.agents.walker import BrowserUseLocalWalker, MockBrowserWalker
+from prodwalk.agents.walker import BrowserUseLocalWalker, BrowserWalker, MockBrowserWalker
 from prodwalk.auth_session import is_auth_success_url, resolve_user_data_dir
-from prodwalk.cli import _prepare_verification_checkpoints
+from prodwalk.cli import HumanVerificationRetryWalker, _prepare_verification_checkpoints
 from prodwalk.config_loader import ConfigError, load_research_plan, parse_research_plan
 from prodwalk.credentials import CredentialStore
 from prodwalk.llm_adapters import OpenAIResponsesChatModel
@@ -114,16 +114,20 @@ class VerificationCheckpointTest(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch("prodwalk.cli.ensure_auth_session", new_callable=AsyncMock) as ensure:
-            user_data_dir = await _prepare_verification_checkpoints(plan, args, is_browser_use=True)
+            user_data_dir, storage_state = await _prepare_verification_checkpoints(plan, args, is_browser_use=True)
 
         self.assertIsNotNone(user_data_dir)
         assert user_data_dir is not None
+        self.assertIsNotNone(storage_state)
+        assert storage_state is not None
         self.assertTrue(user_data_dir.endswith(str(Path(".prodwalk") / "browser-profiles" / "test_account")))
+        self.assertTrue(storage_state.endswith("prodwalk_storage_state.json"))
         ensure.assert_awaited_once()
         request = ensure.await_args.args[0]
         self.assertEqual(request.url, "https://example.test/app")
         self.assertEqual(request.credentials_ref, "TEST_ACCOUNT")
         self.assertEqual(str(request.user_data_dir), user_data_dir)
+        self.assertEqual(str(request.storage_state), storage_state)
 
     async def test_prepare_verification_checkpoint_respects_off_mode(self) -> None:
         plan = parse_research_plan(
@@ -145,10 +149,88 @@ class VerificationCheckpointTest(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch("prodwalk.cli.ensure_auth_session", new_callable=AsyncMock) as ensure:
-            user_data_dir = await _prepare_verification_checkpoints(plan, args, is_browser_use=True)
+            user_data_dir, storage_state = await _prepare_verification_checkpoints(plan, args, is_browser_use=True)
 
         self.assertEqual(user_data_dir, "profile")
+        self.assertIsNone(storage_state)
         ensure.assert_not_awaited()
+
+    async def test_retry_walker_prompts_manual_verification_after_auth_blocker(self) -> None:
+        class SequenceWalker(BrowserWalker):
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def walk(self, product: ProductTarget, scenario: Scenario) -> WalkthroughResult:
+                self.calls += 1
+                status = "blocked" if self.calls == 1 else "completed"
+                final_output = (
+                    '{"manual_verification_required": true, "blockers": ["Altcha verification expired"]}'
+                    if self.calls == 1
+                    else '{"completed": true}'
+                )
+                return WalkthroughResult(
+                    product=product.name,
+                    product_kind=product.kind,
+                    scenario_id=scenario.id,
+                    scenario_title=scenario.title,
+                    status=status,
+                    started_at=utc_now(),
+                    completed_at=utc_now(),
+                    steps=[
+                        WalkStep(
+                            index=1,
+                            action="Login",
+                            status=status,
+                            observation="Altcha verification expired on login page" if self.calls == 1 else "Done",
+                            url="https://example.test/auth/login" if self.calls == 1 else "https://example.test/app",
+                        )
+                    ],
+                    evidence=[
+                        EvidenceItem(
+                            id=f"ev-{self.calls}",
+                            product=product.name,
+                            scenario_id=scenario.id,
+                            kind="browser_run",
+                            title="browser-use run",
+                            summary=final_output,
+                            data={"final_output": final_output},
+                        )
+                    ],
+                    metrics={"completion_score": 0 if self.calls == 1 else 1},
+                )
+
+        inner = SequenceWalker()
+        wrapper = HumanVerificationRetryWalker(
+            inner=inner,
+            user_data_dir="profile",
+            storage_state="profile/prodwalk_storage_state.json",
+            success_url_contains=[],
+            login_url_contains="/auth/login",
+            timeout_sec=300.0,
+        )
+
+        with patch("prodwalk.cli.run_manual_auth_session", new_callable=AsyncMock) as manual:
+            result = await wrapper.walk(
+                ProductTarget(
+                    name="Example",
+                    url="https://example.test/app",
+                    credentials_ref="TEST_ACCOUNT",
+                ),
+                Scenario(
+                    id="smoke",
+                    title="Smoke",
+                    persona="PM",
+                    goal="Verify",
+                    steps=["Login"],
+                    success_criteria=["Done"],
+                    observation_points=["Auth"],
+                ),
+            )
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(inner.calls, 2)
+        self.assertEqual(result.metrics["manual_verification_retries"], 1)
+        manual.assert_awaited_once()
 
 
 class EvidenceExtractorTest(unittest.TestCase):
