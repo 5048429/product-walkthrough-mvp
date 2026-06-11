@@ -4,7 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from ..models import ResearchPlan, Scenario, WalkthroughResult, to_jsonable, utc_now
+from ..models import ResearchPlan, Scenario, WalkthroughResult, normalize_report_language, to_jsonable, utc_now
 from .analyst import CompetitiveAnalyst, ProductAnalyst
 from .evaluator import Evaluator
 from .evidence import EvidenceExtractor
@@ -15,9 +15,15 @@ from .walker import BrowserWalker
 
 
 class ResearchDirector:
-    def __init__(self, walker: BrowserWalker, concurrency: int = 3) -> None:
+    def __init__(
+        self,
+        walker: BrowserWalker,
+        concurrency: int = 3,
+        report_language: str | None = None,
+    ) -> None:
         self.walker = walker
         self.concurrency = max(1, concurrency)
+        self.report_language = normalize_report_language(report_language) if report_language else None
         self.planner = ScenarioPlanner()
         self.evidence_extractor = EvidenceExtractor()
         self.product_analyst = ProductAnalyst()
@@ -29,14 +35,15 @@ class ResearchDirector:
     async def run(self, plan: ResearchPlan, run_dir: str | Path) -> dict[str, Path]:
         output_dir = Path(run_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        report_language = self.report_language or normalize_report_language(plan.report_language)
 
         scenarios = self.planner.plan(plan)
         results = await self._run_walkthroughs(plan, scenarios)
         self.evidence_extractor.archive_screenshots(results, output_dir)
         evidence = self.evidence_extractor.collect(results)
-        analyses = self.product_analyst.analyze(results)
-        insights = self.competitive_analyst.compare(results, evidence)
-        review_notes = self.reviewer.review(results, analyses, insights, evidence)
+        analyses = self.product_analyst.analyze(results, language=report_language)
+        insights = self.competitive_analyst.compare(results, evidence, language=report_language)
+        review_notes = self.reviewer.review(results, analyses, insights, evidence, language=report_language)
         evaluation = self.evaluator.evaluate(plan, results, analyses)
         markdown = self.report_writer.render(
             plan=plan,
@@ -46,6 +53,7 @@ class ResearchDirector:
             insights=insights,
             review_notes=review_notes,
             evidence=evidence,
+            language=report_language,
         )
 
         evidence_path = output_dir / "evidence.json"
@@ -54,6 +62,7 @@ class ResearchDirector:
 
         payload = {
             "created_at": utc_now(),
+            "report_language": report_language,
             "plan": to_jsonable(plan),
             "scenarios": to_jsonable(scenarios),
             "results": to_jsonable(results),

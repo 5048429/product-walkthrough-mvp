@@ -1,5 +1,20 @@
 # Version History
 
+## v0.4.3 - 2026-06-11
+
+Status: report language selection added.
+
+### Added
+
+- `--report-language en|zh` CLI option for choosing Markdown report language per run.
+- Optional top-level `report_language` config field, with aliases such as `zh-CN` normalized to `zh`.
+- Chinese report template covering report headings, tables, system-generated summaries, recommendations, reviewer notes, screenshot labels, and common finding themes.
+- `evidence.json` now records the resolved `report_language` for each run.
+
+### Validation
+
+- Unit tests cover language config parsing, invalid language rejection, and Chinese report generation through the mock pipeline.
+
 ## v0.4.2 - 2026-06-11
 
 Status: browser screenshot artifacts are archived with each run.

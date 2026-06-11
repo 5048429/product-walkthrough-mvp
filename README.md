@@ -27,6 +27,12 @@ $env:PYTHONPATH="src"
 python -m prodwalk.cli run --config examples/research_plan.json --mode mock --out runs-test
 ```
 
+Choose the report language per run:
+
+```powershell
+python -m prodwalk.cli run --config examples/research_plan.json --mode mock --out runs-test --report-language zh
+```
+
 Outputs:
 
 - `evidence.json`: raw walkthrough results and evidence.
@@ -48,6 +54,31 @@ The local mode does not need a Browser Use Cloud API key, but it still needs an 
 - `~/.codex/auth.json`: `OPENAI_API_KEY`
 
 The API key is not printed or persisted by this project.
+
+## Report Language
+
+Reports default to English. To make Chinese the default for a plan, add this top-level field:
+
+```json
+{
+  "research_goal": "Analyze onboarding flows.",
+  "report_language": "zh",
+  "products": [
+    {
+      "name": "Example",
+      "url": "https://example.test"
+    }
+  ],
+  "scenarios": [
+    {
+      "title": "Smoke",
+      "goal": "Verify the entry flow."
+    }
+  ]
+}
+```
+
+The CLI flag `--report-language en|zh` overrides the config for a single run.
 
 ## Local Credentials
 

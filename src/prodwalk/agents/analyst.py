@@ -11,12 +11,14 @@ from ..models import (
     Finding,
     ProductAnalysis,
     WalkthroughResult,
+    normalize_report_language,
     slugify,
 )
 
 
 class ProductAnalyst:
-    def analyze(self, results: list[WalkthroughResult]) -> list[ProductAnalysis]:
+    def analyze(self, results: list[WalkthroughResult], language: str = "en") -> list[ProductAnalysis]:
+        language = normalize_report_language(language)
         by_product: dict[str, list[WalkthroughResult]] = defaultdict(list)
         for result in results:
             by_product[result.product].append(result)
@@ -25,18 +27,25 @@ class ProductAnalyst:
         for product, product_results in by_product.items():
             findings: list[Finding] = []
             for result in product_results:
-                findings.extend(self._findings_for_result(result))
+                findings.extend(self._findings_for_result(result, language))
             avg_completion = self._avg(result.metrics.get("completion_score", 0) for result in product_results)
             total_blockers = sum(int(result.metrics.get("blocker_count", 0)) for result in product_results)
             total_friction = sum(int(result.metrics.get("friction_count", 0)) for result in product_results)
             structured_count = sum(
                 1 for finding in findings if not finding.id.endswith("-positive")
             )
-            summary = (
-                f"{product} completed {len(product_results)} scenarios with "
-                f"{total_blockers} blockers, {total_friction} runtime friction points, "
-                f"and {structured_count} product findings."
-            )
+            if language == "zh":
+                summary = (
+                    f"{product} 共完成 {len(product_results)} 个场景，发现 "
+                    f"{total_blockers} 个阻塞点、{total_friction} 个运行过程摩擦点，"
+                    f"以及 {structured_count} 个产品问题。"
+                )
+            else:
+                summary = (
+                    f"{product} completed {len(product_results)} scenarios with "
+                    f"{total_blockers} blockers, {total_friction} runtime friction points, "
+                    f"and {structured_count} product findings."
+                )
             analyses.append(
                 ProductAnalysis(
                     product=product,
@@ -53,9 +62,9 @@ class ProductAnalyst:
             )
         return analyses
 
-    def _findings_for_result(self, result: WalkthroughResult) -> list[Finding]:
+    def _findings_for_result(self, result: WalkthroughResult, language: str) -> list[Finding]:
         findings: list[Finding] = []
-        findings.extend(self._structured_findings_for_result(result))
+        findings.extend(self._structured_findings_for_result(result, language))
         for step in result.steps:
             if step.status not in {"friction", "blocked"}:
                 continue
@@ -70,11 +79,21 @@ class ProductAnalyst:
                     theme=theme,
                     claim=step.observation,
                     evidence_ids=step.evidence_ids,
-                    recommendation=self._recommendation(step.status),
+                    recommendation=self._recommendation(step.status, language),
                     confidence=0.75 if step.status == "friction" else 0.85,
                 )
             )
         if not findings and result.evidence:
+            claim = (
+                "该配置旅程采集到了足够证据，未发现明显阻塞点。"
+                if language == "zh"
+                else "The configured journey produced enough evidence without obvious blockers."
+            )
+            recommendation = (
+                "在做发布决策前，建议再用真实浏览器会话复跑该场景。"
+                if language == "zh"
+                else "Replay this scenario with a real browser session before making release decisions."
+            )
             findings.append(
                 Finding(
                     id=f"fn-{slugify(result.product)}-{result.scenario_id}-positive",
@@ -82,20 +101,24 @@ class ProductAnalyst:
                     scenario_id=result.scenario_id,
                     severity="low",
                     theme="Baseline pass",
-                    claim="The configured journey produced enough evidence without obvious blockers.",
+                    claim=claim,
                     evidence_ids=[result.evidence[0].id],
-                    recommendation="Replay this scenario with a real browser session before making release decisions.",
+                    recommendation=recommendation,
                     confidence=0.6,
                 )
             )
         return findings
 
-    def _recommendation(self, status: str) -> str:
+    def _recommendation(self, status: str, language: str) -> str:
+        if language == "zh":
+            if status == "blocked":
+                return "用真实浏览器复跑并截取失败页面，同时明确该阻塞点的产品负责人。"
+            return "在该步骤周围补充更清晰的引导、校验或成功反馈。"
         if status == "blocked":
             return "Run a real browser replay, capture the failing screen, and define the product owner for the blocker."
         return "Add clearer guidance, validation, or success feedback around this step."
 
-    def _structured_findings_for_result(self, result: WalkthroughResult) -> list[Finding]:
+    def _structured_findings_for_result(self, result: WalkthroughResult, language: str) -> list[Finding]:
         payload, evidence_id = self._final_summary_payload(result)
         if not payload or not evidence_id:
             return []
@@ -122,7 +145,7 @@ class ProductAnalyst:
             recommendation = self._best_recommendation(
                 claim,
                 recommendations,
-                fallback=self._fallback_recommendation(theme, source),
+                fallback=self._fallback_recommendation(theme, source, language),
                 theme=theme,
                 minimum_score=2,
             )
@@ -251,8 +274,8 @@ class ProductAnalyst:
             return "high", "Completion blocker"
         return "medium", "Experience friction"
 
-    def _fallback_recommendation(self, theme: str, source: str) -> str:
-        fallbacks = {
+    def _fallback_recommendation(self, theme: str, source: str, language: str) -> str:
+        english_fallbacks = {
             "Secret handling/admin safety": (
                 "Mask sensitive values by default, require an explicit reveal action, and log/audit access."
             ),
@@ -272,9 +295,35 @@ class ProductAnalyst:
                 "Capture a replay and assign an owner to remove the blocker before relying on this flow."
             ),
         }
+        chinese_fallbacks = {
+            "Secret handling/admin safety": (
+                "默认隐藏敏感值，要求用户执行明确的查看动作，并记录访问审计日志。"
+            ),
+            "Permission and destructive controls": (
+                "按角色限制可变更操作，并在删除、导出、打款等高风险动作前加入清晰确认。"
+            ),
+            "Navigation and loading feedback": (
+                "使用分区级加载状态，并在点击后及时更新导航和内容反馈。"
+            ),
+            "Empty-state guidance": (
+                "说明当前为空的原因，并给出安全的下一步操作或可尝试的筛选条件。"
+            ),
+            "External-link clarity": (
+                "在打开文档、帮助或支持链接前，明确标注外部目的地。"
+            ),
+            "Completion blocker": (
+                "补充回放证据并指定负责人，在依赖该流程前先移除阻塞点。"
+            ),
+        }
+        fallbacks = chinese_fallbacks if language == "zh" else english_fallbacks
         if source == "blocker":
             return fallbacks.get(theme, fallbacks["Completion blocker"])
-        return fallbacks.get(theme, "Add clearer guidance, validation, or success feedback around this area.")
+        default = (
+            "在该区域补充更清晰的引导、校验或成功反馈。"
+            if language == "zh"
+            else "Add clearer guidance, validation, or success feedback around this area."
+        )
+        return fallbacks.get(theme, default)
 
     def _best_recommendation(
         self,
@@ -380,7 +429,9 @@ class CompetitiveAnalyst:
         self,
         results: list[WalkthroughResult],
         evidence: list[EvidenceItem],
+        language: str = "en",
     ) -> list[CompetitiveInsight]:
+        language = normalize_report_language(language)
         by_scenario: dict[str, list[WalkthroughResult]] = defaultdict(list)
         for result in results:
             by_scenario[result.scenario_id].append(result)
@@ -403,19 +454,30 @@ class CompetitiveAnalyst:
                 evidence_ids.append(leader.evidence[0].id)
             if laggard.evidence:
                 evidence_ids.append(laggard.evidence[0].id)
+            if language == "zh":
+                theme = f"场景：{leader.scenario_title}"
+                claim = (
+                    f"{leader.product} 在 {scenario_id} 场景中的完成信号最强，"
+                    f"{laggard.product} 的完成信号最弱。"
+                )
+                recommendation = "把领先流程作为参考，并重点检查最弱流程是否缺少引导、存在阻塞或步骤过多。"
+            else:
+                theme = f"Scenario: {leader.scenario_title}"
+                claim = (
+                    f"{leader.product} had the strongest completion signal for "
+                    f"{scenario_id}, while {laggard.product} showed the weakest signal."
+                )
+                recommendation = (
+                    "Use the leader flow as a reference and inspect the weakest flow "
+                    "for missing guidance, blockers, or excessive steps."
+                )
             insights.append(
                 CompetitiveInsight(
-                    theme=f"Scenario: {leader.scenario_title}",
-                    claim=(
-                        f"{leader.product} had the strongest completion signal for "
-                        f"{scenario_id}, while {laggard.product} showed the weakest signal."
-                    ),
+                    theme=theme,
+                    claim=claim,
                     products=[leader.product, laggard.product],
                     evidence_ids=evidence_ids,
-                    recommendation=(
-                        "Use the leader flow as a reference and inspect the weakest flow "
-                        "for missing guidance, blockers, or excessive steps."
-                    ),
+                    recommendation=recommendation,
                     confidence=0.7,
                 )
             )

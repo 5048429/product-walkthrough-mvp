@@ -7,6 +7,26 @@ from typing import Any
 
 
 JsonDict = dict[str, Any]
+ReportLanguage = str
+
+
+def normalize_report_language(value: str | None) -> ReportLanguage:
+    if value is None or not str(value).strip():
+        return "en"
+    normalized = str(value).strip().lower().replace("_", "-")
+    aliases = {
+        "en": "en",
+        "english": "en",
+        "zh": "zh",
+        "cn": "zh",
+        "chinese": "zh",
+        "zh-cn": "zh",
+        "zh-hans": "zh",
+        "simplified-chinese": "zh",
+    }
+    if normalized not in aliases:
+        raise ValueError("report_language must be one of: en, zh")
+    return aliases[normalized]
 
 
 def utc_now() -> str:
@@ -61,6 +81,7 @@ class ResearchPlan:
     products: list[ProductTarget]
     scenarios: list[Scenario]
     evaluation: JsonDict = field(default_factory=dict)
+    report_language: ReportLanguage = "en"
 
 
 @dataclass(slots=True)
@@ -148,4 +169,3 @@ class EvaluationResult:
     scores: JsonDict
     overall_score: float
     notes: list[str]
-

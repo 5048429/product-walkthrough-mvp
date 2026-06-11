@@ -27,6 +27,12 @@ def main() -> None:
         help="Parallel walkthrough count. Defaults to 1 for browser-use and 3 for mock.",
     )
     run_parser.add_argument("--browser-model", default=None)
+    run_parser.add_argument(
+        "--report-language",
+        choices=["en", "zh"],
+        default=None,
+        help="Language for the generated Markdown report. Defaults to the config value or en.",
+    )
     run_parser.add_argument("--browser-max-steps", type=int, default=25)
     run_parser.add_argument(
         "--browser-timeout-sec",
@@ -73,7 +79,7 @@ async def _run(args: argparse.Namespace) -> None:
     )
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = Path(args.out) / f"run-{timestamp}"
-    director = ResearchDirector(walker=walker, concurrency=concurrency)
+    director = ResearchDirector(walker=walker, concurrency=concurrency, report_language=args.report_language)
     paths = await director.run(plan, run_dir)
     print("MVP walkthrough run completed")
     print(f"Run dir: {paths['run_dir']}")

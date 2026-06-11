@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .models import ProductTarget, ResearchPlan, Scenario, slugify
+from .models import ProductTarget, ResearchPlan, Scenario, normalize_report_language, slugify
 
 
 class ConfigError(ValueError):
@@ -32,12 +32,17 @@ def parse_research_plan(data: dict[str, Any]) -> ResearchPlan:
     products = [_parse_product(item) for item in products_data]
     scenarios = [_parse_scenario(item) for item in data.get("scenarios", [])]
     evaluation = data.get("evaluation") if isinstance(data.get("evaluation"), dict) else {}
+    try:
+        report_language = normalize_report_language(data.get("report_language") or data.get("language"))
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
 
     return ResearchPlan(
         research_goal=research_goal,
         products=products,
         scenarios=scenarios,
         evaluation=evaluation,
+        report_language=report_language,
     )
 
 
@@ -73,4 +78,3 @@ def _parse_scenario(item: dict[str, Any]) -> Scenario:
         observation_points=[str(point) for point in item.get("observation_points", [])],
         risk_level=str(item.get("risk_level") or "normal"),
     )
-

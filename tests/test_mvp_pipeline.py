@@ -14,7 +14,7 @@ from prodwalk.agents.director import ResearchDirector
 from prodwalk.agents.evidence import EvidenceExtractor
 from prodwalk.agents.walker import BrowserUseLocalWalker, MockBrowserWalker
 from prodwalk.auth_session import is_auth_success_url, resolve_user_data_dir
-from prodwalk.config_loader import load_research_plan
+from prodwalk.config_loader import ConfigError, load_research_plan, parse_research_plan
 from prodwalk.credentials import CredentialStore
 from prodwalk.llm_adapters import OpenAIResponsesChatModel
 from prodwalk.models import EvidenceItem, ProductTarget, Scenario, WalkStep, WalkthroughResult, utc_now
@@ -39,6 +39,51 @@ class MvpPipelineTest(unittest.IsolatedAsyncioTestCase):
             evaluation = json.loads(paths["evaluation"].read_text(encoding="utf-8"))
             self.assertIn("overall_score", evaluation)
             self.assertGreaterEqual(evaluation["overall_score"], 0)
+
+    async def test_mock_pipeline_generates_chinese_report_when_configured(self) -> None:
+        plan = load_research_plan(Path("examples") / "research_plan.json")
+        plan.report_language = "zh"
+        with tempfile.TemporaryDirectory() as tmp:
+            director = ResearchDirector(MockBrowserWalker(), concurrency=2)
+            paths = await director.run(plan, tmp)
+
+            report = paths["report"].read_text(encoding="utf-8")
+            payload = json.loads(paths["evidence"].read_text(encoding="utf-8"))
+
+            self.assertIn("# 产品走查调研报告", report)
+            self.assertIn("## 产品发现", report)
+            self.assertIn("建议", report)
+            self.assertEqual(payload["report_language"], "zh")
+
+
+class ConfigLoaderTest(unittest.TestCase):
+    def test_parse_research_plan_accepts_report_language_alias(self) -> None:
+        plan = parse_research_plan(
+            {
+                "research_goal": "Verify report language",
+                "report_language": "zh-CN",
+                "products": [{"name": "Example", "url": "https://example.test"}],
+                "scenarios": [
+                    {
+                        "title": "Smoke",
+                        "goal": "Verify",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(plan.report_language, "zh")
+
+    def test_parse_research_plan_rejects_unknown_report_language(self) -> None:
+        with self.assertRaises(ConfigError):
+            parse_research_plan(
+                {
+                    "research_goal": "Verify report language",
+                    "report_language": "fr",
+                    "products": [{"name": "Example", "url": "https://example.test"}],
+                    "scenarios": [{"title": "Smoke", "goal": "Verify"}],
+                }
+            )
 
 
 class EvidenceExtractorTest(unittest.TestCase):
