@@ -1,5 +1,14 @@
 # Version History
 
+## v0.3.2 - 2026-06-11
+
+Status: auth-session success detection hardened.
+
+### Fixed
+
+- `prodwalk auth-session` no longer treats the initial target URL as a successful login while the login form, password input, or Altcha widget is still visible.
+- Added `--manual-confirm` so the user can complete Altcha/login, verify the authenticated product page visually, then press Enter before the profile is saved.
+
 ## v0.3.1 - 2026-06-11
 
 Status: auth-session dependency fix.

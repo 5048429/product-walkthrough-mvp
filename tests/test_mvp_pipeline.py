@@ -362,6 +362,17 @@ class AuthSessionTest(unittest.TestCase):
             )
         )
 
+    def test_auth_success_rejects_visible_login_form(self) -> None:
+        self.assertFalse(
+            is_auth_success_url(
+                current_url="https://uat-dashboard.clinkbill.com/analytics",
+                start_url="https://uat-dashboard.clinkbill.com/analytics",
+                login_url_contains="/auth/login",
+                success_url_contains=["/analytics"],
+                has_login_form=True,
+            )
+        )
+
     def test_auth_success_supports_explicit_url_marker(self) -> None:
         self.assertTrue(
             is_auth_success_url(

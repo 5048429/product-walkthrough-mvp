@@ -44,6 +44,11 @@ def add_auth_session_subcommand(subparsers: argparse._SubParsersAction[argparse.
     )
     parser.add_argument("--timeout-sec", type=float, default=300.0, help="How long to wait for manual login")
     parser.add_argument("--browser-path", default=None, help="Chrome/Edge executable path override")
+    parser.add_argument(
+        "--manual-confirm",
+        action="store_true",
+        help="Wait for Enter after the user confirms the authenticated page is visible.",
+    )
 
 
 def handle_auth_session_command(args: argparse.Namespace) -> None:
@@ -86,13 +91,16 @@ async def create_auth_session(args: argparse.Namespace) -> None:
             elif args.credentials_ref:
                 print(f"Credential ref not found or incomplete: {args.credentials_ref}. Please fill login manually.")
 
-            success_url = await wait_for_login_success(
-                page=page,
-                start_url=args.url,
-                login_url_contains=args.login_url_contains,
-                success_url_contains=args.success_url_contains,
-                timeout_sec=args.timeout_sec,
-            )
+            if args.manual_confirm:
+                success_url = await wait_for_manual_confirmation(page)
+            else:
+                success_url = await wait_for_login_success(
+                    page=page,
+                    start_url=args.url,
+                    login_url_contains=args.login_url_contains,
+                    success_url_contains=args.success_url_contains,
+                    timeout_sec=args.timeout_sec,
+                )
             if storage_state:
                 await context.storage_state(path=str(storage_state))
             print("Auth session ready.")
@@ -119,6 +127,18 @@ async def autofill_login(page: object, username: str, password: str) -> None:
         username,
     )
     await fill_first_matching(page, ["input[type='password']", "input[name*='password' i]"], password)
+
+
+async def wait_for_manual_confirmation(page: object) -> str:
+    print("When the authenticated product page is visible, return to this terminal and press Enter.")
+    await asyncio.to_thread(input)
+    current_url = str(getattr(page, "url", ""))
+    if await page_has_login_form(page):
+        raise RuntimeError(
+            "The page still appears to show a login form. Complete login first, then rerun auth-session."
+        )
+    await wait_for_stable_auth_page(page)
+    return current_url
 
 
 async def fill_first_matching(page: object, selectors: list[str], value: str) -> bool:
@@ -149,16 +169,15 @@ async def wait_for_login_success(
         if current_url != last_url:
             print(f"Waiting for auth success. Current URL: {current_url}")
             last_url = current_url
+        has_login_form = await page_has_login_form(page)
         if is_auth_success_url(
             current_url=current_url,
             start_url=start_url,
             login_url_contains=login_url_contains,
             success_url_contains=success_url_contains,
+            has_login_form=has_login_form,
         ):
-            try:
-                await page.wait_for_load_state("networkidle", timeout=15000)  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            await wait_for_stable_auth_page(page)
             return current_url
         await asyncio.sleep(1)
     raise TimeoutError(
@@ -173,8 +192,11 @@ def is_auth_success_url(
     start_url: str,
     login_url_contains: str,
     success_url_contains: list[str],
+    has_login_form: bool = False,
 ) -> bool:
     if not current_url:
+        return False
+    if has_login_form:
         return False
     if success_url_contains and any(marker in current_url for marker in success_url_contains):
         return True
@@ -186,6 +208,33 @@ def is_auth_success_url(
     if login_url_contains and login_url_contains in current_url:
         return False
     return current.path not in {"", "/"}
+
+
+async def page_has_login_form(page: object) -> bool:
+    selectors = [
+        "input[type='password']",
+        "button:has-text('Login')",
+        "button:has-text('Sign in')",
+        "button:has-text('Sign In')",
+        "input[id*='altcha' i]",
+        "[class*='altcha' i]",
+    ]
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first  # type: ignore[attr-defined]
+            if await locator.count() > 0 and await locator.is_visible(timeout=500):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def wait_for_stable_auth_page(page: object) -> None:
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=10000)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    await asyncio.sleep(2)
 
 
 def credential_values(credentials_ref: str | None) -> tuple[str | None, str | None]:

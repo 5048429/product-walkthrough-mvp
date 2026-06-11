@@ -85,10 +85,10 @@ Create or refresh the authenticated profile:
 
 ```powershell
 $env:PYTHONPATH="src"
-python -m prodwalk.cli auth-session --url https://uat-dashboard.clinkbill.com/analytics --credentials-ref CLINK_UAT_ACCOUNT --user-data-dir .prodwalk\browser-profiles\clink_uat_account --success-url-contains /analytics --timeout-sec 300
+python -m prodwalk.cli auth-session --url https://uat-dashboard.clinkbill.com/analytics --credentials-ref CLINK_UAT_ACCOUNT --user-data-dir .prodwalk\browser-profiles\clink_uat_account --success-url-contains /analytics --timeout-sec 300 --manual-confirm
 ```
 
-This opens a visible Chrome/Edge window, fills stored credentials when available, then waits while you manually complete Altcha and click Login. After the URL reaches the authenticated product page, the command closes the browser and keeps the profile under `.prodwalk/browser-profiles/...`.
+This opens a visible Chrome/Edge window and fills stored credentials when available. Complete Altcha and click Login manually. When the authenticated product page is visible, return to the terminal and press Enter. The command then closes the browser and keeps the profile under `.prodwalk/browser-profiles/...`.
 
 Run the product walkthrough with that saved session:
 
