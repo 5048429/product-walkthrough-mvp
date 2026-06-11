@@ -406,7 +406,7 @@ class ProductAnalystTest(unittest.TestCase):
         final_summary = {
             "completed": {"session": "completed"},
             "blockers": [
-                "No hard access blocker was encountered after the initial analytics URL opened.",
+                "No hard blockers encountered during the inspected authenticated dashboard run.",
                 "External documentation/help links were intentionally not opened per instruction.",
             ],
             "friction_points": [
@@ -454,6 +454,42 @@ class ProductAnalystTest(unittest.TestCase):
         self.assertNotIn("No hard access blocker", claims)
         self.assertIn("Mask secret/API values", recommendations)
         self.assertEqual(analysis.metrics["structured_findings"], 3)
+
+    def test_private_data_claim_uses_secret_handling_fallback_recommendation(self) -> None:
+        final_summary = {
+            "friction_points": [
+                "Some private account/contact data is visible in Settings and Customers; final reporting should avoid copying those values."
+            ],
+            "top_recommendations": [
+                "Add external-link indicators and visible destination hints for Help Center and Contact support."
+            ],
+        }
+        evidence = EvidenceItem(
+            id="ev-private-data",
+            product="Example",
+            scenario_id="scenario",
+            kind="browser_run",
+            title="browser-use run",
+            summary="",
+            data={"final_output": json.dumps(final_summary)},
+        )
+        result = WalkthroughResult(
+            product="Example",
+            product_kind="owned",
+            scenario_id="scenario",
+            scenario_title="Scenario",
+            status="completed",
+            started_at=utc_now(),
+            completed_at=utc_now(),
+            steps=[],
+            evidence=[evidence],
+            metrics={"completion_score": 1.0},
+        )
+
+        finding = ProductAnalyst().analyze([result])[0].findings[0]
+
+        self.assertEqual(finding.theme, "Secret handling/admin safety")
+        self.assertIn("Mask sensitive values", finding.recommendation)
 
 
 if __name__ == "__main__":

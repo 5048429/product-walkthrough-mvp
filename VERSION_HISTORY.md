@@ -1,5 +1,19 @@
 # Version History
 
+## v0.4.1 - 2026-06-11
+
+Status: structured finding quality fix.
+
+### Fixed
+
+- Product analysis no longer treats "no hard blockers" summary lines as blocker findings.
+- Recommendation matching now respects finding theme, so secret/private-data findings do not accidentally pick external-link recommendations.
+
+### Validation
+
+- Unit tests: `23 tests OK`.
+- Re-analysis of the latest Clink run produces 6 product findings without the prior false positive blocker.
+
 ## v0.4.0 - 2026-06-11
 
 Status: browser-use final summaries now become structured product findings.

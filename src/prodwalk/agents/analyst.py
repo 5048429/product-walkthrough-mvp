@@ -123,6 +123,8 @@ class ProductAnalyst:
                 claim,
                 recommendations,
                 fallback=self._fallback_recommendation(theme, source),
+                theme=theme,
+                minimum_score=2,
             )
             findings.append(
                 Finding(
@@ -274,18 +276,73 @@ class ProductAnalyst:
             return fallbacks.get(theme, fallbacks["Completion blocker"])
         return fallbacks.get(theme, "Add clearer guidance, validation, or success feedback around this area.")
 
-    def _best_recommendation(self, claim: str, recommendations: list[str], fallback: str) -> str:
+    def _best_recommendation(
+        self,
+        claim: str,
+        recommendations: list[str],
+        fallback: str,
+        theme: str,
+        minimum_score: int = 1,
+    ) -> str:
         if not recommendations:
             return fallback
         claim_tokens = self._tokens(claim)
         best = ""
         best_score = 0
         for recommendation in recommendations:
+            if not self._recommendation_matches_theme(recommendation, theme):
+                continue
             score = len(claim_tokens & self._tokens(recommendation))
             if score > best_score:
                 best = recommendation
                 best_score = score
-        return best if best_score > 0 else fallback
+        return best if best_score >= minimum_score else fallback
+
+    def _recommendation_matches_theme(self, recommendation: str, theme: str) -> bool:
+        text = recommendation.lower()
+        theme_keywords = {
+            "Secret handling/admin safety": (
+                "secret",
+                "key",
+                "token",
+                "mask",
+                "private",
+                "sensitive",
+                "audit",
+                "reveal",
+                "credential",
+            ),
+            "Permission and destructive controls": (
+                "permission",
+                "mutat",
+                "export",
+                "add",
+                "edit",
+                "archive",
+                "disable",
+                "save",
+                "payout",
+                "bank",
+                "control",
+                "gate",
+            ),
+            "Navigation and loading feedback": (
+                "loading",
+                "route",
+                "navigation",
+                "settings",
+                "skeleton",
+                "spinner",
+                "category",
+                "progress",
+            ),
+            "Empty-state guidance": ("empty", "no data", "guidance", "next step", "filter"),
+            "External-link clarity": ("external", "link", "domain", "documentation", "help", "support"),
+        }
+        keywords = theme_keywords.get(theme)
+        if not keywords:
+            return True
+        return any(keyword in text for keyword in keywords)
 
     def _tokens(self, text: str) -> set[str]:
         return {token for token in re.findall(r"[a-z0-9]+", text.lower()) if len(token) >= 4}
@@ -294,7 +351,11 @@ class ProductAnalyst:
         text = claim.lower()
         non_issue_markers = [
             "no hard access blocker",
+            "no hard access blockers",
+            "no hard blocker",
+            "no hard blockers",
             "no blocker",
+            "no blockers",
             "without a login prompt",
             "authentication was already active",
             "intentionally not opened",
