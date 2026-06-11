@@ -1,0 +1,24 @@
+[project]
+name = "product-walkthrough-mvp"
+version = "0.1.0"
+description = "MVP multi-agent product walkthrough research system"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+browser-use-local = [
+  "browser-use[core]>=0.13.1,<0.14",
+]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[project.scripts]
+prodwalk = "prodwalk.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

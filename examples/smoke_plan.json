@@ -1,0 +1,43 @@
+{
+  "research_goal": "Smoke test the local browser-use walkthrough pipeline on one public, non-destructive flow.",
+  "products": [
+    {
+      "name": "Wikipedia Smoke",
+      "url": "https://www.wikipedia.org",
+      "kind": "competitor",
+      "notes": "Use this only to verify local browser control, LLM wiring, evidence capture, report writing, and evaluation."
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "public_entry_smoke",
+      "title": "Inspect public entry and search flow",
+      "persona": "Product manager validating the walkthrough system",
+      "goal": "Confirm that the agent can open a real public page, identify the primary task, and complete a safe search flow.",
+      "steps": [
+        "Open the public entry page",
+        "Identify the primary user task and main interactive controls",
+        "Search for product management",
+        "Open a relevant result if it is clearly safe and public",
+        "Summarize whether the flow was understandable"
+      ],
+      "success_criteria": [
+        "The page loads successfully",
+        "The primary action is discoverable",
+        "A safe public search can be completed",
+        "The agent returns a concise final summary"
+      ],
+      "observation_points": [
+        "Page load and navigation reliability",
+        "Control discoverability",
+        "Search feedback",
+        "Final result quality"
+      ]
+    }
+  ],
+  "evaluation": {
+    "min_evidence_per_result": 3,
+    "target_completion_rate": 0.9,
+    "target_grounded_finding_rate": 1.0
+  }
+}

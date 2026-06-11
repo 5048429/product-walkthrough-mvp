@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+runs/
+runs-*/
+runs-test/
+runs-cloud-smoke/
+runs-local-smoke/
+runs-clink-uat/
+browser_use_history_*.json

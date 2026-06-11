@@ -1,0 +1,46 @@
+{
+  "research_goal": "Smoke test Clink UAT analytics login and first-screen product walkthrough.",
+  "products": [
+    {
+      "name": "Clink UAT Analytics",
+      "url": "https://uat-dashboard.clinkbill.com/analytics",
+      "kind": "owned",
+      "credentials_ref": "CLINK_UAT_ACCOUNT",
+      "notes": "Credentials are read from CLINK_UAT_ACCOUNT_USERNAME or CLINK_UAT_ACCOUNT_EMAIL and CLINK_UAT_ACCOUNT_PASSWORD."
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "analytics_login_smoke",
+      "title": "Login and inspect analytics entry",
+      "persona": "Product manager validating the analytics dashboard",
+      "goal": "Confirm that a test account can enter the analytics page and identify the first-screen product experience.",
+      "steps": [
+        "Open the analytics URL",
+        "If redirected to login, sign in with the provided safe credentials",
+        "Wait for the analytics dashboard or first authenticated page to load",
+        "Identify the primary navigation, filters, empty states, charts, or tables visible on the first screen",
+        "Summarize any blockers, confusing copy, loading delays, or missing guidance"
+      ],
+      "success_criteria": [
+        "The account can reach an authenticated page",
+        "The analytics page or closest available dashboard state is visible",
+        "The first-screen purpose and next action are understandable",
+        "No destructive action, payment, account mutation, or data export is performed"
+      ],
+      "observation_points": [
+        "Login form clarity",
+        "Authentication errors or redirects",
+        "Page load reliability",
+        "Dashboard information hierarchy",
+        "Filter and chart discoverability",
+        "Empty or loading state quality"
+      ]
+    }
+  ],
+  "evaluation": {
+    "min_evidence_per_result": 3,
+    "target_completion_rate": 0.9,
+    "target_grounded_finding_rate": 1.0
+  }
+}

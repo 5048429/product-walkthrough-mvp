@@ -1,0 +1,82 @@
+{
+  "research_goal": "Compare onboarding and first project creation experience for our product and two competitors.",
+  "products": [
+    {
+      "name": "Our Product",
+      "url": "https://example.com",
+      "kind": "owned",
+      "credentials_ref": "TEST_ACCOUNT_OUR_PRODUCT",
+      "notes": "Replace with staging URL and a test account."
+    },
+    {
+      "name": "Competitor A",
+      "url": "https://example.org",
+      "kind": "competitor",
+      "notes": "Public flow only unless explicit credentials are provided."
+    },
+    {
+      "name": "Competitor B",
+      "url": "https://example.net",
+      "kind": "competitor",
+      "notes": "Public flow only unless explicit credentials are provided."
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "onboarding",
+      "title": "First-time onboarding",
+      "persona": "New product manager evaluating the tool",
+      "goal": "Understand the product value and reach the first meaningful workspace state.",
+      "steps": [
+        "Open the product landing or app entry URL",
+        "Identify primary call to action and account entry options",
+        "Start signup or login with provided safe credentials if available",
+        "Observe the first screen after account entry",
+        "Find guidance that explains the next best action"
+      ],
+      "success_criteria": [
+        "Primary value proposition is visible within the first screen",
+        "The path to enter the product is clear",
+        "The user understands the next action after entering"
+      ],
+      "observation_points": [
+        "CTA clarity",
+        "Required fields",
+        "Empty state quality",
+        "Guidance and affordances",
+        "Trust or permission prompts"
+      ]
+    },
+    {
+      "id": "first_project",
+      "title": "Create first project",
+      "persona": "New product manager setting up a team workflow",
+      "goal": "Create a first project or equivalent workspace object.",
+      "steps": [
+        "Locate the create project or equivalent action",
+        "Start the creation flow",
+        "Complete required fields with realistic sample content",
+        "Submit the creation form",
+        "Confirm that the created object is visible and editable"
+      ],
+      "success_criteria": [
+        "Create action is discoverable",
+        "Required fields are understandable",
+        "The created project is confirmed on screen"
+      ],
+      "observation_points": [
+        "Discoverability",
+        "Form complexity",
+        "Validation messages",
+        "Success feedback",
+        "Time to complete"
+      ]
+    }
+  ],
+  "evaluation": {
+    "min_evidence_per_result": 3,
+    "target_completion_rate": 0.9,
+    "target_grounded_finding_rate": 1.0
+  }
+}
+
