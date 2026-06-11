@@ -1,5 +1,34 @@
 # Version History
 
+## v0.4.0 - 2026-06-11
+
+Status: browser-use final summaries now become structured product findings.
+
+### Added
+
+- Product analysis now parses browser-use final JSON summaries from run evidence.
+- Structured findings are generated from:
+  - `blockers`
+  - `friction_points`
+  - `top_recommendations`
+- Finding themes now classify common product-walkthrough issues:
+  - Secret handling/admin safety
+  - Permission and destructive controls
+  - Navigation and loading feedback
+  - Empty-state guidance
+  - External-link clarity
+- Full redacted browser-use final output is stored in browser-run evidence data as `final_output`, avoiding loss from display-summary truncation.
+
+### Changed
+
+- Completed browser runs no longer default to a weak `Baseline pass` when the final summary contains product issues.
+- Product analysis summaries now include the number of extracted product findings in addition to runtime blockers/friction.
+
+### Validation
+
+- Unit tests: `22 tests OK`.
+- Added coverage for Clink-style final summaries with loading-state, secret exposure, and destructive-control findings.
+
 ## v0.3.2 - 2026-06-11
 
 Status: auth-session success detection hardened.

@@ -9,13 +9,14 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from prodwalk.agents.analyst import ProductAnalyst
 from prodwalk.agents.director import ResearchDirector
 from prodwalk.agents.walker import BrowserUseLocalWalker, MockBrowserWalker
 from prodwalk.auth_session import is_auth_success_url, resolve_user_data_dir
 from prodwalk.config_loader import load_research_plan
 from prodwalk.credentials import CredentialStore
 from prodwalk.llm_adapters import OpenAIResponsesChatModel
-from prodwalk.models import ProductTarget, Scenario
+from prodwalk.models import EvidenceItem, ProductTarget, Scenario, WalkthroughResult, utc_now
 from browser_use.llm.messages import SystemMessage, UserMessage
 
 
@@ -149,6 +150,7 @@ class BrowserUseLocalWalkerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.metrics["blocker_count"], 0)
+        self.assertEqual(result.evidence[0].data["final_output"], '{"completed": true}')
         self.assertTrue(all(step.status == "passed" for step in result.steps))
 
     async def test_browser_use_timeout_returns_blocked_result(self) -> None:
@@ -397,6 +399,61 @@ class AuthSessionTest(unittest.TestCase):
                 os.chdir(previous)
 
         self.assertTrue(str(path).endswith(str(Path(".prodwalk") / "browser-profiles" / "clink_uat_account")))
+
+
+class ProductAnalystTest(unittest.TestCase):
+    def test_extracts_findings_from_browser_use_final_summary(self) -> None:
+        final_summary = {
+            "completed": {"session": "completed"},
+            "blockers": [
+                "No hard access blocker was encountered after the initial analytics URL opened.",
+                "External documentation/help links were intentionally not opened per instruction.",
+            ],
+            "friction_points": [
+                "Repeated page transitions showed previous page content under a spinner for several seconds.",
+                "Developers displayed full API/secret key values in the UI.",
+                "Operational pages expose Add, Export CSV, Submit Payout, Generate, Edit, Archive, Disable, and Save controls.",
+            ],
+            "top_recommendations": [
+                "Improve route-loading feedback so the page title/content changes promptly.",
+                "Mask secret/API values by default and require explicit reveal with audit logging.",
+                "Separate read-only operational views from mutation/export controls.",
+            ],
+        }
+        evidence = EvidenceItem(
+            id="ev-example-browser-use-local",
+            product="Example",
+            scenario_id="scenario",
+            kind="browser_run",
+            title="browser-use run",
+            summary="truncated",
+            data={"final_output": json.dumps(final_summary)},
+        )
+        result = WalkthroughResult(
+            product="Example",
+            product_kind="owned",
+            scenario_id="scenario",
+            scenario_title="Scenario",
+            status="completed",
+            started_at=utc_now(),
+            completed_at=utc_now(),
+            steps=[],
+            evidence=[evidence],
+            metrics={"completion_score": 1.0, "blocker_count": 0, "friction_count": 0},
+        )
+
+        analysis = ProductAnalyst().analyze([result])[0]
+        themes = {finding.theme for finding in analysis.findings}
+        claims = " ".join(finding.claim for finding in analysis.findings)
+        recommendations = " ".join(finding.recommendation for finding in analysis.findings)
+
+        self.assertNotIn("Baseline pass", themes)
+        self.assertIn("Navigation and loading feedback", themes)
+        self.assertIn("Secret handling/admin safety", themes)
+        self.assertIn("Permission and destructive controls", themes)
+        self.assertNotIn("No hard access blocker", claims)
+        self.assertIn("Mask secret/API values", recommendations)
+        self.assertEqual(analysis.metrics["structured_findings"], 3)
 
 
 if __name__ == "__main__":

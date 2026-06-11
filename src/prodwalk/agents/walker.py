@@ -233,6 +233,7 @@ class BrowserUseLocalWalker(BrowserWalker):
                 data={
                     "task": task,
                     "mode": "browser-use-local",
+                    "final_output": final_text,
                     "model": self.model,
                     "provider": self.provider,
                     "base_url": self.openai_base_url,

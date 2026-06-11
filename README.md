@@ -164,4 +164,6 @@ Each browser-use scenario is bounded by `--browser-timeout-sec`, so a stuck logi
 - finding grounding rate
 - recommendation actionability rate
 
+`report.md` includes product findings extracted from browser-use final summaries when the agent returns structured JSON-like fields such as `blockers`, `friction_points`, `evidence_needed`, and `top_recommendations`. The MVP currently classifies issues such as loading-state friction, secret exposure, destructive controls, empty states, and external-link clarity with simple deterministic rules.
+
 The next useful step is a human-labeled golden set: expected issues, key screenshot moments, and success paths for each scenario, then compare system output against that set.
