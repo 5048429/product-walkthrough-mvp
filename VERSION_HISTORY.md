@@ -1,5 +1,25 @@
 # Version History
 
+## v0.4.4 - 2026-06-11
+
+Status: one-command human verification handoff added.
+
+### Added
+
+- Browser-use `run` now defaults to `--verification-mode auto`.
+- Before the walkthrough starts, the system checks whether the configured browser profile is already authenticated.
+- If login, Altcha, CAPTCHA, or another verification step is still needed, the same run command opens a visible browser, fills stored credentials when available, asks the user to complete verification, and continues automatically after Enter.
+- `--verification-mode off` disables the checkpoint for fully automated or public-page runs.
+- Verification options were added for timeout, login URL marker, and success URL markers.
+
+### Changed
+
+- `auth-session` internals are now reusable by the main run command, so PMs do not need to run a separate setup command just to refresh a verification-gated profile.
+
+### Validation
+
+- Unit tests cover automatic verification profile selection and `--verification-mode off`.
+
 ## v0.4.3 - 2026-06-11
 
 Status: report language selection added.

@@ -3,11 +3,25 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
 from .credentials import CredentialStore, normalize_ref
 from .models import slugify
+
+
+@dataclass(slots=True)
+class AuthSessionRequest:
+    url: str
+    credentials_ref: str | None = None
+    user_data_dir: str | Path | None = None
+    storage_state: str | Path | None = None
+    success_url_contains: list[str] = field(default_factory=list)
+    login_url_contains: str = "/auth/login"
+    timeout_sec: float = 300.0
+    browser_path: str | None = None
+    manual_confirm: bool = True
 
 
 def add_auth_session_subcommand(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -56,24 +70,59 @@ def handle_auth_session_command(args: argparse.Namespace) -> None:
 
 
 async def create_auth_session(args: argparse.Namespace) -> None:
-    user_data_dir = resolve_user_data_dir(args.user_data_dir, args.credentials_ref, args.url)
-    storage_state = resolve_optional_path(args.storage_state, create_parent=True)
-    browser_path = args.browser_path or os.getenv("BROWSER_USE_CHROME_PATH") or find_local_browser()
+    request = AuthSessionRequest(
+        url=args.url,
+        credentials_ref=args.credentials_ref,
+        user_data_dir=args.user_data_dir,
+        storage_state=args.storage_state,
+        success_url_contains=list(args.success_url_contains or []),
+        login_url_contains=args.login_url_contains,
+        timeout_sec=args.timeout_sec,
+        browser_path=args.browser_path,
+        manual_confirm=args.manual_confirm,
+    )
+    await run_manual_auth_session(request)
 
-    username, password = credential_values(args.credentials_ref)
 
-    try:
-        from playwright.async_api import async_playwright  # type: ignore
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(
-            "Playwright is required for auth-session. Install local browser-use dependencies with "
-            '`pip install -e ".[browser-use-local]"`.'
-        ) from exc
+async def ensure_auth_session(request: AuthSessionRequest) -> bool:
+    user_data_dir = resolve_user_data_dir(str_or_none(request.user_data_dir), request.credentials_ref, request.url)
+    storage_state = resolve_optional_path(str_or_none(request.storage_state), create_parent=True)
+    browser_path = request.browser_path or os.getenv("BROWSER_USE_CHROME_PATH") or find_local_browser()
+
+    async_playwright = load_async_playwright()
+    user_data_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Checking saved auth session for: {request.url}")
+    async with async_playwright() as playwright:
+        if await auth_session_is_valid(
+            playwright=playwright,
+            url=request.url,
+            user_data_dir=user_data_dir,
+            storage_state=storage_state,
+            browser_path=browser_path,
+            login_url_contains=request.login_url_contains,
+            success_url_contains=request.success_url_contains,
+        ):
+            print(f"Saved auth session is already valid: {user_data_dir}")
+            return False
+
+    print("Manual verification is needed before the walkthrough can continue.")
+    await run_manual_auth_session(request)
+    return True
+
+
+async def run_manual_auth_session(request: AuthSessionRequest) -> str:
+    user_data_dir = resolve_user_data_dir(str_or_none(request.user_data_dir), request.credentials_ref, request.url)
+    storage_state = resolve_optional_path(str_or_none(request.storage_state), create_parent=True)
+    browser_path = request.browser_path or os.getenv("BROWSER_USE_CHROME_PATH") or find_local_browser()
+
+    username, password = credential_values(request.credentials_ref)
+    async_playwright = load_async_playwright()
 
     user_data_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Opening browser for manual login: {args.url}")
+    print(f"Opening browser for manual login: {request.url}")
     print(f"Persistent profile: {user_data_dir}")
-    print("Complete Altcha/captcha and login in the browser window. This command will continue automatically.")
+    print("Complete Altcha/captcha/login in the browser window, then return here and press Enter.")
 
     async with async_playwright() as playwright:
         context = await playwright.chromium.launch_persistent_context(
@@ -84,22 +133,22 @@ async def create_auth_session(args: argparse.Namespace) -> None:
         )
         try:
             page = context.pages[0] if context.pages else await context.new_page()
-            await page.goto(args.url, wait_until="domcontentloaded", timeout=60000)
+            await page.goto(request.url, wait_until="domcontentloaded", timeout=60000)
             if username and password:
                 await autofill_login(page, username, password)
                 print("Credentials were filled. Please complete verification and click Login.")
-            elif args.credentials_ref:
-                print(f"Credential ref not found or incomplete: {args.credentials_ref}. Please fill login manually.")
+            elif request.credentials_ref:
+                print(f"Credential ref not found or incomplete: {request.credentials_ref}. Please fill login manually.")
 
-            if args.manual_confirm:
+            if request.manual_confirm:
                 success_url = await wait_for_manual_confirmation(page)
             else:
                 success_url = await wait_for_login_success(
                     page=page,
-                    start_url=args.url,
-                    login_url_contains=args.login_url_contains,
-                    success_url_contains=args.success_url_contains,
-                    timeout_sec=args.timeout_sec,
+                    start_url=request.url,
+                    login_url_contains=request.login_url_contains,
+                    success_url_contains=request.success_url_contains,
+                    timeout_sec=request.timeout_sec,
                 )
             if storage_state:
                 await context.storage_state(path=str(storage_state))
@@ -108,7 +157,60 @@ async def create_auth_session(args: argparse.Namespace) -> None:
             print(f"Use with: --browser-user-data-dir {user_data_dir}")
             if storage_state:
                 print(f"Storage state saved: {storage_state}")
+            return success_url
         finally:
+            await context.close()
+
+
+def load_async_playwright() -> object:
+    try:
+        from playwright.async_api import async_playwright  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Playwright is required for auth-session. Install local browser-use dependencies with "
+            '`pip install -e ".[browser-use-local]"`.'
+        ) from exc
+    return async_playwright
+
+
+async def auth_session_is_valid(
+    *,
+    playwright: object,
+    url: str,
+    user_data_dir: Path,
+    storage_state: Path | None,
+    browser_path: str | None,
+    login_url_contains: str,
+    success_url_contains: list[str],
+) -> bool:
+    context = None
+    try:
+        context = await playwright.chromium.launch_persistent_context(  # type: ignore[attr-defined]
+            user_data_dir=str(user_data_dir),
+            headless=True,
+            executable_path=browser_path,
+            viewport={"width": 1440, "height": 1000},
+        )
+        page = context.pages[0] if context.pages else await context.new_page()
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        await wait_for_stable_auth_page(page)
+        current_url = str(getattr(page, "url", ""))
+        has_login_form = await page_has_login_form(page)
+        valid = is_auth_success_url(
+            current_url=current_url,
+            start_url=url,
+            login_url_contains=login_url_contains,
+            success_url_contains=success_url_contains,
+            has_login_form=has_login_form,
+        )
+        if valid and storage_state:
+            await context.storage_state(path=str(storage_state))
+        return valid
+    except Exception as exc:  # noqa: BLE001 - preflight should fall back to human verification.
+        print(f"Auth preflight could not confirm a valid session: {exc}")
+        return False
+    finally:
+        if context is not None:
             await context.close()
 
 
@@ -132,12 +234,12 @@ async def autofill_login(page: object, username: str, password: str) -> None:
 async def wait_for_manual_confirmation(page: object) -> str:
     print("When the authenticated product page is visible, return to this terminal and press Enter.")
     await asyncio.to_thread(input)
-    current_url = str(getattr(page, "url", ""))
     if await page_has_login_form(page):
         raise RuntimeError(
             "The page still appears to show a login form. Complete login first, then rerun auth-session."
         )
     await wait_for_stable_auth_page(page)
+    current_url = str(getattr(page, "url", ""))
     return current_url
 
 
@@ -277,6 +379,10 @@ def resolve_optional_path(value: str | None, *, create_parent: bool = False) -> 
     if create_parent:
         path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def str_or_none(value: str | Path | None) -> str | None:
+    return str(value) if value is not None else None
 
 
 def find_local_browser() -> str | None:

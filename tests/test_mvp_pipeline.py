@@ -5,7 +5,9 @@ import os
 import tempfile
 import unittest
 import asyncio
+from argparse import Namespace
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from pydantic import BaseModel
 
@@ -14,6 +16,7 @@ from prodwalk.agents.director import ResearchDirector
 from prodwalk.agents.evidence import EvidenceExtractor
 from prodwalk.agents.walker import BrowserUseLocalWalker, MockBrowserWalker
 from prodwalk.auth_session import is_auth_success_url, resolve_user_data_dir
+from prodwalk.cli import _prepare_verification_checkpoints
 from prodwalk.config_loader import ConfigError, load_research_plan, parse_research_plan
 from prodwalk.credentials import CredentialStore
 from prodwalk.llm_adapters import OpenAIResponsesChatModel
@@ -84,6 +87,68 @@ class ConfigLoaderTest(unittest.TestCase):
                     "scenarios": [{"title": "Smoke", "goal": "Verify"}],
                 }
             )
+
+
+class VerificationCheckpointTest(unittest.IsolatedAsyncioTestCase):
+    async def test_prepare_verification_checkpoint_derives_profile_and_checks_auth(self) -> None:
+        plan = parse_research_plan(
+            {
+                "research_goal": "Verify login checkpoint",
+                "products": [
+                    {
+                        "name": "Example",
+                        "url": "https://example.test/app",
+                        "credentials_ref": "TEST_ACCOUNT",
+                    }
+                ],
+                "scenarios": [{"title": "Smoke", "goal": "Verify"}],
+            }
+        )
+        args = Namespace(
+            verification_mode="auto",
+            browser_user_data_dir=None,
+            browser_storage_state=None,
+            verification_success_url_contains=[],
+            verification_login_url_contains="/auth/login",
+            verification_timeout_sec=300.0,
+        )
+
+        with patch("prodwalk.cli.ensure_auth_session", new_callable=AsyncMock) as ensure:
+            user_data_dir = await _prepare_verification_checkpoints(plan, args, is_browser_use=True)
+
+        self.assertIsNotNone(user_data_dir)
+        assert user_data_dir is not None
+        self.assertTrue(user_data_dir.endswith(str(Path(".prodwalk") / "browser-profiles" / "test_account")))
+        ensure.assert_awaited_once()
+        request = ensure.await_args.args[0]
+        self.assertEqual(request.url, "https://example.test/app")
+        self.assertEqual(request.credentials_ref, "TEST_ACCOUNT")
+        self.assertEqual(str(request.user_data_dir), user_data_dir)
+
+    async def test_prepare_verification_checkpoint_respects_off_mode(self) -> None:
+        plan = parse_research_plan(
+            {
+                "research_goal": "Verify login checkpoint",
+                "products": [
+                    {
+                        "name": "Example",
+                        "url": "https://example.test/app",
+                        "credentials_ref": "TEST_ACCOUNT",
+                    }
+                ],
+                "scenarios": [{"title": "Smoke", "goal": "Verify"}],
+            }
+        )
+        args = Namespace(
+            verification_mode="off",
+            browser_user_data_dir="profile",
+        )
+
+        with patch("prodwalk.cli.ensure_auth_session", new_callable=AsyncMock) as ensure:
+            user_data_dir = await _prepare_verification_checkpoints(plan, args, is_browser_use=True)
+
+        self.assertEqual(user_data_dir, "profile")
+        ensure.assert_not_awaited()
 
 
 class EvidenceExtractorTest(unittest.TestCase):

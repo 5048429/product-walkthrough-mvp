@@ -132,6 +132,14 @@ python -m prodwalk.cli run --config examples/clink_uat_full_continuous_plan.json
 
 Use `BROWSER_USE_HEADLESS="false"` only when debugging the browser visually. For normal PM research runs, headless mode is recommended.
 
+The main `run` command also performs an automatic verification checkpoint by default. It first checks whether the configured browser profile is already authenticated. If the product is still on login, Altcha, CAPTCHA, or another verification page, the command opens a visible browser, fills stored credentials when available, and waits for you to complete verification. After the authenticated product page is visible, return to the terminal and press Enter; the same run command then continues into the headless browser-use walkthrough.
+
+Disable this checkpoint for public or fully automated runs:
+
+```powershell
+python -m prodwalk.cli run --config examples/smoke_plan.json --mode browser-use --out runs --verification-mode off
+```
+
 ## Recommended First Real Run
 
 First run the smoke plan to verify browser control, LLM wiring, evidence capture, report writing, and evaluation:
@@ -170,6 +178,16 @@ python -m prodwalk.cli run --config examples/clink_uat_full_continuous_plan.json
 
 Each browser-use scenario is bounded by `--browser-timeout-sec`, so a stuck login, loading state, or navigation loop becomes a blocked scenario in the report instead of preventing artifact generation. Browser screenshots captured during the run are copied into that run's `screenshots/` directory and referenced from `evidence.json` and `report.md` with relative paths.
 
+For Clink-style UAT runs, one command is enough:
+
+```powershell
+$env:PYTHONPATH="src"
+$env:BROWSER_USE_HEADLESS="true"
+python -m prodwalk.cli run --config examples/clink_uat_full_continuous_plan.json --mode browser-use --out runs-clink-full --concurrency 1 --browser-max-steps 55 --browser-timeout-sec 900 --browser-user-data-dir .prodwalk\browser-profiles\clink_uat_account --report-language zh
+```
+
+If verification is needed, complete it in the browser window, then press Enter in the terminal. The run will continue automatically.
+
 ## Optional Environment Variables
 
 - `BROWSER_USE_LLM_PROVIDER`: `openai`, `anthropic`, `google`, `ollama`, or `openrouter`
@@ -186,6 +204,13 @@ Each browser-use scenario is bounded by `--browser-timeout-sec`, so a stuck logi
 - `BROWSER_USE_RUN_TIMEOUT_SEC`: maximum seconds per browser-use scenario
 - `BROWSER_USE_RECORD_VIDEO_DIR`: local video recording output directory
 - `PRODWALK_CREDENTIAL_STORE`: local credential store path, default `.prodwalk/credentials.json`
+
+## Verification Options
+
+- `--verification-mode`: `auto` or `off`, default `auto`
+- `--verification-timeout-sec`: maximum seconds for automatic login success detection
+- `--verification-login-url-contains`: URL substring treated as login page, default `/auth/login`
+- `--verification-success-url-contains`: URL substring that marks login success; can be passed multiple times
 
 ## Current Evaluation Metrics
 

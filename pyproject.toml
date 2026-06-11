@@ -1,6 +1,6 @@
 [project]
 name = "product-walkthrough-mvp"
-version = "0.4.3"
+version = "0.4.4"
 description = "MVP multi-agent product walkthrough research system"
 requires-python = ">=3.11"
 dependencies = []
