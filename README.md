@@ -47,6 +47,35 @@ The local mode does not need a Browser Use Cloud API key, but it still needs an 
 
 The API key is not printed or persisted by this project.
 
+## Local Credentials
+
+Research plans should only contain a stable `credentials_ref`, not real passwords.
+
+Store a credential locally:
+
+```powershell
+$env:PYTHONPATH="src"
+python -m prodwalk.cli credentials set --ref CLINK_UAT_ACCOUNT --site https://uat-dashboard.clinkbill.com --username "name@example.com"
+```
+
+The command prompts for the password without echoing it. By default credentials are stored in `.prodwalk/credentials.json`, which is ignored by git. On Windows, secret values are encrypted with the current user's DPAPI key, so the file is not portable to another OS user.
+
+List stored refs without revealing secrets:
+
+```powershell
+$env:PYTHONPATH="src"
+python -m prodwalk.cli credentials list
+```
+
+Delete a ref:
+
+```powershell
+$env:PYTHONPATH="src"
+python -m prodwalk.cli credentials delete --ref CLINK_UAT_ACCOUNT
+```
+
+At runtime, `BrowserUseLocalWalker` first checks environment variables such as `CLINK_UAT_ACCOUNT_USERNAME` and `CLINK_UAT_ACCOUNT_PASSWORD`, then falls back to the local encrypted credential store. Credentials are passed to browser-use through `sensitive_data` placeholders and redacted from saved history files.
+
 ## Recommended First Real Run
 
 First run the smoke plan to verify browser control, LLM wiring, evidence capture, report writing, and evaluation:
@@ -90,6 +119,7 @@ Local browser-use mode defaults to concurrency `1`, because launching multiple l
 - `BROWSER_USE_HEADLESS`: headless mode, default `true`
 - `BROWSER_USE_USER_DATA_DIR`: browser user data directory for login reuse
 - `BROWSER_USE_RECORD_VIDEO_DIR`: local video recording output directory
+- `PRODWALK_CREDENTIAL_STORE`: local credential store path, default `.prodwalk/credentials.json`
 
 ## Current Evaluation Metrics
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from .agents.director import ResearchDirector
 from .agents.walker import BrowserUseLocalWalker, MockBrowserWalker
 from .config_loader import load_research_plan
+from .credentials import add_credential_subcommands, handle_credential_command
 
 
 def main() -> None:
@@ -26,10 +27,13 @@ def main() -> None:
     )
     run_parser.add_argument("--browser-model", default=None)
     run_parser.add_argument("--browser-max-steps", type=int, default=25)
+    add_credential_subcommands(subparsers)
 
     args = parser.parse_args()
     if args.command == "run":
         asyncio.run(_run(args))
+    elif args.command == "credentials":
+        handle_credential_command(args)
 
 
 async def _run(args: argparse.Namespace) -> None:

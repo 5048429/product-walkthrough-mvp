@@ -9,6 +9,7 @@ from pathlib import Path
 from prodwalk.agents.director import ResearchDirector
 from prodwalk.agents.walker import BrowserUseLocalWalker, MockBrowserWalker
 from prodwalk.config_loader import load_research_plan
+from prodwalk.credentials import CredentialStore
 from prodwalk.llm_adapters import OpenAIResponsesChatModel
 from prodwalk.models import ProductTarget, Scenario
 from browser_use.llm.messages import SystemMessage, UserMessage
@@ -182,6 +183,65 @@ class BrowserUseLocalWalkerTest(unittest.IsolatedAsyncioTestCase):
             text = path.read_text(encoding="utf-8")
             self.assertNotIn("user@example.test", text)
             self.assertIn("<secret>test_username</secret>", text)
+
+    def test_credential_store_round_trips_without_plaintext_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "credentials.json"
+            store = CredentialStore(path=path)
+
+            store.set(
+                ref="TEST_ACCOUNT",
+                site="https://example.test/login",
+                username="user@example.test",
+                password="secret-pass",
+                notes="test only",
+            )
+
+            raw = path.read_text(encoding="utf-8")
+            self.assertNotIn("user@example.test", raw)
+            self.assertNotIn("secret-pass", raw)
+
+            credential = store.get("TEST_ACCOUNT")
+            self.assertIsNotNone(credential)
+            assert credential is not None
+            self.assertEqual(credential.username, "user@example.test")
+            self.assertEqual(credential.password, "secret-pass")
+            self.assertEqual(credential.host, "example.test")
+
+            rows = store.list()
+            self.assertEqual(rows[0]["ref"], "TEST_ACCOUNT")
+            self.assertNotIn("secret-pass", json.dumps(rows))
+
+    def test_walker_loads_sensitive_data_from_credential_store(self) -> None:
+        previous = os.environ.get("PRODWALK_CREDENTIAL_STORE")
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                os.environ["PRODWALK_CREDENTIAL_STORE"] = str(Path(tmp) / "credentials.json")
+                store = CredentialStore()
+                store.set(
+                    ref="TEST_ACCOUNT",
+                    site="https://example.test/login",
+                    username="user@example.test",
+                    password="secret-pass",
+                )
+
+                walker = BrowserUseLocalWalker(max_steps=3)
+                task = "Open https://example.test\nSafe credentials reference: TEST_ACCOUNT."
+                sensitive_data = walker._sensitive_data_for_task(task)
+
+                self.assertEqual(
+                    sensitive_data["example.test"]["test_account_username"],
+                    "user@example.test",
+                )
+                self.assertEqual(
+                    sensitive_data["example.test"]["test_account_password"],
+                    "secret-pass",
+                )
+        finally:
+            if previous is None:
+                os.environ.pop("PRODWALK_CREDENTIAL_STORE", None)
+            else:
+                os.environ["PRODWALK_CREDENTIAL_STORE"] = previous
 
 
 if __name__ == "__main__":

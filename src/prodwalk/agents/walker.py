@@ -23,6 +23,7 @@ from ..models import (
     slugify,
     utc_now,
 )
+from ..credentials import CredentialStore, normalize_ref
 
 
 class BrowserWalker(ABC):
@@ -381,7 +382,7 @@ roughly {self.max_steps} meaningful browser steps.
     def _credential_placeholders(self, product: ProductTarget) -> dict[str, str] | None:
         if not product.credentials_ref:
             return None
-        ref = slugify(product.credentials_ref).replace("-", "_")
+        ref = normalize_ref(product.credentials_ref)
         username = f"{ref}_username"
         password = f"{ref}_password"
         return {"username": username, "password": password}
@@ -389,14 +390,10 @@ roughly {self.max_steps} meaningful browser steps.
     def _credentials_available(self, credentials_ref: str | None) -> bool:
         if not credentials_ref:
             return False
-        normalized = slugify(credentials_ref).replace("-", "_").upper()
-        username = (
-            os.getenv(f"{normalized}_USERNAME")
-            or os.getenv(f"{normalized}_EMAIL")
-            or os.getenv(f"{normalized}_USER")
-        )
-        password = os.getenv(f"{normalized}_PASSWORD")
-        return bool(username and password)
+        username, password = self._credential_values_from_env(credentials_ref)
+        if username and password:
+            return True
+        return CredentialStore().get(credentials_ref) is not None
 
     def _sensitive_data_for_task(self, task: str) -> dict[str, dict[str, str]]:
         url = self._first_url_from_task(task)
@@ -409,17 +406,16 @@ roughly {self.max_steps} meaningful browser steps.
         refs = self._credential_refs_from_task(task)
         secrets: dict[str, str] = {}
         for ref in refs:
-            normalized = slugify(ref).replace("-", "_")
-            prefix = normalized.upper()
-            username = (
-                os.getenv(f"{prefix}_USERNAME")
-                or os.getenv(f"{prefix}_EMAIL")
-                or os.getenv(f"{prefix}_USER")
-            )
-            password = os.getenv(f"{prefix}_PASSWORD")
+            normalized = normalize_ref(ref)
+            username, password = self._credential_values_from_env(ref)
             if username and password:
                 secrets[f"{normalized}_username"] = username
                 secrets[f"{normalized}_password"] = password
+                continue
+
+            stored = CredentialStore().sensitive_data_for_ref(ref)
+            if stored:
+                return stored
         if not secrets:
             return {}
 
@@ -428,6 +424,16 @@ roughly {self.max_steps} meaningful browser steps.
         if len(parts) >= 2:
             domains.add(f"*.{'.'.join(parts[-2:])}")
         return {domain: dict(secrets) for domain in sorted(domains)}
+
+    def _credential_values_from_env(self, credentials_ref: str) -> tuple[str | None, str | None]:
+        normalized = normalize_ref(credentials_ref).upper()
+        username = (
+            os.getenv(f"{normalized}_USERNAME")
+            or os.getenv(f"{normalized}_EMAIL")
+            or os.getenv(f"{normalized}_USER")
+        )
+        password = os.getenv(f"{normalized}_PASSWORD")
+        return username, password
 
     def _allowed_domains_from_task(self, task: str) -> list[str]:
         url = self._first_url_from_task(task)

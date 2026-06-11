@@ -1,5 +1,32 @@
 # Version History
 
+## v0.2.0 - 2026-06-11
+
+Status: local credential storage implemented.
+
+### Added
+
+- Local encrypted credential store at `.prodwalk/credentials.json`.
+- CLI credential management:
+  - `python -m prodwalk.cli credentials set`
+  - `python -m prodwalk.cli credentials list`
+  - `python -m prodwalk.cli credentials delete`
+- Windows DPAPI encryption for stored usernames and passwords.
+- Runtime credential resolution order:
+  - environment variables first
+  - local encrypted credential store second
+- Browser-use `sensitive_data` integration now works from stored credentials as well as environment variables.
+- Additional file-level redaction for saved browser-use history files.
+
+### Validation
+
+- Unit tests cover credential store round trip, no-plaintext storage, credential listing, and walker credential-store integration.
+
+### Known Limitations
+
+- Credential encryption currently targets Windows DPAPI only.
+- The credential store is local to the current Windows user and should not be copied across machines as a backup format.
+
 ## v0.1.0 - 2026-06-11
 
 Status: local MVP validated.
