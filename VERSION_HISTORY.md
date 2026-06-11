@@ -1,5 +1,19 @@
 # Version History
 
+## v0.4.2 - 2026-06-11
+
+Status: browser screenshot artifacts are archived with each run.
+
+### Added
+
+- Browser screenshots produced by browser-use are copied into `screenshots/` inside the current run directory.
+- Evidence and step references are rewritten to run-local relative paths, so `evidence.json` and `report.md` no longer depend on system temp screenshot paths.
+- Report evidence appendix now links to archived screenshot files when available.
+
+### Validation
+
+- Unit tests cover screenshot copying, de-duplication, and reference rewriting for browser run evidence, browser step evidence, and walkthrough steps.
+
 ## v0.4.1 - 2026-06-11
 
 Status: structured finding quality fix.

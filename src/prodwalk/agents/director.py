@@ -32,6 +32,7 @@ class ResearchDirector:
 
         scenarios = self.planner.plan(plan)
         results = await self._run_walkthroughs(plan, scenarios)
+        self.evidence_extractor.archive_screenshots(results, output_dir)
         evidence = self.evidence_extractor.collect(results)
         analyses = self.product_analyst.analyze(results)
         insights = self.competitive_analyst.compare(results, evidence)
@@ -97,4 +98,3 @@ class ResearchDirector:
         raw_results = await asyncio.gather(*tasks)
         raw_results.sort(key=lambda item: (item[0], item[1]))
         return [item[2] for item in raw_results]
-

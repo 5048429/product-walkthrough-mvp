@@ -11,12 +11,13 @@ from pydantic import BaseModel
 
 from prodwalk.agents.analyst import ProductAnalyst
 from prodwalk.agents.director import ResearchDirector
+from prodwalk.agents.evidence import EvidenceExtractor
 from prodwalk.agents.walker import BrowserUseLocalWalker, MockBrowserWalker
 from prodwalk.auth_session import is_auth_success_url, resolve_user_data_dir
 from prodwalk.config_loader import load_research_plan
 from prodwalk.credentials import CredentialStore
 from prodwalk.llm_adapters import OpenAIResponsesChatModel
-from prodwalk.models import EvidenceItem, ProductTarget, Scenario, WalkthroughResult, utc_now
+from prodwalk.models import EvidenceItem, ProductTarget, Scenario, WalkStep, WalkthroughResult, utc_now
 from browser_use.llm.messages import SystemMessage, UserMessage
 
 
@@ -38,6 +39,66 @@ class MvpPipelineTest(unittest.IsolatedAsyncioTestCase):
             evaluation = json.loads(paths["evaluation"].read_text(encoding="utf-8"))
             self.assertIn("overall_score", evaluation)
             self.assertGreaterEqual(evaluation["overall_score"], 0)
+
+
+class EvidenceExtractorTest(unittest.TestCase):
+    def test_archives_browser_screenshots_into_run_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_dir = root / "browser_temp"
+            source_dir.mkdir()
+            source = source_dir / "step_1.png"
+            source.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+            step_evidence = EvidenceItem(
+                id="ev-example-scenario-step-1",
+                product="Example",
+                scenario_id="scenario",
+                kind="browser_step",
+                title="Browser step 1",
+                summary="Loaded the dashboard.",
+                screenshot=str(source),
+                data={"screenshot_path": str(source)},
+            )
+            run_evidence = EvidenceItem(
+                id="ev-example-scenario-browser-use-local",
+                product="Example",
+                scenario_id="scenario",
+                kind="browser_run",
+                title="browser-use run",
+                summary="Completed.",
+                data={"screenshot_paths": [str(source)]},
+            )
+            result = WalkthroughResult(
+                product="Example",
+                product_kind="owned",
+                scenario_id="scenario",
+                scenario_title="Scenario",
+                status="completed",
+                started_at=utc_now(),
+                completed_at=utc_now(),
+                steps=[
+                    WalkStep(
+                        index=1,
+                        action="Open dashboard",
+                        status="passed",
+                        observation="Loaded the dashboard.",
+                        screenshot=str(source),
+                        evidence_ids=[step_evidence.id],
+                    )
+                ],
+                evidence=[run_evidence, step_evidence],
+            )
+
+            archived = EvidenceExtractor().archive_screenshots([result], root / "run")
+
+            expected = "screenshots/ev-example-scenario-step-1.png"
+            self.assertEqual(len(archived), 1)
+            self.assertEqual(step_evidence.screenshot, expected)
+            self.assertEqual(step_evidence.data["screenshot_path"], expected)
+            self.assertEqual(result.steps[0].screenshot, expected)
+            self.assertEqual(run_evidence.data["screenshot_paths"], [expected])
+            self.assertTrue((root / "run" / expected).exists())
 
 
 class BrowserUseLocalWalkerTest(unittest.IsolatedAsyncioTestCase):

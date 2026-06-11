@@ -77,7 +77,11 @@ class MarkdownReportWriter:
         lines.append("")
         lines.append("## Evidence Appendix")
         for item in evidence:
-            lines.append(f"- `{item.id}` [{item.product}/{item.scenario_id}] {item.title}: {item.summary}")
+            screenshot_note = self._screenshot_note(item)
+            lines.append(
+                f"- `{item.id}` [{item.product}/{item.scenario_id}] "
+                f"{item.title}: {item.summary}{screenshot_note}"
+            )
         lines.append("")
         lines.append("## Scenario Definitions")
         for scenario in scenarios:
@@ -93,3 +97,23 @@ class MarkdownReportWriter:
         report_path.write_text(markdown, encoding="utf-8")
         return report_path
 
+    def _screenshot_note(self, item: EvidenceItem) -> str:
+        refs: list[str] = []
+        if item.screenshot:
+            refs.append(item.screenshot)
+
+        screenshot_path = item.data.get("screenshot_path")
+        if isinstance(screenshot_path, str) and screenshot_path:
+            refs.append(screenshot_path)
+
+        screenshot_paths = item.data.get("screenshot_paths")
+        if isinstance(screenshot_paths, list):
+            refs.extend(path for path in screenshot_paths if isinstance(path, str) and path)
+
+        unique_refs = list(dict.fromkeys(refs))
+        if not unique_refs:
+            return ""
+
+        links = ", ".join(f"[{Path(ref).name}]({ref})" for ref in unique_refs[:5])
+        suffix = "..." if len(unique_refs) > 5 else ""
+        return f" Screenshots: {links}{suffix}."

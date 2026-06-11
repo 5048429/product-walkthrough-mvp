@@ -32,6 +32,7 @@ Outputs:
 - `evidence.json`: raw walkthrough results and evidence.
 - `report.md`: product research report.
 - `evaluation.json`: MVP scoring.
+- `screenshots/`: archived browser screenshots for the run when browser-use captures them.
 
 ## Local Browser-Use
 
@@ -136,7 +137,7 @@ $env:BROWSER_USE_HEADLESS="true"
 python -m prodwalk.cli run --config examples/clink_uat_full_continuous_plan.json --mode browser-use --out runs-clink-continuous-headless --concurrency 1 --browser-max-steps 55 --browser-timeout-sec 900 --browser-user-data-dir .prodwalk\browser-profiles\clink_uat_account
 ```
 
-Each browser-use scenario is bounded by `--browser-timeout-sec`, so a stuck login, loading state, or navigation loop becomes a blocked scenario in the report instead of preventing artifact generation.
+Each browser-use scenario is bounded by `--browser-timeout-sec`, so a stuck login, loading state, or navigation loop becomes a blocked scenario in the report instead of preventing artifact generation. Browser screenshots captured during the run are copied into that run's `screenshots/` directory and referenced from `evidence.json` and `report.md` with relative paths.
 
 ## Optional Environment Variables
 
