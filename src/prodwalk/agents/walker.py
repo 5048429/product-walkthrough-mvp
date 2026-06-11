@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import os
+import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -146,7 +148,14 @@ class BrowserUseLocalWalker(BrowserWalker):
     such as Ollama.
     """
 
-    def __init__(self, model: str | None = None, max_steps: int = 25) -> None:
+    def __init__(
+        self,
+        model: str | None = None,
+        max_steps: int = 25,
+        run_timeout_sec: float | None = None,
+        user_data_dir: str | None = None,
+        storage_state: str | None = None,
+    ) -> None:
         self.codex_config = self._load_codex_llm_config()
         self.provider = (os.getenv("BROWSER_USE_LLM_PROVIDER") or self.codex_config.get("provider") or "openai").lower()
         self.model = model or os.getenv("BROWSER_USE_MODEL") or self.codex_config.get("model") or self._default_model(self.provider)
@@ -155,9 +164,22 @@ class BrowserUseLocalWalker(BrowserWalker):
             os.getenv("BROWSER_USE_OPENAI_WIRE_API") or self.codex_config.get("wire_api") or "chat"
         ).lower()
         self.max_steps = max_steps
+        configured_timeout = run_timeout_sec if run_timeout_sec is not None else self._float_env(
+            "BROWSER_USE_RUN_TIMEOUT_SEC"
+        )
+        self.run_timeout_sec = configured_timeout if configured_timeout and configured_timeout > 0 else None
         self.headless = self._bool_env("BROWSER_USE_HEADLESS", default=True)
         self.executable_path = os.getenv("BROWSER_USE_CHROME_PATH") or self._find_local_browser()
-        self.user_data_dir = os.getenv("BROWSER_USE_USER_DATA_DIR") or None
+        self.user_data_dir = self._resolve_runtime_path(
+            user_data_dir or os.getenv("BROWSER_USE_USER_DATA_DIR"),
+            create_dir=True,
+        )
+        self.storage_state = self._resolve_runtime_path(
+            storage_state
+            or os.getenv("BROWSER_USE_STORAGE_STATE")
+            or os.getenv("BROWSER_USE_STORAGE_STATE_PATH"),
+            create_parent=True,
+        )
         self.record_video_dir = os.getenv("BROWSER_USE_RECORD_VIDEO_DIR") or None
 
     async def walk(self, product: ProductTarget, scenario: Scenario) -> WalkthroughResult:
@@ -170,7 +192,7 @@ class BrowserUseLocalWalker(BrowserWalker):
         status_reason = ""
 
         try:
-            run_data = await self._run_browser_use_local(task)
+            run_data = await self._run_with_optional_timeout(task)
             final_text = run_data["output"].strip()
             status, status_reason = self._classify_run(final_text, run_data)
             if status != "completed":
@@ -178,6 +200,20 @@ class BrowserUseLocalWalker(BrowserWalker):
                 if not errors and status_reason:
                     errors.append(status_reason)
                 final_text = final_text or status_reason
+        except asyncio.TimeoutError:
+            status = "blocked"
+            status_reason = f"browser-use run timed out after {self.run_timeout_sec:g} seconds"
+            errors.append(status_reason)
+            final_text = (
+                f"{status_reason}. The scenario was stopped so the full research report could still be generated."
+            )
+            run_data = {
+                "output": final_text,
+                "errors": [status_reason],
+                "observations": [],
+                "step_count": 0,
+                "timed_out": True,
+            }
         except Exception as exc:  # noqa: BLE001 - surfaced as walkthrough evidence.
             status = "blocked"
             errors.append(str(exc))
@@ -204,6 +240,10 @@ class BrowserUseLocalWalker(BrowserWalker):
                     "config_source": self.codex_config.get("source"),
                     "executable_path": self.executable_path,
                     "headless": self.headless,
+                    "run_timeout_sec": self.run_timeout_sec,
+                    "user_data_dir": self.user_data_dir,
+                    "storage_state": self.storage_state,
+                    "timed_out": run_data.get("timed_out", False),
                     "history_file": run_data.get("history_file"),
                     "screenshot_paths": run_data.get("screenshot_paths", []),
                     "urls": run_data.get("urls", []),
@@ -276,9 +316,16 @@ class BrowserUseLocalWalker(BrowserWalker):
                 "blocker_count": blocker_count,
                 "completion_score": 1.0 if status == "completed" else 0.0,
                 "browser_steps": run_data.get("step_count", 0),
+                "run_timeout_sec": self.run_timeout_sec,
+                "timed_out": run_data.get("timed_out", False),
             },
             errors=errors,
         )
+
+    async def _run_with_optional_timeout(self, task: str) -> dict[str, Any]:
+        if not self.run_timeout_sec:
+            return await self._run_browser_use_local(task)
+        return await asyncio.wait_for(self._run_browser_use_local(task), timeout=self.run_timeout_sec)
 
     def _build_task(self, product: ProductTarget, scenario: Scenario) -> str:
         credential_placeholders = (
@@ -301,11 +348,13 @@ class BrowserUseLocalWalker(BrowserWalker):
         steps = "\n".join(f"{idx}. {step}" for idx, step in enumerate(scenario.steps, start=1))
         criteria = "\n".join(f"- {item}" for item in scenario.success_criteria)
         points = "\n".join(f"- {item}" for item in scenario.observation_points)
+        notes = f"\nProduct notes: {product.notes}" if product.notes else ""
         return f"""
 Open {product.url} and perform a product walkthrough.
 
 Product: {product.name}
 Product type: {product.kind}
+{notes}
 Scenario: {scenario.title}
 Persona: {scenario.persona}
 Goal: {scenario.goal}
@@ -322,8 +371,12 @@ Observation points:
 
 Return a concise JSON-like summary with: completed, blockers, friction_points,
 notable_copy, urls_seen, and evidence_needed. Do not perform destructive actions,
-payments, or irreversible account changes. Keep the run focused and stop after
-roughly {self.max_steps} meaningful browser steps.
+payments, or irreversible account changes. Stay on the product's own allowed
+domains. Do not open external documentation, GitHub, support, or provider links;
+record visible link labels or URLs only when useful. If login verification,
+loading, or an external-domain block prevents progress, stop and return a
+partial summary instead of retrying indefinitely. Keep the run focused and stop
+after roughly {self.max_steps} meaningful browser steps.
 """.strip()
 
     async def _run_browser_use_local(self, task: str) -> dict[str, Any]:
@@ -346,6 +399,8 @@ roughly {self.max_steps} meaningful browser steps.
             profile_kwargs["allowed_domains"] = allowed_domains
         if self.user_data_dir:
             profile_kwargs["user_data_dir"] = self.user_data_dir
+        if self.storage_state:
+            profile_kwargs["storage_state"] = self.storage_state
         if self.record_video_dir:
             profile_kwargs["record_video_dir"] = self.record_video_dir
 
@@ -359,7 +414,11 @@ roughly {self.max_steps} meaningful browser steps.
             save_conversation_path=None,
             use_vision=True,
         )
-        history = await agent.run(max_steps=self.max_steps)
+        try:
+            history = await agent.run(max_steps=self.max_steps)
+        except asyncio.CancelledError:
+            await self._stop_agent_after_cancel(agent)
+            raise
         try:
             history.save_to_file(history_file, sensitive_data=sensitive_data or None)
             self._redact_sensitive_file(history_file, sensitive_data)
@@ -378,6 +437,23 @@ roughly {self.max_steps} meaningful browser steps.
             "observations": observations,
             "errors": errors,
         }
+
+    async def _stop_agent_after_cancel(self, agent: Any) -> None:
+        stop = getattr(agent, "stop", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:
+                pass
+
+        close = getattr(agent, "close", None)
+        if callable(close):
+            try:
+                result = close()
+                if inspect.isawaitable(result):
+                    await asyncio.wait_for(result, timeout=10)
+            except Exception:
+                pass
 
     def _credential_placeholders(self, product: ProductTarget) -> dict[str, str] | None:
         if not product.credentials_ref:
@@ -475,7 +551,22 @@ roughly {self.max_steps} meaningful browser steps.
             for key, secret in sorted(values.items(), key=lambda item: len(item[1]), reverse=True):
                 if secret:
                     redacted = redacted.replace(secret, f"<secret>{key}</secret>")
-        return redacted
+        return self._redact_potential_secrets(redacted)
+
+    def _redact_potential_secrets(self, text: str) -> str:
+        redacted = text
+        patterns = [
+            r"\b(?:sk|pk)_(?:live|test|prod|uat)?_?[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b",
+            r"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b",
+            r"(?i)\bBearer\s+[A-Za-z0-9._\-]{20,}",
+        ]
+        for pattern in patterns:
+            redacted = re.sub(pattern, "<secret>api_token</secret>", redacted)
+
+        labeled_key_pattern = re.compile(
+            r"(?i)((?:secret|publishable)\s*key\s*[:=]?\s*)([A-Za-z0-9][A-Za-z0-9_\-]{12,})"
+        )
+        return labeled_key_pattern.sub(r"\1<secret>api_key</secret>", redacted)
 
     def _redact_sensitive_file(self, path: str | None, sensitive_data: dict[str, dict[str, str]]) -> None:
         if not path or not sensitive_data:
@@ -489,22 +580,46 @@ roughly {self.max_steps} meaningful browser steps.
             file_path.write_text(redacted, encoding="utf-8")
 
     def _classify_run(self, final_text: str, run_data: dict[str, Any]) -> tuple[str, str]:
+        final = final_text.strip()
+        final_lower = final.lower()
+        explicit_blocked_markers = [
+            '"completed": false',
+            "completed: false",
+            "'completed': false",
+            '"status": "blocked"',
+            '"status":"blocked"',
+        ]
+        for marker in explicit_blocked_markers:
+            if marker in final_lower:
+                return "blocked", f"browser-use final result reported a blocker: {marker}"
+
+        fatal_final_markers = [
+            "404 page not found",
+            "net::err",
+            "stopping due to",
+        ]
+        for marker in fatal_final_markers:
+            if marker in final_lower:
+                return "blocked", f"browser-use final result reported a blocker: {marker}"
+
+        # browser-use can recover from intermediate step errors, including model-call
+        # timeouts. A non-empty final result means the agent reached a terminal answer.
+        if final:
+            return "completed", ""
+
         errors = [str(error) for error in run_data.get("errors", []) if str(error).strip()]
-        combined = " ".join([final_text, *errors]).lower()
-        blocked_markers = [
+        error_text = " ".join(errors).lower()
+        error_markers = [
             "404 page not found",
             "net::err",
             "timeout",
             "timed out",
             "stopping due to",
-            '"completed": false',
-            "completed: false",
-            "'completed': false",
         ]
-        for marker in blocked_markers:
-            if marker in combined:
+        for marker in error_markers:
+            if marker in error_text:
                 return "blocked", f"browser-use reported a blocker: {marker}"
-        if not final_text:
+        if not final:
             return "blocked", "browser-use finished without a final result; inspect the saved history file."
         return "completed", ""
 
@@ -692,6 +807,25 @@ roughly {self.max_steps} meaningful browser steps.
             if os.path.exists(candidate):
                 return candidate
         return None
+
+    def _resolve_runtime_path(
+        self,
+        value: str | None,
+        *,
+        create_dir: bool = False,
+        create_parent: bool = False,
+    ) -> str | None:
+        if not value:
+            return None
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        path = path.resolve()
+        if create_dir:
+            path.mkdir(parents=True, exist_ok=True)
+        if create_parent:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        return str(path)
 
     def _float_env(self, name: str) -> float | None:
         value = os.getenv(name)

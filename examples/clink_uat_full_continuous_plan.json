@@ -1,0 +1,55 @@
+{
+  "research_goal": "Run one continuous read-only walkthrough of Clink UAT dashboard after a single login, covering analytics, transactions, balances, customers, subscriptions, products, developers or skills, and settings. Stay inside Clink first-party pages, avoid destructive actions and external links, and return partial findings for blocked sections.",
+  "products": [
+    {
+      "name": "Clink UAT Dashboard",
+      "url": "https://uat-dashboard.clinkbill.com/analytics",
+      "kind": "owned",
+      "credentials_ref": "CLINK_UAT_ACCOUNT",
+      "notes": "Continuous read-only UAT walkthrough. Use one browser session. Login once if required, then keep the authenticated session while visiting sections. Do not open GitHub, external documentation, payment-provider, support, or app-store links; only note visible labels or URLs. Do not copy or reveal full API keys, tokens, passwords, or private values. If secrets are visible, note the risk without including the values."
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "clink_complete_continuous_walkthrough",
+      "title": "Complete read-only Clink dashboard walkthrough in one browser session",
+      "persona": "Product manager validating product information architecture, operational visibility, and admin safety",
+      "goal": "Assess the main authenticated dashboard surfaces in one continuous browser-use run without repeating login for every section.",
+      "steps": [
+        "Open the analytics URL and sign in with the provided safe credentials if redirected to login",
+        "Inspect the authenticated analytics overview: navigation, active page label, metric cards, charts, date controls, filters, loading states, and empty states",
+        "Open Data Insights or Core Metrics and inspect metric selectors, chart controls, and date-range affordances",
+        "Open Transactions and inspect list or empty state, columns, filters, statuses, pagination, and safe read-only detail affordances if clearly available",
+        "Open Balances, Customers, and Subscriptions and inspect visible read-only information, search/filter affordances, and empty-state guidance",
+        "Open Products and inspect catalog/list structure, filters, status, tabs, and visible safe controls without using create, edit, archive, or export actions",
+        "Open Developers or Skills and inspect setup copy, API/key warnings, docs link labels, and secret handling without copying values or opening external links",
+        "Open Settings and inspect visible category labels or overview panels without editing, disabling, adding, or saving configuration",
+        "Return a section-by-section JSON-like summary with completed_sections, blocked_sections, friction_points, notable_copy, urls_seen, evidence_needed, and top_recommendations"
+      ],
+      "success_criteria": [
+        "The run uses one continuous browser session rather than repeated independent logins",
+        "Authenticated dashboard navigation and major product sections are inspected when accessible",
+        "No destructive action, payment, account mutation, export, secret reveal/copy, or settings change is performed",
+        "External documentation, GitHub, support, app-store, and provider links are not opened",
+        "Blocked sections are clearly reported with evidence needed rather than retried indefinitely"
+      ],
+      "observation_points": [
+        "Login and Altcha reliability",
+        "Navigation grouping and labels",
+        "Analytics metric and chart clarity",
+        "Operational list/table density",
+        "Empty-state and loading-state guidance",
+        "Filter and search discoverability",
+        "Secret handling and admin safety",
+        "Settings category clarity",
+        "External-link affordance clarity"
+      ],
+      "risk_level": "high"
+    }
+  ],
+  "evaluation": {
+    "min_evidence_per_result": 5,
+    "target_completion_rate": 0.8,
+    "target_grounded_finding_rate": 1.0
+  }
+}

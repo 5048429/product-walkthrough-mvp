@@ -1,0 +1,154 @@
+{
+  "research_goal": "Run a bounded read-only walkthrough of Clink UAT dashboard across login, analytics, transactions, balances, customers, products, developer, and settings surfaces. Stay inside Clink first-party pages, avoid destructive actions, and return partial findings if verification, loading, or external-domain blocks prevent progress.",
+  "products": [
+    {
+      "name": "Clink UAT Dashboard",
+      "url": "https://uat-dashboard.clinkbill.com/analytics",
+      "kind": "owned",
+      "credentials_ref": "CLINK_UAT_ACCOUNT",
+      "notes": "Read-only UAT walkthrough. Credentials are resolved from the local encrypted credential store or environment variables. Stay on uat-dashboard.clinkbill.com and related Clink first-party domains. Do not open GitHub, external documentation, payment-provider, support, or app-store links; only note their visible labels or URLs when relevant. If a page gets stuck or verification blocks progress, stop that scenario with a partial summary."
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "auth_and_analytics_overview",
+      "title": "Authenticate and inspect analytics overview",
+      "persona": "Product manager validating the dashboard entry experience",
+      "goal": "Reach the authenticated dashboard and understand the analytics overview first screen.",
+      "steps": [
+        "Open the analytics URL",
+        "If redirected to login, sign in with the provided safe credentials",
+        "Wait for the authenticated dashboard to load",
+        "Inspect the top-level navigation, active page label, date controls, summary cards, charts, and empty states",
+        "Summarize first-screen clarity, blockers, and next best actions without trying to fix account or verification state"
+      ],
+      "success_criteria": [
+        "The test account reaches an authenticated page",
+        "The analytics overview or closest dashboard state is visible",
+        "Primary navigation and page purpose are understandable",
+        "No destructive action, payment, account mutation, export, or settings change is performed"
+      ],
+      "observation_points": [
+        "Login clarity",
+        "Altcha or verification friction",
+        "Page load reliability",
+        "Information hierarchy",
+        "Chart and metric clarity",
+        "Empty-state guidance"
+      ]
+    },
+    {
+      "id": "data_insights_navigation",
+      "title": "Inspect Data Insights and analytics controls",
+      "persona": "Product manager evaluating analytics depth",
+      "goal": "Assess whether Data Insights and analytics controls are discoverable and useful without changing data.",
+      "steps": [
+        "Start from the authenticated dashboard or analytics page",
+        "Open the Data Insights navigation item or closest analytics section",
+        "Inspect available subpages, filters, date ranges, metric selectors, chart controls, and loading states",
+        "Use safe read-only interactions such as expanding menus or changing visible filters if they do not mutate account data",
+        "If a filter or chart stays loading, capture the state once and summarize discoverability, terminology, and missing guidance"
+      ],
+      "success_criteria": [
+        "Data Insights or analytics navigation can be found",
+        "Filters and chart controls are understandable",
+        "Read-only exploration does not trigger destructive actions",
+        "The agent can identify what a PM should inspect next"
+      ],
+      "observation_points": [
+        "Navigation labels",
+        "Filter affordances",
+        "Chart readability",
+        "Loading behavior",
+        "No-data and error states",
+        "Terminology consistency"
+      ]
+    },
+    {
+      "id": "transactions_readonly",
+      "title": "Inspect Transactions read-only workflow",
+      "persona": "Product manager validating payment operations visibility",
+      "goal": "Understand whether transactions can be found, scanned, filtered, and inspected safely.",
+      "steps": [
+        "Navigate to Transactions from the sidebar",
+        "Inspect table columns, search, filters, status labels, pagination, and empty states",
+        "Open a transaction detail only if it is clearly read-only, safe, and visible without additional verification",
+        "Do not refund, capture, resend, export, create, edit, or perform any account mutation",
+        "Summarize whether an operations user can understand transaction health and next actions"
+      ],
+      "success_criteria": [
+        "Transactions navigation is discoverable",
+        "The list or empty state is understandable",
+        "Read-only detail inspection is possible or clearly blocked",
+        "No destructive or irreversible action is performed"
+      ],
+      "observation_points": [
+        "Table density",
+        "Status semantics",
+        "Filter clarity",
+        "Detail page safety",
+        "Pagination",
+        "Export or destructive controls avoided"
+      ]
+    },
+    {
+      "id": "balances_customers_subscriptions",
+      "title": "Inspect balances, customers, and subscriptions read-only",
+      "persona": "Product manager evaluating business operations surfaces",
+      "goal": "Review balance, payout, customer, and subscription surfaces for clarity and safe read-only access.",
+      "steps": [
+        "Navigate to Balances and inspect visible balance, payout, currency, and empty-state information",
+        "Navigate to Customers and inspect visible list, search, filters, and safe read-only detail affordances",
+        "Navigate to Subscriptions and inspect visible list, status, pricing, billing-cycle, or empty-state information",
+        "Avoid payout creation, customer edits, subscription changes, exports, or destructive actions",
+        "Summarize clarity, missing guidance, and cross-section consistency"
+      ],
+      "success_criteria": [
+        "Balances, Customers, and Subscriptions entries are discoverable",
+        "Each section communicates its current state clearly",
+        "Read-only information can be inspected without mutation",
+        "Potentially destructive controls are identified and avoided"
+      ],
+      "observation_points": [
+        "Navigation grouping",
+        "Balance and payout copy",
+        "Customer search and list clarity",
+        "Subscription state clarity",
+        "Empty-state guidance",
+        "Risky action visibility"
+      ]
+    },
+    {
+      "id": "products_developers_settings_readonly",
+      "title": "Inspect products, developer, and settings surfaces read-only",
+      "persona": "Product manager validating setup and administration discoverability",
+      "goal": "Review product catalog, developer integration, skills, and settings surfaces without changing configuration.",
+      "steps": [
+        "Navigate to Products and inspect visible catalog/list structure, status, and safe read-only details",
+        "Navigate to Developers or Skills and inspect visible integration guidance, API/key warnings, documentation link labels, or setup copy without opening external links",
+        "Navigate to Settings and inspect available category labels or read-only overview panels without editing values",
+        "Avoid creating products, rotating keys, revealing full secrets, saving settings, changing account configuration, or opening external GitHub/docs links",
+        "Summarize setup clarity, trust warnings, and administration risks; stop with a partial summary if any page blocks progress"
+      ],
+      "success_criteria": [
+        "Products, developer, skills, and settings areas are discoverable",
+        "Setup or integration guidance is understandable",
+        "Secrets or sensitive keys are not revealed or copied",
+        "No configuration change is saved"
+      ],
+      "observation_points": [
+        "Setup navigation",
+        "Developer copy",
+        "Secret handling",
+        "Settings category clarity",
+        "Create/edit controls avoided",
+        "Help and documentation links"
+      ]
+    }
+  ],
+  "evaluation": {
+    "min_evidence_per_result": 3,
+    "target_completion_rate": 0.8,
+    "target_grounded_finding_rate": 1.0
+  }
+}

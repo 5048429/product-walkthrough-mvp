@@ -6,7 +6,7 @@ from typing import Any, AsyncIterable, TypeVar, overload
 
 import httpx
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from browser_use.llm.exceptions import ModelProviderError, ModelRateLimitError
 from browser_use.llm.messages import BaseMessage, SystemMessage
@@ -108,7 +108,10 @@ class OpenAIResponsesChatModel:
                     status_code=502,
                     model=self.name,
                 )
-            parsed = output_format.model_validate_json(output_text)
+            try:
+                parsed = output_format.model_validate_json(output_text)
+            except ValidationError:
+                parsed = output_format.model_validate_json(self._first_json_object(output_text))
             return ChatInvokeCompletion(completion=parsed, usage=usage, stop_reason=stop_reason)
         except ModelProviderError:
             raise
@@ -184,6 +187,35 @@ class OpenAIResponsesChatModel:
         if not instruction_text:
             instruction_text = "You are a helpful assistant."
         return instruction_text, input_messages
+
+    def _first_json_object(self, text: str) -> str:
+        start = text.find("{")
+        if start < 0:
+            return text
+
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : index + 1]
+        return text
 
     def _system_content_to_text(self, content: Any) -> str:
         if isinstance(content, str):

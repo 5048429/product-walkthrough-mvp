@@ -4,10 +4,14 @@ import json
 import os
 import tempfile
 import unittest
+import asyncio
 from pathlib import Path
+
+from pydantic import BaseModel
 
 from prodwalk.agents.director import ResearchDirector
 from prodwalk.agents.walker import BrowserUseLocalWalker, MockBrowserWalker
+from prodwalk.auth_session import is_auth_success_url, resolve_user_data_dir
 from prodwalk.config_loader import load_research_plan
 from prodwalk.credentials import CredentialStore
 from prodwalk.llm_adapters import OpenAIResponsesChatModel
@@ -42,6 +46,16 @@ class BrowserUseLocalWalkerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(status, "blocked")
         self.assertIn("404", reason)
+
+    def test_recovered_intermediate_timeout_is_completed(self) -> None:
+        walker = BrowserUseLocalWalker(max_steps=3)
+        status, reason = walker._classify_run(
+            '{"completed": true, "blockers": []}',
+            {"errors": ["LLM call timed out after 75 seconds. Keep your thinking and output short."]},
+        )
+
+        self.assertEqual(status, "completed")
+        self.assertEqual(reason, "")
 
     def test_history_file_names_include_task_hash(self) -> None:
         walker = BrowserUseLocalWalker(max_steps=3)
@@ -78,6 +92,17 @@ class BrowserUseLocalWalkerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(instructions, "System rules")
         self.assertEqual(len(input_messages), 1)
+
+    def test_responses_adapter_extracts_first_json_object(self) -> None:
+        class Payload(BaseModel):
+            completed: bool
+
+        llm = OpenAIResponsesChatModel(model="gpt-test", api_key="test-key")
+        text = '{"completed": true}\n{"extra": "trailing"}'
+
+        parsed = Payload.model_validate_json(llm._first_json_object(text))
+
+        self.assertTrue(parsed.completed)
 
     async def test_recovered_browser_use_errors_do_not_become_product_blockers(self) -> None:
         class RecoveredWalker(BrowserUseLocalWalker):
@@ -126,6 +151,67 @@ class BrowserUseLocalWalkerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.metrics["blocker_count"], 0)
         self.assertTrue(all(step.status == "passed" for step in result.steps))
 
+    async def test_browser_use_timeout_returns_blocked_result(self) -> None:
+        class SlowWalker(BrowserUseLocalWalker):
+            async def _run_browser_use_local(self, task: str) -> dict:
+                await asyncio.sleep(1)
+                return {"output": '{"completed": true}'}
+
+        walker = SlowWalker(max_steps=3, run_timeout_sec=0.01)
+        result = await walker.walk(
+            ProductTarget(name="Example", url="https://example.test"),
+            Scenario(
+                id="slow",
+                title="Slow",
+                persona="PM",
+                goal="Verify timeout handling",
+                steps=["Open page"],
+                success_criteria=["Done"],
+                observation_points=["Reliability"],
+            ),
+        )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertTrue(result.metrics["timed_out"])
+        self.assertIn("timed out", result.errors[0])
+        self.assertEqual(result.metrics["completion_score"], 0.0)
+
+    def test_task_includes_product_notes_and_external_link_guardrail(self) -> None:
+        walker = BrowserUseLocalWalker(max_steps=3)
+        task = walker._build_task(
+            ProductTarget(
+                name="Example",
+                url="https://example.test",
+                notes="Stay inside first-party pages.",
+            ),
+            Scenario(
+                id="guardrail",
+                title="Guardrail",
+                persona="PM",
+                goal="Verify prompt guardrails",
+                steps=["Open page"],
+                success_criteria=["Done"],
+                observation_points=["Reliability"],
+            ),
+        )
+
+        self.assertIn("Product notes: Stay inside first-party pages.", task)
+        self.assertIn("Do not open external documentation", task)
+
+    def test_browser_runtime_paths_are_resolved_and_prepared(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            walker = BrowserUseLocalWalker(
+                max_steps=3,
+                user_data_dir=str(root / "profile"),
+                storage_state=str(root / "auth" / "storage_state.json"),
+            )
+
+            self.assertEqual(Path(walker.user_data_dir or "").resolve(), root / "profile")
+            self.assertTrue((root / "profile").exists())
+            self.assertEqual(Path(walker.storage_state or "").resolve(), root / "auth" / "storage_state.json")
+            self.assertTrue((root / "auth").exists())
+
     def test_sensitive_data_is_loaded_from_credential_ref_env(self) -> None:
         previous = {
             "CLINK_UAT_ACCOUNT_USERNAME": os.environ.get("CLINK_UAT_ACCOUNT_USERNAME"),
@@ -168,6 +254,19 @@ class BrowserUseLocalWalkerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("user@example.test", redacted)
         self.assertIn("<secret>test_username</secret>", redacted)
+
+    def test_potential_api_tokens_are_redacted_before_artifacts(self) -> None:
+        walker = BrowserUseLocalWalker(max_steps=3)
+        text = (
+            "Secret Key sk_test_abcdefghijklmnopqrstuvwxyz "
+            "Authorization: Bearer abcdefghijklmnopqrstuvwxyz1234567890"
+        )
+
+        redacted = walker._redact_sensitive_text(text, {})
+
+        self.assertNotIn("sk_test_abcdefghijklmnopqrstuvwxyz", redacted)
+        self.assertNotIn("abcdefghijklmnopqrstuvwxyz1234567890", redacted)
+        self.assertIn("<secret>api_token</secret>", redacted)
 
     def test_sensitive_file_is_redacted_after_history_save(self) -> None:
         walker = BrowserUseLocalWalker(max_steps=3)
@@ -242,6 +341,51 @@ class BrowserUseLocalWalkerTest(unittest.IsolatedAsyncioTestCase):
                 os.environ.pop("PRODWALK_CREDENTIAL_STORE", None)
             else:
                 os.environ["PRODWALK_CREDENTIAL_STORE"] = previous
+
+
+class AuthSessionTest(unittest.TestCase):
+    def test_auth_success_detects_same_host_after_login_redirect(self) -> None:
+        self.assertTrue(
+            is_auth_success_url(
+                current_url="https://uat-dashboard.clinkbill.com/analytics",
+                start_url="https://uat-dashboard.clinkbill.com/analytics",
+                login_url_contains="/auth/login",
+                success_url_contains=[],
+            )
+        )
+        self.assertFalse(
+            is_auth_success_url(
+                current_url="https://uat-dashboard.clinkbill.com/auth/login",
+                start_url="https://uat-dashboard.clinkbill.com/analytics",
+                login_url_contains="/auth/login",
+                success_url_contains=[],
+            )
+        )
+
+    def test_auth_success_supports_explicit_url_marker(self) -> None:
+        self.assertTrue(
+            is_auth_success_url(
+                current_url="https://example.test/app/home",
+                start_url="https://example.test/login",
+                login_url_contains="/login",
+                success_url_contains=["/app/"],
+            )
+        )
+
+    def test_default_user_data_dir_uses_credential_ref(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            previous = Path.cwd()
+            os.chdir(tmp)
+            try:
+                path = resolve_user_data_dir(
+                    None,
+                    "CLINK_UAT_ACCOUNT",
+                    "https://uat-dashboard.clinkbill.com/analytics",
+                )
+            finally:
+                os.chdir(previous)
+
+        self.assertTrue(str(path).endswith(str(Path(".prodwalk") / "browser-profiles" / "clink_uat_account")))
 
 
 if __name__ == "__main__":

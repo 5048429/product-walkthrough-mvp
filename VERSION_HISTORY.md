@@ -1,5 +1,54 @@
 # Version History
 
+## v0.3.0 - 2026-06-11
+
+Status: Clink walkthrough reliability improved with human-assisted auth and one-session runs.
+
+### Added
+
+- `prodwalk auth-session` command for human-assisted login checkpoints.
+  - Opens a visible local browser.
+  - Auto-fills stored credentials when a `--credentials-ref` is provided.
+  - Lets the user manually complete Altcha/CAPTCHA/SSO/MFA.
+  - Saves a reusable persistent browser profile under `.prodwalk/browser-profiles/...`.
+- Recommended Clink run path using one continuous scenario:
+  - `examples/clink_uat_full_continuous_plan.json`
+  - `--browser-user-data-dir .prodwalk\browser-profiles\clink_uat_account`
+  - `BROWSER_USE_HEADLESS=true` for normal report generation.
+- Browser-use run timeout support:
+  - CLI: `--browser-timeout-sec`
+  - Env: `BROWSER_USE_RUN_TIMEOUT_SEC`
+- Browser runtime path support:
+  - CLI: `--browser-user-data-dir`
+  - CLI: `--browser-storage-state`
+  - Env: `BROWSER_USE_USER_DATA_DIR`
+  - Env: `BROWSER_USE_STORAGE_STATE`
+- Generic redaction for API tokens, Bearer tokens, JWT-like values, and labeled publishable/secret keys.
+- More tolerant OpenAI Responses adapter parsing for browser-use structured output with trailing JSON/text.
+
+### Changed
+
+- Headless browser-use is now the recommended default for PM research runs; visible mode is for debugging or the `auth-session` login checkpoint.
+- Recovered intermediate browser-use errors no longer automatically mark a scenario as blocked when the final result is present and completed.
+- Clink full walkthrough should run as one browser-use session rather than several independent scenarios, avoiding repeated login and Altcha friction.
+- Clink prompts now include stronger guardrails against external links, destructive actions, exports, and secret copying.
+
+### Validation
+
+- Unit tests: `20 tests OK`.
+- A headless continuous Clink run completed authenticated navigation through Analytics, Core Metrics, Transactions, Balances, Customers, Subscriptions, Products, Developers, and Settings.
+- Key product findings from the Clink run:
+  - Altcha repeatedly expired during login, creating significant automation and user-flow friction.
+  - Developers/API Keys displayed full key values in the UI; reports must avoid copying values and product should consider masking/audit controls.
+  - Several read-only review surfaces expose prominent mutating controls such as Add, Edit, Archive, Submit Payout, Generate, Disable, and Save.
+
+### Known Limitations
+
+- `auth-session` requires a local visible browser and human action for bot checks.
+- Persistent browser profiles are local machine state and should not be committed, shared, or treated as long-term credential backups.
+- Product finding extraction is still mostly heuristic; the next step is stronger parsing of final browser-use JSON summaries into structured product issues.
+- UAT environments with Altcha/CAPTCHA should ideally provide an automation-safe bypass, allowlist, pre-auth token, or dedicated test role for reliable scheduled runs.
+
 ## v0.2.0 - 2026-06-11
 
 Status: local credential storage implemented.

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .agents.director import ResearchDirector
 from .agents.walker import BrowserUseLocalWalker, MockBrowserWalker
+from .auth_session import add_auth_session_subcommand, handle_auth_session_command
 from .config_loader import load_research_plan
 from .credentials import add_credential_subcommands, handle_credential_command
 
@@ -27,11 +28,30 @@ def main() -> None:
     )
     run_parser.add_argument("--browser-model", default=None)
     run_parser.add_argument("--browser-max-steps", type=int, default=25)
+    run_parser.add_argument(
+        "--browser-timeout-sec",
+        type=float,
+        default=600.0,
+        help="Maximum seconds per browser-use scenario. Use 0 to disable.",
+    )
+    run_parser.add_argument(
+        "--browser-user-data-dir",
+        default=None,
+        help="Browser profile directory for local browser-use runs.",
+    )
+    run_parser.add_argument(
+        "--browser-storage-state",
+        default=None,
+        help="Storage state JSON file for reusing authenticated sessions.",
+    )
+    add_auth_session_subcommand(subparsers)
     add_credential_subcommands(subparsers)
 
     args = parser.parse_args()
     if args.command == "run":
         asyncio.run(_run(args))
+    elif args.command == "auth-session":
+        handle_auth_session_command(args)
     elif args.command == "credentials":
         handle_credential_command(args)
 
@@ -41,7 +61,13 @@ async def _run(args: argparse.Namespace) -> None:
     is_browser_use = args.mode in {"browser-use", "browser-use-local"}
     concurrency = args.concurrency if args.concurrency is not None else (1 if is_browser_use else 3)
     walker = (
-        BrowserUseLocalWalker(model=args.browser_model, max_steps=args.browser_max_steps)
+        BrowserUseLocalWalker(
+            model=args.browser_model,
+            max_steps=args.browser_max_steps,
+            run_timeout_sec=args.browser_timeout_sec,
+            user_data_dir=args.browser_user_data_dir,
+            storage_state=args.browser_storage_state,
+        )
         if is_browser_use
         else MockBrowserWalker()
     )
