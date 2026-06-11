@@ -1,5 +1,13 @@
 # Version History
 
+## v0.3.1 - 2026-06-11
+
+Status: auth-session dependency fix.
+
+### Fixed
+
+- Added explicit `playwright` dependency to the `browser-use-local` extra because `prodwalk auth-session` imports Playwright directly for human-assisted login profile creation.
+
 ## v0.3.0 - 2026-06-11
 
 Status: Clink walkthrough reliability improved with human-assisted auth and one-session runs.

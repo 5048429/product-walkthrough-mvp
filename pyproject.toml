@@ -1,6 +1,6 @@
 [project]
 name = "product-walkthrough-mvp"
-version = "0.3.0"
+version = "0.3.1"
 description = "MVP multi-agent product walkthrough research system"
 requires-python = ">=3.11"
 dependencies = []
@@ -8,6 +8,7 @@ dependencies = []
 [project.optional-dependencies]
 browser-use-local = [
   "browser-use[core]>=0.13.1,<0.14",
+  "playwright>=1.40",
 ]
 dev = [
   "pytest>=8.0.0",
