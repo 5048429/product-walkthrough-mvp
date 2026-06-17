@@ -1,0 +1,406 @@
+export type RunStatus =
+  | "queued"
+  | "starting"
+  | "running"
+  | "awaiting_verification"
+  | "blocked"
+  | "finalizing"
+  | "succeeded"
+  | "failed"
+  | "canceling"
+  | "canceled";
+
+export type AgentStatus =
+  | "pending"
+  | "running"
+  | "waiting"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "canceled";
+
+export type AgentType =
+  | "director"
+  | "planner"
+  | "walker"
+  | "evidence_extractor"
+  | "product_analyst"
+  | "competitive_analyst"
+  | "reviewer"
+  | "report_writer"
+  | "evaluator"
+  | "auth_session";
+
+export type ArtifactType =
+  | "run_manifest"
+  | "plan_json"
+  | "events_jsonl"
+  | "agents_json"
+  | "artifacts_json"
+  | "evidence_json"
+  | "report_markdown"
+  | "evaluation_json"
+  | "screenshot"
+  | "browser_history"
+  | "log_text";
+
+export type EventLevel = "debug" | "info" | "warn" | "error";
+
+export type RunEventType =
+  | "run.created"
+  | "plan.loaded"
+  | "run.started"
+  | "stage.started"
+  | "stage.completed"
+  | "agent.started"
+  | "agent.status_changed"
+  | "agent.completed"
+  | "agent.failed"
+  | "scenario.started"
+  | "scenario.step.started"
+  | "scenario.step.completed"
+  | "scenario.completed"
+  | "evidence.created"
+  | "screenshot.archived"
+  | "finding.created"
+  | "artifact.created"
+  | "report.generated"
+  | "evaluation.generated"
+  | "run.awaiting_verification"
+  | "run.blocked"
+  | "run.finalizing"
+  | "run.completed"
+  | "run.failed"
+  | "run.canceled";
+
+export type ConsoleStatus = "idle" | "running" | "done" | "blocked" | "failed";
+
+export type RunMode = "mock" | "browser-use" | "unknown";
+
+export type VerificationMode = "off" | "manual";
+
+export interface RunProgress {
+  total_scenarios: number;
+  completed_scenarios: number;
+  failed_scenarios: number;
+}
+
+export interface RunParams {
+  mode: RunMode;
+  concurrency: number;
+  report_language: string;
+  browser_model?: string | null;
+  browser_max_steps?: number;
+  browser_timeout_sec?: number;
+  verification_mode?: VerificationMode;
+}
+
+export interface RunSummary {
+  id: string;
+  run_id: string;
+  status: RunStatus;
+  mode: RunMode;
+  research_goal: string;
+  run_dir: string;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  progress: RunProgress;
+  report_exists: boolean;
+  evidence_exists: boolean;
+  evaluation_exists: boolean;
+  screenshot_count: number;
+}
+
+export interface RunDetail extends RunSummary {
+  params: RunParams;
+  artifact_ids: string[];
+  error: ApiErrorLike | null;
+}
+
+export interface RunCreateRequest {
+  config_path: string | null;
+  plan: unknown | null;
+  mode: RunMode;
+  out: string;
+  concurrency: number;
+  report_language: string;
+  browser_model: string | null;
+  browser_max_steps: number;
+  browser_timeout_sec: number;
+  browser_user_data_dir: string | null;
+  browser_storage_state: string | null;
+  verification_mode: VerificationMode;
+  verification_timeout_sec: number;
+  verification_success_url_contains: string[];
+  verification_login_url_contains: string;
+}
+
+export interface AgentExecution {
+  id: string;
+  run_id: string;
+  type: AgentType;
+  status: AgentStatus;
+  label: string;
+  product: string | null;
+  scenario_id: string | null;
+  current_step: number | null;
+  started_at: string | null;
+  updated_at?: string | null;
+  completed_at: string | null;
+  metrics: Record<string, unknown>;
+  error: ApiErrorLike | null;
+}
+
+export interface Artifact {
+  id: string;
+  run_id: string;
+  type: ArtifactType;
+  title: string;
+  path: string;
+  media_type: string;
+  size_bytes: number;
+  created_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface RunEvent {
+  id: string;
+  run_id: string;
+  seq: number;
+  ts: string;
+  type: RunEventType | string;
+  level: EventLevel;
+  message: string;
+  agent_id?: string | null;
+  agent_type?: AgentType | null;
+  product?: string | null;
+  scenario_id?: string | null;
+  step_index?: number | null;
+  status?: string | null;
+  payload?: Record<string, unknown>;
+  artifact_ids?: string[];
+}
+
+export interface PlanSummary {
+  id: string;
+  name?: string;
+  path: string;
+  title: string;
+  product_count: number;
+  scenario_count: number;
+  report_language: string;
+}
+
+export interface PlanDetailResponse {
+  id: string;
+  name?: string;
+  path: string;
+  plan: unknown;
+}
+
+export interface EvidenceItem {
+  id: string;
+  product: string;
+  product_kind?: "owned" | "competitor" | string;
+  scenario_id: string;
+  scenario_title?: string;
+  kind: "observation" | "browser_run" | "browser_step" | "finding" | string;
+  status?: "pending" | "running" | "completed" | "blocked" | "failed" | "skipped" | string;
+  title: string;
+  summary: string;
+  url: string | null;
+  step_index?: number | null;
+  action?: string | null;
+  screenshot_artifact_id: string | null;
+  screenshot_artifact_ids?: string[];
+  artifact_ids?: string[];
+  finding_ids?: string[];
+  errors?: string[];
+  final_output?: string | null;
+  data?: Record<string, unknown>;
+  confidence: number;
+  created_at: string;
+}
+
+export const EVIDENCE_FOCUS_EVENT = "prodwalk:evidence-focus";
+
+export interface EvidenceFocusRequest {
+  runId?: string | null;
+  evidenceId?: string | null;
+  artifactId?: string | null;
+  sourceEventId?: string | null;
+}
+
+export interface WalkthroughResult {
+  product: string;
+  product_kind: "owned" | "competitor" | string;
+  scenario_id: string;
+  scenario_title: string;
+  status: string;
+  steps: Array<Record<string, unknown>>;
+}
+
+export interface EvidenceResponse {
+  run_id: string;
+  artifact_id: string;
+  created_at: string | null;
+  report_language: string | null;
+  results: WalkthroughResult[];
+  evidence: EvidenceItem[];
+  artifacts?: Artifact[];
+  plan?: unknown;
+  scenarios?: Array<Record<string, unknown>>;
+}
+
+export interface Evaluation {
+  overall_score: number;
+  scores: Record<string, number>;
+  notes: string[];
+}
+
+export interface EvaluationResponse extends Evaluation {
+  run_id: string;
+  artifact_id: string;
+}
+
+export interface ReportResponse {
+  run_id: string;
+  language: string | null;
+  markdown_artifact_id: string;
+  evaluation_artifact_id: string | null;
+  markdown: string;
+  evaluation: Evaluation | null;
+  generated_at: string | null;
+  artifacts?: Artifact[];
+}
+
+export interface ApiErrorPayload {
+  error: {
+    code: string;
+    message: string;
+    details: Record<string, unknown>;
+    request_id: string;
+  };
+}
+
+export interface HealthResponse {
+  ok: boolean;
+  service: string;
+  version: string;
+  time: string;
+}
+
+export type ApiErrorLike =
+  | string
+  | {
+      message?: string;
+      code?: string;
+      type?: string;
+      details?: unknown;
+      [key: string]: unknown;
+    };
+
+export interface ListResponse<T> {
+  items: T[];
+}
+
+export interface CursorListResponse<T> extends ListResponse<T> {
+  next_cursor: string | null;
+}
+
+export interface RunCreateResponse {
+  run: RunSummary;
+  run_id?: string;
+  status?: RunStatus | string;
+  created_at?: string;
+  events_url?: string;
+  report_url?: string;
+  evidence_url?: string;
+  evaluation_url?: string;
+}
+
+export interface RunDetailResponse {
+  run: RunDetail;
+}
+
+export interface EventListResponse extends ListResponse<RunEvent> {
+  last_seq: number;
+}
+
+export interface ArtifactResponse {
+  artifact: Artifact;
+}
+
+export interface RunActionResponse {
+  run_id: string;
+  status: RunStatus;
+  accepted: boolean;
+}
+
+export interface VerificationConfirmRequest {
+  confirmed: boolean;
+  note?: string | null;
+}
+
+export function toConsoleStatus(status?: RunStatus | null): ConsoleStatus {
+  if (!status) {
+    return "idle";
+  }
+
+  if (status === "succeeded") {
+    return "done";
+  }
+
+  if (status === "failed") {
+    return "failed";
+  }
+
+  if (status === "awaiting_verification" || status === "blocked" || status === "canceled") {
+    return "blocked";
+  }
+
+  return "running";
+}
+
+export function toRunStatus(status: ConsoleStatus): RunStatus {
+  if (status === "done") {
+    return "succeeded";
+  }
+
+  if (status === "blocked") {
+    return "awaiting_verification";
+  }
+
+  if (status === "failed") {
+    return "failed";
+  }
+
+  if (status === "idle") {
+    return "queued";
+  }
+
+  return "running";
+}
+
+export function formatApiError(error: ApiErrorLike | null | undefined): string | null {
+  if (!error) {
+    return null;
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  const message = typeof error.message === "string" ? error.message : null;
+  const code = typeof error.code === "string" ? error.code : null;
+  const type = typeof error.type === "string" ? error.type : null;
+  const details =
+    typeof error.details === "string"
+      ? error.details
+      : error.details
+        ? JSON.stringify(error.details)
+        : null;
+
+  return [code ?? type, message, details].filter(Boolean).join(": ") || JSON.stringify(error);
+}
