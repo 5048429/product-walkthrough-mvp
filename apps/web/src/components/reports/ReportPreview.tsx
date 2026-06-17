@@ -56,6 +56,15 @@ function getReportState(
     };
   }
 
+  if (status === "awaiting_verification" && !hasMarkdown) {
+    return {
+      kind: "error",
+      title: "Report waiting for verification",
+      message: "The browser-use run is waiting for manual verification acknowledgement before a final report is available.",
+      tone: "blocked",
+    };
+  }
+
   if (status === "blocked" && !hasMarkdown) {
     return {
       kind: "error",
@@ -218,13 +227,18 @@ export function ReportPreview({ report, artifacts, status, error, evaluationErro
                 <span>Reading the latest report.md from the API.</span>
               </div>
             ) : null}
-            {effectiveStatus === "running" || effectiveStatus === "blocked" || effectiveStatus === "failed" ? (
+            {effectiveStatus === "running" ||
+            effectiveStatus === "awaiting_verification" ||
+            effectiveStatus === "blocked" ||
+            effectiveStatus === "failed" ? (
               <div className={`partial-banner partial-banner-${effectiveStatus}`}>
                 <strong>{effectiveStatus === "running" ? "Partial report" : "Partial artifact retained"}</strong>
                 <span>
                   {effectiveStatus === "running"
                     ? "The run is still active; this preview may update when report generation completes."
-                  : "The report remains visible even though the run did not finish cleanly."}
+                    : effectiveStatus === "awaiting_verification"
+                      ? "The report remains visible while browser-use waits for manual verification acknowledgement."
+                      : "The report remains visible even though the run did not finish cleanly."}
                 </span>
               </div>
             ) : null}

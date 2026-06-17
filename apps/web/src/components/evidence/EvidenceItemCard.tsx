@@ -33,7 +33,11 @@ function normalizeStatusClass(status: string): string {
     return "done";
   }
 
-  if (status === "blocked" || status === "awaiting_verification" || status === "friction") {
+  if (status === "awaiting_verification") {
+    return "awaiting_verification";
+  }
+
+  if (status === "blocked" || status === "friction") {
     return "blocked";
   }
 

@@ -1,5 +1,6 @@
 import { StatusBadge } from "../StatusBadge";
 import type { ConsoleStatus, PlanSummary, RunDetail } from "../../types/contracts";
+import { labelMode } from "../../i18n/zh";
 
 interface TopRunContextBarProps {
   activeRun: RunDetail | null;
@@ -22,7 +23,7 @@ function formatElapsed(run: RunDetail | null): string {
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
 
-  return `${minutes}m ${remainder}s`;
+  return `${minutes}分 ${remainder}秒`;
 }
 
 function formatProgress(run: RunDetail | null): string {
@@ -45,46 +46,46 @@ export function TopRunContextBar({
   return (
     <div className="top-context-bar">
       <div className="brand-block">
-        <div className="app-title">Prodwalk PM Workbench</div>
-        <div className="app-subtitle">{selectedPlan?.title ?? "Choose a local research plan"}</div>
+        <div className="app-title">Prodwalk 产品走查工作台</div>
+        <div className="app-subtitle">{selectedPlan?.title ?? "选择一个本地走查计划"}</div>
       </div>
 
       <div className="context-grid">
         <div>
-          <span className="context-label">Plan</span>
-          <strong>{selectedPlan?.path ?? "No plan selected"}</strong>
+          <span className="context-label">计划</span>
+          <strong>{selectedPlan?.path ?? "未选择计划"}</strong>
         </div>
         <div>
-          <span className="context-label">Mode</span>
-          <strong>{activeRun?.mode ?? "mock"}</strong>
+          <span className="context-label">模式</span>
+          <strong>{labelMode(activeRun?.mode ?? "mock")}</strong>
         </div>
         <div>
-          <span className="context-label">Status</span>
+          <span className="context-label">状态</span>
           <StatusBadge status={consoleStatus} />
         </div>
         <div>
-          <span className="context-label">Progress</span>
+          <span className="context-label">进度</span>
           <strong>{formatProgress(activeRun)}</strong>
         </div>
         <div>
-          <span className="context-label">Elapsed</span>
+          <span className="context-label">耗时</span>
           <strong>{formatElapsed(activeRun)}</strong>
         </div>
         <div>
-          <span className="context-label">Run</span>
-          <strong>{activeRun?.id ?? "No active run"}</strong>
+          <span className="context-label">任务</span>
+          <strong>{activeRun?.id ?? "暂无运行任务"}</strong>
         </div>
       </div>
 
       <div className="top-actions" aria-label="Run actions">
         <button type="button" className="primary-action" onClick={onStartMock} disabled={startDisabled}>
-          Start Mock Run
+          启动模拟走查
         </button>
-        <button type="button" disabled title="Stop is not wired in this console yet.">
-          Stop
+        <button type="button" disabled title="停止功能尚未完整接入。">
+          停止
         </button>
         <button type="button" onClick={onOpenReport} disabled={!canOpenReport}>
-          Open Report
+          打开报告
         </button>
       </div>
     </div>

@@ -30,8 +30,8 @@ function getDisplayStatus(agentStatus: AgentStatus, consoleStatus: ConsoleStatus
     return "done";
   }
 
-  if (agentStatus === "waiting" && consoleStatus === "blocked") {
-    return "blocked";
+  if (agentStatus === "waiting" && (consoleStatus === "blocked" || consoleStatus === "awaiting_verification")) {
+    return consoleStatus;
   }
 
   if (agentStatus === "failed") {
@@ -46,8 +46,8 @@ function getStatusLabel(agentStatus: AgentStatus, consoleStatus: ConsoleStatus):
     return "done";
   }
 
-  if (agentStatus === "waiting" && consoleStatus === "blocked") {
-    return "blocked";
+  if (agentStatus === "waiting" && (consoleStatus === "blocked" || consoleStatus === "awaiting_verification")) {
+    return consoleStatus;
   }
 
   return agentStatus;

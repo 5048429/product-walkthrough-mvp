@@ -75,7 +75,14 @@ export type RunEventType =
   | "run.timeout"
   | "run.canceled";
 
-export type ConsoleStatus = "idle" | "running" | "done" | "blocked" | "failed" | "timeout";
+export type ConsoleStatus =
+  | "idle"
+  | "running"
+  | "awaiting_verification"
+  | "done"
+  | "blocked"
+  | "failed"
+  | "timeout";
 
 export type RunMode = "mock" | "browser-use" | "unknown";
 
@@ -395,7 +402,11 @@ export function toConsoleStatus(status?: RunStatus | null): ConsoleStatus {
     return "timeout";
   }
 
-  if (status === "awaiting_verification" || status === "blocked" || status === "canceled") {
+  if (status === "awaiting_verification") {
+    return "awaiting_verification";
+  }
+
+  if (status === "blocked" || status === "canceled") {
     return "blocked";
   }
 
@@ -407,8 +418,12 @@ export function toRunStatus(status: ConsoleStatus): RunStatus {
     return "succeeded";
   }
 
-  if (status === "blocked") {
+  if (status === "awaiting_verification") {
     return "awaiting_verification";
+  }
+
+  if (status === "blocked") {
+    return "blocked";
   }
 
   if (status === "failed") {

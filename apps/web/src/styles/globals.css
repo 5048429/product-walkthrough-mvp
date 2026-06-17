@@ -323,6 +323,7 @@ p {
 
 .result-card-grid {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
   gap: 8px;
 }
 
@@ -488,10 +489,11 @@ p {
 }
 
 .browser-basic-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(160px, 0.8fr) minmax(0, 1.2fr);
 }
 
 .browser-run-note,
+.browser-mode-summary,
 .verification-inline,
 .verification-panel {
   border: 1px solid #b9d8c8;
@@ -501,12 +503,14 @@ p {
 }
 
 .browser-run-note,
+.browser-mode-summary,
 .verification-inline {
   display: grid;
   gap: 3px;
 }
 
 .browser-run-note span,
+.browser-mode-summary span,
 .verification-inline span,
 .verification-panel span {
   color: var(--text-muted);
@@ -1090,6 +1094,10 @@ dd {
   border-left-color: var(--amber);
 }
 
+.partial-banner-awaiting_verification {
+  border-left-color: var(--amber);
+}
+
 .partial-banner-failed {
   border-left-color: var(--red);
 }
@@ -1349,6 +1357,7 @@ dd {
 }
 
 .status-blocked,
+.status-awaiting_verification,
 .status-warn,
 .status-waiting {
   color: var(--amber);

@@ -58,7 +58,11 @@ function normalizeStatusClass(status: string): string {
     return "done";
   }
 
-  if (status === "blocked" || status === "awaiting_verification" || status === "friction" || status === "waiting") {
+  if (status === "awaiting_verification") {
+    return "awaiting_verification";
+  }
+
+  if (status === "blocked" || status === "friction" || status === "waiting") {
     return "blocked";
   }
 
@@ -145,6 +149,15 @@ function getState(status: ConsoleStatus, hasEvidence: boolean, error?: string | 
       kind: "empty" as const,
       title: "Evidence collection running",
       message: "Evidence will appear here as walker and extractor stages emit items.",
+    };
+  }
+
+  if (status === "awaiting_verification" && !hasEvidence) {
+    return {
+      kind: "error" as const,
+      title: "Evidence waiting for verification",
+      message: "The browser-use run is waiting for manual verification acknowledgement before evidence.json is available.",
+      tone: "blocked" as const,
     };
   }
 
@@ -408,13 +421,18 @@ export function EvidenceList({ evidence, artifacts, status, error, loading = fal
 
       {items.length > 0 ? (
         <>
-          {(effectiveStatus === "running" || effectiveStatus === "blocked" || effectiveStatus === "failed") ? (
+          {effectiveStatus === "running" ||
+          effectiveStatus === "awaiting_verification" ||
+          effectiveStatus === "blocked" ||
+          effectiveStatus === "failed" ? (
             <div className={`partial-banner partial-banner-${effectiveStatus}`}>
               <strong>{effectiveStatus === "running" ? "Partial evidence" : "Recoverable evidence"}</strong>
               <span>
                 {effectiveStatus === "running"
                   ? "New items can arrive while the run continues."
-                  : "Available evidence remains visible for review."}
+                  : effectiveStatus === "awaiting_verification"
+                    ? "Evidence and screenshots remain visible while manual verification is recorded."
+                    : "Available evidence remains visible for review."}
               </span>
             </div>
           ) : null}

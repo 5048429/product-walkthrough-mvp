@@ -403,6 +403,73 @@ def test_browser_use_local_run_uses_walker_and_exposes_artifacts(tmp_path: Path,
     assert "run.completed" in event_types
 
 
+def test_browser_use_default_verification_off_does_not_await_verification(tmp_path: Path, monkeypatch) -> None:
+    _write_plan(tmp_path)
+    monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
+    monkeypatch.setattr(
+        runtime_module.RunRuntime,
+        "_browser_use_readiness_errors",
+        lambda self, request, *, user_data_dir, storage_state: [],
+    )
+    _FakeBrowserUseWalker.result_status = "completed"
+    _FakeBrowserUseWalker.final_output = (
+        '{"completed": true, "notable_copy": ["Login"], "manual_verification_required": true}'
+    )
+    _FakeBrowserUseWalker.errors = []
+    _FakeBrowserUseWalker.timed_out = False
+    _FakeBrowserUseWalker.screenshot_path = None
+    _FakeBrowserUseWalker.history_path = None
+
+    with _client(tmp_path) as client:
+        response = client.post(
+            "/api/runs",
+            json={"plan_name": "smoke_plan.json", "mode": "browser-use", "out": "runs"},
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+        detail = _wait_for_terminal(client, run_id)
+        events = client.get(f"/api/runs/{run_id}/events")
+
+    assert detail["params"]["verification_mode"] == "off"
+    assert detail["status"] == "succeeded"
+    assert "run.awaiting_verification" not in [event["type"] for event in events.json()["items"]]
+
+
+def test_browser_use_auto_verification_ignores_incidental_login_copy(tmp_path: Path, monkeypatch) -> None:
+    _write_plan(tmp_path)
+    monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
+    monkeypatch.setattr(
+        runtime_module.RunRuntime,
+        "_browser_use_readiness_errors",
+        lambda self, request, *, user_data_dir, storage_state: [],
+    )
+    _FakeBrowserUseWalker.result_status = "completed"
+    _FakeBrowserUseWalker.final_output = '{"completed": true, "notable_copy": ["Login", "Sign in"]}'
+    _FakeBrowserUseWalker.errors = []
+    _FakeBrowserUseWalker.timed_out = False
+    _FakeBrowserUseWalker.screenshot_path = None
+    _FakeBrowserUseWalker.history_path = None
+
+    with _client(tmp_path) as client:
+        response = client.post(
+            "/api/runs",
+            json={
+                "plan_name": "smoke_plan.json",
+                "mode": "browser-use",
+                "out": "runs",
+                "verification_mode": "auto",
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+        detail = _wait_for_terminal(client, run_id)
+        events = client.get(f"/api/runs/{run_id}/events")
+
+    assert detail["status"] == "succeeded"
+    assert "run.completed" in [event["type"] for event in events.json()["items"]]
+    assert "run.awaiting_verification" not in [event["type"] for event in events.json()["items"]]
+
+
 def test_browser_use_run_status_reflects_blocked_timeout_failed_and_verification(tmp_path: Path, monkeypatch) -> None:
     _write_plan(tmp_path)
     monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
@@ -412,6 +479,7 @@ def test_browser_use_run_status_reflects_blocked_timeout_failed_and_verification
         lambda self, request, *, user_data_dir, storage_state: [],
     )
     cases = [
+        ("succeeded", "completed", '{"completed": true}', False, [], "off", "run.completed"),
         ("blocked", "blocked", "A loading state blocked progress.", False, [], "off", "run.blocked"),
         ("timeout", "blocked", "The run timed out.", True, ["timed out"], "off", "run.timeout"),
         ("failed", "blocked", "browser-use run failed: missing model", False, ["missing model"], "off", "run.failed"),

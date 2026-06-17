@@ -42,6 +42,8 @@ function getPanelSummary(status: ConsoleStatus, agents: AgentExecution[]): strin
   switch (status) {
     case "running":
       return `${activeCount} active or waiting agent stages.`;
+    case "awaiting_verification":
+      return "A browser-use stage is waiting for manual verification acknowledgement.";
     case "done":
       return "All required agent stages completed or were skipped.";
     case "blocked":

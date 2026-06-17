@@ -1,5 +1,6 @@
 import type { AgentStatus, ConsoleStatus, EventLevel, RunStatus } from "../types/contracts";
 import { toConsoleStatus } from "../types/contracts";
+import { labelStatus } from "../i18n/zh";
 
 type StatusKind = ConsoleStatus | RunStatus | AgentStatus | EventLevel;
 
@@ -39,7 +40,7 @@ export function StatusBadge({ status, label }: StatusBadgeProps) {
 
   return (
     <span className={`status-badge status-${normalized}`}>
-      {label ?? status.replaceAll("_", " ")}
+      {label ?? labelStatus(status)}
     </span>
   );
 }

@@ -171,7 +171,7 @@ export function getMockAgentsForStatus(status: ConsoleStatus): AgentExecution[] 
     return mockAgents.map((agent) => cloneAgent(agent, agent.status === "pending" ? "skipped" : "succeeded"));
   }
 
-  if (status === "blocked") {
+  if (status === "awaiting_verification") {
     return mockAgents.map((agent) => {
       if (agent.id === "agent_director" || agent.id === "agent_planner" || agent.id === "agent_walker_our-product_onboarding") {
         return cloneAgent(agent, "succeeded");
@@ -179,6 +179,20 @@ export function getMockAgentsForStatus(status: ConsoleStatus): AgentExecution[] 
 
       if (agent.id === "agent_walker_competitor_project") {
         return cloneAgent(agent, "waiting", "Manual verification required before the competitor dashboard can continue.");
+      }
+
+      return cloneAgent(agent, "pending");
+    });
+  }
+
+  if (status === "blocked") {
+    return mockAgents.map((agent) => {
+      if (agent.id === "agent_director" || agent.id === "agent_planner") {
+        return cloneAgent(agent, "succeeded");
+      }
+
+      if (agent.id === "agent_walker_our-product_onboarding") {
+        return cloneAgent(agent, "waiting", "Environment precondition blocked this mock walkthrough.");
       }
 
       return cloneAgent(agent, "pending");

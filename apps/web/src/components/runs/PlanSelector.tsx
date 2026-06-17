@@ -12,9 +12,9 @@ export function PlanSelector({ plans, selectedPlanId, onPlanChange }: PlanSelect
   return (
     <>
       <label className="field">
-        <span>Plan</span>
+        <span>走查计划</span>
         <select value={selectedPlanId} onChange={(event) => onPlanChange(event.target.value)} disabled={plans.length === 0}>
-          {plans.length === 0 ? <option value="">No plans available</option> : null}
+          {plans.length === 0 ? <option value="">暂无可用计划</option> : null}
           {plans.map((plan) => (
             <option key={plan.id} value={plan.id}>
               {plan.path}
@@ -28,13 +28,13 @@ export function PlanSelector({ plans, selectedPlanId, onPlanChange }: PlanSelect
           <>
             <strong>{selectedPlan.title}</strong>
             <div className="metric-row">
-              <span>{selectedPlan.product_count} products</span>
-              <span>{selectedPlan.scenario_count} scenarios</span>
-              <span>{selectedPlan.report_language} report</span>
+              <span>{selectedPlan.product_count} 个产品</span>
+              <span>{selectedPlan.scenario_count} 个场景</span>
+              <span>{selectedPlan.report_language} 报告</span>
             </div>
           </>
         ) : (
-          <p className="empty-copy">No local plan selected.</p>
+          <p className="empty-copy">尚未选择本地计划。</p>
         )}
       </div>
     </>

@@ -44,8 +44,8 @@ export function RunModeSelector({
   return (
     <>
       <div className="field">
-        <span>Mode</span>
-        <div className="button-row" role="radiogroup" aria-label="Run mode">
+        <span>运行模式</span>
+        <div className="button-row" role="radiogroup" aria-label="运行模式">
           <button
             type="button"
             className={mode === "mock" ? "selected" : ""}
@@ -53,7 +53,7 @@ export function RunModeSelector({
             aria-checked={mode === "mock"}
             onClick={() => onModeChange("mock")}
           >
-            mock
+            模拟走查
           </button>
           <button
             type="button"
@@ -62,7 +62,7 @@ export function RunModeSelector({
             aria-checked={mode === "browser-use"}
             onClick={() => onModeChange("browser-use")}
           >
-            browser-use
+            真实浏览器
           </button>
         </div>
       </div>
@@ -70,48 +70,56 @@ export function RunModeSelector({
       {mode === "browser-use" ? (
         <div className="browser-use-options">
           <div className="browser-run-note">
-            <strong>Local browser run</strong>
-            <span>Headless/visible mode is controlled by the server environment (`BROWSER_USE_HEADLESS`). Manual verification may open a local Chrome/Edge window.</span>
+            <strong>真实页面测试</strong>
+            <span>后端会调用本地 Chrome/Edge 和 browser-use。公开 smoke 默认关闭人工验证；登录态或 UAT 场景可切到自动检测。</span>
           </div>
 
           <div className="form-grid browser-basic-grid">
             <label className="field">
-              <span>Browser max steps</span>
-              <input
-                type="number"
-                min="1"
-                max="200"
-                value={browserMaxSteps}
-                onChange={(event) => onBrowserMaxStepsChange(Number(event.target.value))}
-              />
-            </label>
-            <label className="field">
-              <span>Timeout seconds</span>
-              <input
-                type="number"
-                min="0"
-                max="7200"
-                value={browserTimeoutSec}
-                onChange={(event) => onBrowserTimeoutSecChange(Number(event.target.value))}
-              />
-            </label>
-            <label className="field">
-              <span>Verification mode</span>
+              <span>人工验证</span>
               <select
                 value={verificationMode}
                 onChange={(event) => onVerificationModeChange(event.target.value as VerificationMode)}
               >
-                <option value="auto">auto</option>
-                <option value="off">off</option>
+                <option value="off">关闭（公开页面推荐）</option>
+                <option value="auto">自动检测登录/验证码</option>
               </select>
             </label>
+            <div className="browser-mode-summary">
+              <strong>{verificationMode === "off" ? "公开 smoke 模式" : "登录态 / UAT 模式"}</strong>
+              <span>
+                {verificationMode === "off"
+                  ? "将以 verification_mode=off 提交，不会因为普通登录入口误判为等待验证。"
+                  : "将以 verification_mode=auto 提交，建议同时配置可复用 profile 或 storage state。"}
+              </span>
+            </div>
           </div>
 
           <details className="debug-details browser-advanced-details">
-            <summary>Advanced browser-use parameters</summary>
+            <summary>高级 browser-use 参数</summary>
             <div className="form-grid">
               <label className="field">
-                <span>User data dir</span>
+                <span>最大浏览步骤</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="200"
+                  value={browserMaxSteps}
+                  onChange={(event) => onBrowserMaxStepsChange(Number(event.target.value))}
+                />
+              </label>
+              <label className="field">
+                <span>超时时间（秒）</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="7200"
+                  value={browserTimeoutSec}
+                  onChange={(event) => onBrowserTimeoutSecChange(Number(event.target.value))}
+                />
+              </label>
+              <label className="field">
+                <span>浏览器 Profile 目录</span>
                 <input
                   value={browserUserDataDir}
                   placeholder=".prodwalk/browser-profiles/default"
@@ -119,7 +127,7 @@ export function RunModeSelector({
                 />
               </label>
               <label className="field">
-                <span>Storage state</span>
+                <span>Storage state 文件</span>
                 <input
                   value={browserStorageState}
                   placeholder=".prodwalk/browser-profiles/default/prodwalk_storage_state.json"
@@ -127,7 +135,7 @@ export function RunModeSelector({
                 />
               </label>
               <label className="field">
-                <span>Verification timeout</span>
+                <span>验证等待时间</span>
                 <input
                   type="number"
                   min="1"
@@ -137,7 +145,7 @@ export function RunModeSelector({
                 />
               </label>
               <label className="field">
-                <span>Success URL contains</span>
+                <span>成功 URL 包含</span>
                 <input
                   value={verificationSuccessUrlContains}
                   placeholder="/dashboard, /projects"
@@ -145,7 +153,7 @@ export function RunModeSelector({
                 />
               </label>
               <label className="field">
-                <span>Login URL contains</span>
+                <span>登录 URL 包含</span>
                 <input
                   value={verificationLoginUrlContains}
                   placeholder="/auth/login"

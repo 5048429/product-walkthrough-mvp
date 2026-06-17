@@ -57,34 +57,34 @@ function formatScore(value: number | null | undefined): string {
 
 function getRunMessage(status: ConsoleStatus, run: RunDetail | null): string {
   if (!run) {
-    return "Choose a plan and start a run.";
+    return "请选择计划并启动一次走查。";
   }
 
   if (run.status === "awaiting_verification") {
-    return "Browser-use is waiting for manual verification in the local browser.";
+    return "真实浏览器走查正在等待人工验证确认；已有产物仍可查看。";
   }
 
   if (status === "running") {
-    return "Agents are collecting evidence and preparing the report.";
+    return "Agent 正在收集证据并准备报告。";
   }
 
   if (status === "done") {
-    return "Run completed. Review the report and evidence below.";
+    return "走查已完成，可查看报告、证据、评分和截图。";
   }
 
   if (status === "blocked") {
-    return "Run is waiting for an operator or environment action. Available artifacts remain reviewable.";
+    return "走查受阻，需要人工处理或环境操作；已有产物仍可查看。";
   }
 
   if (status === "failed") {
-    return "Run failed. Partial artifacts and debug details are still available.";
+    return "走查失败，部分产物和调试详情仍可查看。";
   }
 
   if (status === "timeout") {
-    return "Run timed out. Partial artifacts and browser diagnostics remain available.";
+    return "走查超时，部分证据和浏览器诊断信息仍可查看。";
   }
 
-  return "Run is ready to start.";
+  return "走查可以启动。";
 }
 
 function getCurrentPhase(agents: AgentExecution[], status: ConsoleStatus): string {
@@ -101,6 +101,10 @@ function getCurrentPhase(agents: AgentExecution[], status: ConsoleStatus): strin
 
   if (status === "done") {
     return "Report and evaluation ready";
+  }
+
+  if (status === "awaiting_verification") {
+    return "Waiting for manual verification acknowledgement";
   }
 
   if (status === "timeout") {
@@ -176,11 +180,11 @@ function RunProgressPanel({
       {awaitingVerification ? (
         <div className="verification-panel">
           <div>
-            <strong>Awaiting verification</strong>
-            <span>Finish the CAPTCHA, MFA, SSO, or login checkpoint in the local browser window, then continue from here.</span>
+            <strong>等待人工验证</strong>
+            <span>请在本地可见浏览器里完成登录、验证码、MFA 或 SSO 检查点。完成后在这里记录结果；如果后端没有可继续的浏览器任务，它会明确标记为受阻。</span>
           </div>
           <button type="button" className="primary-action" disabled={confirmingVerification} onClick={onConfirmVerification}>
-            {confirmingVerification ? "Confirming..." : "我已完成验证，继续"}
+            {confirmingVerification ? "记录中..." : "记录已完成验证"}
           </button>
           {verificationError ? <p className="inline-warning">{verificationError}</p> : null}
         </div>
@@ -246,6 +250,10 @@ function ResultShortcuts({ report, evidence, evaluation, status, onViewChange }:
         <button type="button" className="result-card" onClick={() => onViewChange("report")} disabled={!evaluation}>
           <strong>Evaluation</strong>
           <span>{formatScore(evaluation?.overall_score)}</span>
+        </button>
+        <button type="button" className="result-card" onClick={() => onViewChange("evidence")} disabled={screenshotCount === 0}>
+          <strong>Screenshots</strong>
+          <span>{screenshotCount} archived screenshots</span>
         </button>
       </div>
     </section>

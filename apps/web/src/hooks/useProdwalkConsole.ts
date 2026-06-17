@@ -25,8 +25,22 @@ import type {
 import { formatApiError, toConsoleStatus, toRunStatus } from "../types/contracts";
 
 const ACTIVE_RUN_KEY = "prodwalk.activeRunId";
-const terminalRunStatuses = new Set<RunStatus>(["succeeded", "blocked", "timeout", "failed", "canceled"]);
-const terminalEventTypes = new Set(["run.completed", "run.blocked", "run.timeout", "run.failed", "run.canceled"]);
+const terminalRunStatuses = new Set<RunStatus>([
+  "succeeded",
+  "awaiting_verification",
+  "blocked",
+  "timeout",
+  "failed",
+  "canceled",
+]);
+const terminalEventTypes = new Set([
+  "run.completed",
+  "run.awaiting_verification",
+  "run.blocked",
+  "run.timeout",
+  "run.failed",
+  "run.canceled",
+]);
 const artifactEventTypes = new Set(["artifact.created", "screenshot.archived", "report.generated", "evaluation.generated"]);
 const agentStatuses = new Set<AgentStatus>([
   "pending",
@@ -127,33 +141,49 @@ function buildMockRun(status: ConsoleStatus): RunDetail | null {
     return null;
   }
 
-  const completedAt = status === "done" || status === "failed" || status === "timeout" ? "2026-06-16T08:31:16Z" : null;
+  const completedAt =
+    status === "done" ||
+    status === "awaiting_verification" ||
+    status === "blocked" ||
+    status === "failed" ||
+    status === "timeout"
+      ? "2026-06-16T08:31:16Z"
+      : null;
   const base = mockConsoleData.activeRun;
-  const progress =
-    status === "done"
-      ? {
-          ...base.progress,
-          completed_scenarios: base.progress.total_scenarios,
-        }
-      : status === "failed"
-        ? {
-            ...base.progress,
-            completed_scenarios: 0,
-            failed_scenarios: 1,
-          }
-        : status === "blocked"
-          ? {
-              ...base.progress,
-              completed_scenarios: 1,
-              failed_scenarios: 0,
-            }
-          : status === "timeout"
-            ? {
-                ...base.progress,
-                completed_scenarios: 1,
-                failed_scenarios: 1,
-              }
-          : base.progress;
+  const progress = (() => {
+    if (status === "done") {
+      return {
+        ...base.progress,
+        completed_scenarios: base.progress.total_scenarios,
+      };
+    }
+
+    if (status === "failed") {
+      return {
+        ...base.progress,
+        completed_scenarios: 0,
+        failed_scenarios: 1,
+      };
+    }
+
+    if (status === "awaiting_verification" || status === "blocked") {
+      return {
+        ...base.progress,
+        completed_scenarios: 1,
+        failed_scenarios: 0,
+      };
+    }
+
+    if (status === "timeout") {
+      return {
+        ...base.progress,
+        completed_scenarios: 1,
+        failed_scenarios: 1,
+      };
+    }
+
+    return base.progress;
+  })();
 
   return {
     ...base,
@@ -165,8 +195,10 @@ function buildMockRun(status: ConsoleStatus): RunDetail | null {
         ? "Mock adapter reported a simulated failure."
         : status === "timeout"
           ? "Mock browser-use preview timed out while waiting for a walkthrough result."
+        : status === "awaiting_verification"
+          ? "Manual verification required before browser-use can be acknowledged."
         : status === "blocked"
-          ? "Manual verification required before continuing browser-use flow."
+          ? "Mock adapter reported an environment blocker."
           : null,
   };
 }
@@ -950,7 +982,7 @@ export function useProdwalkConsole() {
       const isBrowserUse = options.mode === "browser-use";
       const browserMaxSteps = options.browserMaxSteps ?? 25;
       const browserTimeoutSec = options.browserTimeoutSec ?? 600;
-      const verificationMode = isBrowserUse ? options.verificationMode ?? "auto" : "off";
+      const verificationMode = isBrowserUse ? options.verificationMode ?? "off" : "off";
       const verificationTimeoutSec = options.verificationTimeoutSec ?? 300;
       const verificationSuccessUrlContains = options.verificationSuccessUrlContains ?? [];
       const verificationLoginUrlContains = options.verificationLoginUrlContains || "/auth/login";

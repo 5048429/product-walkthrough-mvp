@@ -1878,6 +1878,19 @@ class RunRuntime:
         lower_text = text.lower()
         if self._browser_results_timed_out(results) or any(marker in lower_text for marker in ("timed out", "run timed out")):
             return "timeout", {"message": "One or more browser-use walkthroughs timed out.", "type": "timeout"}
+
+        verification_mode = str(record.get("params", {}).get("verification_mode") or "off")
+        verification_signal = self._browser_manual_verification_signal(payload, record.get("params", {}))
+        if verification_mode != "off" and verification_signal is not None:
+            return (
+                "awaiting_verification",
+                {
+                    "message": "Browser-use reported that manual verification is required.",
+                    "type": "awaiting_verification",
+                    "details": verification_signal,
+                },
+            )
+
         if any(result.get("status") == "failed" for result in results if isinstance(result, dict)) or any(
             marker in lower_text
             for marker in (
@@ -1889,27 +1902,148 @@ class RunRuntime:
         ):
             return "failed", {"message": "One or more browser-use walkthroughs failed.", "type": "failed"}
 
-        verification_mode = str(record.get("params", {}).get("verification_mode") or "off")
-        auth_markers = (
-            "manual_verification_required",
-            "verification expired",
-            "authentication is required",
-            "login failed",
-            "login did not complete",
-            "no authenticated dashboard",
-            "/auth/login",
-        )
-        if verification_mode != "off" and any(marker in lower_text for marker in auth_markers):
-            return (
-                "awaiting_verification",
-                {
-                    "message": "Browser-use reported that manual verification is required.",
-                    "type": "awaiting_verification",
-                },
-            )
         if any(result.get("status") == "blocked" for result in results if isinstance(result, dict)):
             return "blocked", {"message": "One or more browser-use walkthroughs are blocked.", "type": "blocked"}
         return "succeeded", None
+
+    def _browser_manual_verification_signal(
+        self,
+        payload: dict[str, Any],
+        params: Any,
+    ) -> dict[str, Any] | None:
+        params = params if isinstance(params, dict) else {}
+        text = self._browser_status_text(payload)
+        lower_text = text.lower()
+
+        manual_signal = self._manual_verification_text_signal(lower_text)
+        if manual_signal:
+            return manual_signal
+
+        challenge_signal = self._browser_challenge_text_signal(lower_text)
+        if challenge_signal:
+            return challenge_signal
+
+        success_seen = self._verification_success_seen(payload, params, lower_text)
+        login_url_signal = self._browser_login_url_signal(payload, params, lower_text)
+        if login_url_signal and not success_seen:
+            return login_url_signal
+
+        login_text_signal = self._browser_login_text_signal(lower_text)
+        if login_text_signal and not success_seen:
+            return login_text_signal
+
+        return None
+
+    def _manual_verification_text_signal(self, lower_text: str) -> dict[str, Any] | None:
+        true_pattern = r"manual[_\s-]?verification[_\s-]?required\s*[:=]\s*(?:true|yes|1|required)\b"
+        if re.search(true_pattern, lower_text):
+            return {"signal": "manual_verification_required"}
+
+        false_pattern = r"manual[_\s-]?verification[_\s-]?required\s*[:=]\s*(?:false|no|0)\b"
+        if re.search(false_pattern, lower_text):
+            return None
+
+        if "manual_verification_required" in lower_text or re.search(
+            r"\bmanual\s+verification\s+(?:is\s+)?required\b",
+            lower_text,
+        ):
+            return {"signal": "manual_verification_required"}
+        return None
+
+    def _browser_challenge_text_signal(self, lower_text: str) -> dict[str, Any] | None:
+        challenge_patterns = {
+            "captcha": r"\b(?:captcha|hcaptcha|recaptcha|altcha)\b",
+            "mfa": r"\b(?:mfa|2fa|two[-\s]?factor|multi[-\s]?factor|one[-\s]?time\s+passcode|otp)\b",
+        }
+        for signal, pattern in challenge_patterns.items():
+            if re.search(pattern, lower_text):
+                return {"signal": signal}
+        return None
+
+    def _browser_login_url_signal(
+        self,
+        payload: dict[str, Any],
+        params: dict[str, Any],
+        lower_text: str,
+    ) -> dict[str, Any] | None:
+        marker = str(params.get("verification_login_url_contains") or "").strip().lower()
+        if not marker:
+            return None
+        for url in self._browser_observed_urls(payload):
+            if marker in url.lower():
+                return {"signal": "login_url", "verification_login_url_contains": marker}
+        if marker in lower_text:
+            return {"signal": "login_url", "verification_login_url_contains": marker}
+        return None
+
+    def _browser_login_text_signal(self, lower_text: str) -> dict[str, Any] | None:
+        login_patterns = (
+            r"\b(?:login|log\s+in|sign\s+in|signin)\s+(?:is\s+)?(?:required|needed|blocked|failed)\b",
+            r"\b(?:required|needed)\s+to\s+(?:login|log\s+in|sign\s+in)\b",
+            r"\b(?:redirected|sent|returned)\s+(?:back\s+)?to\s+(?:the\s+)?(?:login|log\s+in|sign\s+in)(?:\s+page)?\b",
+            r"\b(?:login|log\s+in|sign\s+in|signin)\s+(?:page|screen|form)\b",
+            r"\blogin\s+did\s+not\s+complete\b",
+        )
+        for pattern in login_patterns:
+            if re.search(pattern, lower_text):
+                return {"signal": "login_required"}
+        return None
+
+    def _verification_success_seen(
+        self,
+        payload: dict[str, Any],
+        params: dict[str, Any],
+        lower_text: str,
+    ) -> bool:
+        raw_markers = params.get("verification_success_url_contains")
+        if isinstance(raw_markers, str):
+            markers = [raw_markers]
+        elif isinstance(raw_markers, list):
+            markers = [str(marker) for marker in raw_markers if str(marker).strip()]
+        else:
+            markers = []
+        if not markers:
+            return False
+
+        observed_urls = [url.lower() for url in self._browser_observed_urls(payload)]
+        for marker in markers:
+            normalized = marker.strip().lower()
+            if not normalized:
+                continue
+            if any(normalized in url for url in observed_urls) or normalized in lower_text:
+                return True
+        return False
+
+    def _browser_observed_urls(self, payload: dict[str, Any]) -> list[str]:
+        urls: list[str] = []
+
+        def append(value: Any) -> None:
+            if isinstance(value, str) and value.strip():
+                urls.append(value.strip())
+
+        results = payload.get("results") if isinstance(payload.get("results"), list) else []
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            for step in result.get("steps") or []:
+                if isinstance(step, dict):
+                    append(step.get("url"))
+            for item in result.get("evidence") or []:
+                self._append_browser_item_urls(urls, item)
+        for item in payload.get("evidence") or []:
+            self._append_browser_item_urls(urls, item)
+        return urls
+
+    def _append_browser_item_urls(self, urls: list[str], item: Any) -> None:
+        if not isinstance(item, dict):
+            return
+        url = item.get("url")
+        if isinstance(url, str) and url.strip():
+            urls.append(url.strip())
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        values = data.get("urls")
+        if isinstance(values, list):
+            urls.extend(str(value).strip() for value in values if str(value).strip())
 
     def _browser_results_timed_out(self, results: list[Any]) -> bool:
         for result in results:

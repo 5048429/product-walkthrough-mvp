@@ -25,6 +25,7 @@ const stages: StageDefinition[] = [
 const statusTone: Record<ConsoleStatus, string> = {
   idle: "#627083",
   running: "#2458d3",
+  awaiting_verification: "#a56300",
   done: "#1f8a5f",
   blocked: "#a56300",
   failed: "#ba2d2d",
@@ -45,7 +46,7 @@ function getStageStatus(stageAgents: AgentExecution[], consoleStatus: ConsoleSta
   }
 
   if (stageAgents.some((agent) => agent.status === "waiting")) {
-    return consoleStatus === "blocked" ? "blocked" : "running";
+    return consoleStatus === "blocked" || consoleStatus === "awaiting_verification" ? consoleStatus : "running";
   }
 
   if (stageAgents.every((agent) => agent.status === "succeeded" || agent.status === "skipped")) {

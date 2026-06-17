@@ -11,10 +11,19 @@ import type {
   VerificationMode,
 } from "../../types/contracts";
 import { formatApiError } from "../../types/contracts";
+import { labelMode } from "../../i18n/zh";
 import { PlanSelector } from "./PlanSelector";
 import { RunModeSelector } from "./RunModeSelector";
 
-const consoleStates: ConsoleStatus[] = ["idle", "running", "done", "blocked", "failed", "timeout"];
+const consoleStates: ConsoleStatus[] = [
+  "idle",
+  "running",
+  "awaiting_verification",
+  "done",
+  "blocked",
+  "failed",
+  "timeout",
+];
 
 interface RunStartPanelProps {
   source: ConsoleDataSource;
@@ -34,24 +43,26 @@ interface RunStartPanelProps {
 
 function getStateCopy(status: ConsoleStatus, source: ConsoleDataSource): string {
   if (source === "mock") {
-    return "Mock fallback is active. The UI is previewing local fixtures because the API is unavailable.";
+    return "当前处于离线预览。API 不可用时，界面会展示本地示例数据。";
   }
 
   switch (status) {
     case "idle":
-      return "No active run. Select a local plan before starting.";
+      return "暂无运行任务。请选择一个本地走查计划。";
     case "running":
-      return "Run is active. Agent status and events are updating from API events.";
+      return "任务正在运行，Agent 状态和事件会实时更新。";
+    case "awaiting_verification":
+      return "真实浏览器走查等待人工验证确认；已有证据、截图和诊断产物仍可查看。";
     case "done":
-      return "Run completed. Report, evidence, and evaluation artifacts are available.";
+      return "任务已完成，报告、证据和评分都可以查看。";
     case "blocked":
-      return "Run is blocked by manual verification. Partial evidence remains reviewable.";
+      return "任务需要人工处理或环境操作；已有产物仍可查看。";
     case "failed":
-      return "Run failed. Existing events and partial artifacts remain visible.";
+      return "任务失败；已有事件和部分产物仍会保留。";
     case "timeout":
-      return "Run timed out. Partial evidence and diagnostics remain visible.";
+      return "任务超时；已有证据和诊断信息仍可查看。";
     default:
-      return "Unknown run state.";
+      return "未知任务状态。";
   }
 }
 
@@ -86,7 +97,7 @@ export function RunStartPanel({
   const [browserTimeoutSec, setBrowserTimeoutSec] = useState(600);
   const [browserUserDataDir, setBrowserUserDataDir] = useState("");
   const [browserStorageState, setBrowserStorageState] = useState("");
-  const [verificationMode, setVerificationMode] = useState<VerificationMode>("auto");
+  const [verificationMode, setVerificationMode] = useState<VerificationMode>("off");
   const [verificationTimeoutSec, setVerificationTimeoutSec] = useState(300);
   const [verificationSuccessUrlContains, setVerificationSuccessUrlContains] = useState("");
   const [verificationLoginUrlContains, setVerificationLoginUrlContains] = useState("/auth/login");
@@ -166,7 +177,7 @@ export function RunStartPanel({
       setConcurrency(3);
     } else {
       setConcurrency(1);
-      setVerificationMode("auto");
+      setVerificationMode("off");
     }
   }
 
@@ -175,17 +186,17 @@ export function RunStartPanel({
       <div className="panel-header">
         <div>
           <h2 id="run-start-title">Start a Run</h2>
-          <p>Select a plan, choose mock or browser-use, and start the review workflow.</p>
+          <p>选择计划和运行模式，然后启动产品走查。</p>
         </div>
         <StatusBadge status={consoleStatus} />
       </div>
 
       {source === "mock" ? (
         <div className="source-banner source-banner-mock">
-          <strong>Offline preview</strong>
-          <span>{errors.initial ?? "Using local fixtures while the API is unavailable."}</span>
+          <strong>离线预览</strong>
+          <span>{errors.initial ?? "API 不可用，当前使用本地示例数据。"}</span>
           <button type="button" onClick={onRetryApi}>
-            Retry API
+            重试 API
           </button>
         </div>
       ) : null}
@@ -193,11 +204,11 @@ export function RunStartPanel({
       {errors.start ? <p className="inline-warning">{errors.start}</p> : null}
 
       <PlanSelector plans={plans} selectedPlanId={selectedPlanId} onPlanChange={onPlanChange} />
-      {loading.planDetail ? <p className="loading-line">Loading plan detail...</p> : null}
+      {loading.planDetail ? <p className="loading-line">正在读取计划详情...</p> : null}
       {errors.planDetail ? <p className="inline-warning">{errors.planDetail}</p> : null}
       {selectedPlanDetail ? (
         <div className="plan-detail-line">
-          Plan detail loaded from <strong>{selectedPlanDetail.path}</strong>
+          已读取计划：<strong>{selectedPlanDetail.path}</strong>
         </div>
       ) : null}
 
@@ -231,17 +242,17 @@ export function RunStartPanel({
             handleModeChange(mode);
           }}
         >
-          {loading.start ? "Starting..." : isBrowserUse ? "Start Browser-use Run" : "Start Mock Run"}
+          {loading.start ? "启动中..." : isBrowserUse ? "启动真实页面测试" : "启动模拟走查"}
         </button>
-        <button type="button" disabled title="Stop is not wired in this console yet.">
-          Stop
+        <button type="button" disabled title="停止功能尚未完整接入。">
+          停止
         </button>
       </div>
 
       <div className="active-summary">
-        <div className="section-title">Current Run</div>
+        <div className="section-title">当前任务</div>
         {loading.activeRun && !activeRun ? (
-          <p className="empty-copy">Loading active run...</p>
+          <p className="empty-copy">正在加载当前任务...</p>
         ) : activeRun ? (
           <>
             <div className="run-id">{activeRun.id}</div>
@@ -250,40 +261,40 @@ export function RunStartPanel({
               <div style={{ width: `${completion}%` }} />
             </div>
             <div className="metric-row">
-              <span>{activeRun.progress.completed_scenarios}/{activeRun.progress.total_scenarios} complete</span>
-              <span>{activeRun.progress.failed_scenarios} failed</span>
-              <span>{activeRun.mode}</span>
+              <span>{activeRun.progress.completed_scenarios}/{activeRun.progress.total_scenarios} 已完成</span>
+              <span>{activeRun.progress.failed_scenarios} 个失败</span>
+              <span>{labelMode(activeRun.mode)}</span>
             </div>
             {activeRun.status === "awaiting_verification" ? (
               <div className="verification-inline">
-                <strong>Awaiting verification</strong>
-                <span>Complete the visible browser checkpoint, then use the continue button in Current Run Status.</span>
+                <strong>等待人工验证</strong>
+                <span>请在可见浏览器窗口完成登录、验证码或 MFA，然后回到当前任务区域记录验证结果。</span>
               </div>
             ) : null}
             {activeRunError ? <p className="inline-warning">{activeRunError}</p> : null}
           </>
         ) : (
-          <p className="empty-copy">No run context is active.</p>
+          <p className="empty-copy">暂无运行中的任务。</p>
         )}
       </div>
 
       <details className="debug-details">
-        <summary>Details / Debug</summary>
+        <summary>详情 / 调试</summary>
         <div className={`source-banner source-banner-${source}`}>
-          <strong>{source === "api" ? "API connected" : "Mock fallback"}</strong>
+          <strong>{source === "api" ? "API 已连接" : "离线示例"}</strong>
           <span>
             {source === "api"
-              ? `${health?.service ?? "prodwalk-server"} ${health?.version ?? ""}`.trim() || "Using real FastAPI data."
-              : errors.initial ?? "Using local mock fixtures."}
+              ? `${health?.service ?? "prodwalk-server"} ${health?.version ?? ""}`.trim() || "正在使用 FastAPI 真实数据。"
+              : errors.initial ?? "正在使用本地示例数据。"}
           </span>
           <button type="button" onClick={onRetryApi}>
-            Retry API
+            重试 API
           </button>
         </div>
 
         <div className="form-grid">
           <label className="field">
-            <span>Concurrency</span>
+            <span>并发数</span>
             <input
               type="number"
               min="1"
@@ -294,10 +305,10 @@ export function RunStartPanel({
             />
           </label>
           <label className="field">
-            <span>Report language</span>
+            <span>报告语言</span>
             <select value={reportLanguage} onChange={(event) => setReportLanguage(event.target.value)}>
-              <option value="zh">zh</option>
-              <option value="en">en</option>
+              <option value="zh">中文</option>
+              <option value="en">英文</option>
             </select>
           </label>
         </div>
@@ -318,7 +329,7 @@ export function RunStartPanel({
         ) : null}
 
         <div className="plan-summary">
-          <div className="section-title">{source === "api" ? "API request" : "Mock request"}</div>
+          <div className="section-title">{source === "api" ? "API 请求" : "模拟请求"}</div>
           <dl className="detail-list">
             {Object.entries(launchPayload).map(([key, value]) => (
               <div key={key}>

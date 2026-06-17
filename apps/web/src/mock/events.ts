@@ -261,12 +261,46 @@ export function getMockEventsForStatus(status: ConsoleStatus): RunEvent[] {
     return mockEvents.filter((event) => event.run_id === runId && event.seq <= 10);
   }
 
-  if (status === "blocked") {
+  if (status === "awaiting_verification") {
     return mockEvents.filter((event) => event.run_id === runId && event.seq <= 11);
+  }
+
+  if (status === "blocked") {
+    return mockEvents
+      .filter((event) => event.run_id === runId && event.seq <= 10)
+      .concat({
+        id: "evt_mock_blocked",
+        run_id: runId,
+        seq: 11,
+        ts: "2026-06-16T08:31:10Z",
+        type: "run.blocked",
+        level: "warn",
+        message: "Mock run blocked by an environment precondition",
+        status: "blocked",
+        payload: { reason: "environment_precondition" },
+        artifact_ids: ["art_evidence_json"],
+      });
   }
 
   if (status === "done") {
     return mockEvents.filter((event) => event.run_id === runId && event.seq <= 15);
+  }
+
+  if (status === "timeout") {
+    return mockEvents
+      .filter((event) => event.run_id === runId && event.seq <= 10)
+      .concat({
+        id: "evt_mock_timeout",
+        run_id: runId,
+        seq: 11,
+        ts: "2026-06-16T08:31:10Z",
+        type: "run.timeout",
+        level: "error",
+        message: "Mock browser-use preview timed out",
+        status: "timeout",
+        payload: { timeout_sec: 600 },
+        artifact_ids: ["art_evidence_json"],
+      });
   }
 
   return mockEvents.filter((event) => event.run_id === runId && event.seq <= 10).concat(
