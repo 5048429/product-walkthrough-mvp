@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from prodwalk.models import EvidenceItem, ProductTarget, Scenario, WalkStep, WalkthroughResult, utc_now
 from prodwalk.server import runtime as runtime_module
 from prodwalk.server.app import create_app
 
@@ -74,10 +75,90 @@ def _wait_for_terminal(client: TestClient, run_id: str) -> dict:
         detail_response = client.get(f"/api/runs/{run_id}")
         assert detail_response.status_code == 200
         detail = detail_response.json()["run"]
-        if detail["status"] in {"succeeded", "failed", "canceled"}:
+        if detail["status"] in {"succeeded", "blocked", "timeout", "failed", "awaiting_verification", "canceled"}:
             return detail
         time.sleep(0.05)
     return detail
+
+
+class _FakeBrowserUseWalker:
+    result_status = "completed"
+    final_output = '{"completed": true}'
+    errors: list[str] = []
+    timed_out = False
+    screenshot_path: str | None = None
+    history_path: str | None = None
+    init_args: dict | None = None
+
+    def __init__(
+        self,
+        model: str | None = None,
+        max_steps: int = 25,
+        run_timeout_sec: float | None = None,
+        user_data_dir: str | None = None,
+        storage_state: str | None = None,
+    ) -> None:
+        self.__class__.init_args = {
+            "model": model,
+            "max_steps": max_steps,
+            "run_timeout_sec": run_timeout_sec,
+            "user_data_dir": user_data_dir,
+            "storage_state": storage_state,
+        }
+
+    async def walk(self, product: ProductTarget, scenario: Scenario) -> WalkthroughResult:
+        evidence_id = f"ev-{scenario.id}-browser-use"
+        data = {
+            "mode": "browser-use-local",
+            "final_output": self.final_output,
+            "timed_out": self.timed_out,
+            "errors": list(self.errors),
+            "user_data_dir": "C:/secret/profile",
+            "storage_state": "C:/secret/state.json",
+        }
+        if self.screenshot_path:
+            data["screenshot_paths"] = [self.screenshot_path]
+        if self.history_path:
+            data["history_file"] = self.history_path
+
+        step_status = "passed" if self.result_status == "completed" else "blocked"
+        started_at = utc_now()
+        return WalkthroughResult(
+            product=product.name,
+            product_kind=product.kind,
+            scenario_id=scenario.id,
+            scenario_title=scenario.title,
+            status=self.result_status,
+            started_at=started_at,
+            completed_at=utc_now(),
+            steps=[
+                WalkStep(
+                    index=1,
+                    action="Run browser-use task",
+                    status=step_status,
+                    observation=self.final_output,
+                    url=product.url,
+                    screenshot=self.screenshot_path,
+                    evidence_ids=[evidence_id],
+                )
+            ],
+            evidence=[
+                EvidenceItem(
+                    id=evidence_id,
+                    product=product.name,
+                    scenario_id=scenario.id,
+                    kind="browser_run",
+                    title="browser-use run",
+                    summary=self.final_output,
+                    url=product.url,
+                    screenshot=self.screenshot_path,
+                    data=data,
+                    confidence=0.8,
+                )
+            ],
+            metrics={"step_count": 1, "timed_out": self.timed_out},
+            errors=list(self.errors),
+        )
 
 
 def test_health_succeeds(tmp_path: Path) -> None:
@@ -168,6 +249,207 @@ def test_post_runs_starts_mock_run_and_artifacts_are_readable(tmp_path: Path) ->
         assert listed["evidence_exists"] is True
         assert listed["evaluation_exists"] is True
         assert listed["screenshot_count"] == 0
+
+
+def test_browser_use_mode_unavailable_returns_clear_error(tmp_path: Path, monkeypatch) -> None:
+    _write_plan(tmp_path)
+    monkeypatch.setattr(
+        runtime_module.RunRuntime,
+        "_browser_use_readiness_errors",
+        lambda self, request, *, user_data_dir, storage_state: ["browser-use is not installed"],
+    )
+
+    with _client(tmp_path) as client:
+        response = client.post(
+            "/api/runs",
+            json={"plan_name": "smoke_plan.json", "mode": "browser-use", "out": "runs"},
+        )
+
+    assert response.status_code == 503
+    payload = response.json()["error"]
+    assert payload["code"] == "BROWSER_USE_UNAVAILABLE"
+    assert "browser-use mode is not ready" in payload["message"]
+    assert payload["details"]["errors"] == ["browser-use is not installed"]
+
+
+def test_browser_use_parameter_validation_rejects_bad_values(tmp_path: Path) -> None:
+    _write_plan(tmp_path)
+    with _client(tmp_path) as client:
+        concurrency_response = client.post(
+            "/api/runs",
+            json={"plan_name": "smoke_plan.json", "mode": "browser-use", "concurrency": 2},
+        )
+        steps_response = client.post(
+            "/api/runs",
+            json={"plan_name": "smoke_plan.json", "mode": "browser-use", "browser_max_steps": 0},
+        )
+        path_response = client.post(
+            "/api/runs",
+            json={
+                "plan_name": "smoke_plan.json",
+                "mode": "browser-use",
+                "browser_user_data_dir": str(tmp_path.parent / "outside-profile"),
+            },
+        )
+        verification_response = client.post(
+            "/api/runs",
+            json={"plan_name": "smoke_plan.json", "mode": "browser-use", "verification_mode": "sometimes"},
+        )
+
+    assert concurrency_response.status_code == 400
+    assert "concurrency 1" in concurrency_response.json()["error"]["message"]
+    assert steps_response.status_code == 400
+    assert "browser_max_steps" in steps_response.json()["error"]["message"]
+    assert path_response.status_code == 400
+    assert "browser_user_data_dir" in path_response.json()["error"]["message"]
+    assert verification_response.status_code == 400
+    assert "verification_mode" in verification_response.json()["error"]["message"]
+
+
+def test_browser_use_local_run_uses_walker_and_exposes_artifacts(tmp_path: Path, monkeypatch) -> None:
+    _write_plan(tmp_path)
+    external_dir = tmp_path / "external-browser-use"
+    external_dir.mkdir()
+    screenshot_path = external_dir / "shot.png"
+    screenshot_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    history_path = external_dir / "browser_use_history_fake.json"
+    history_path.write_text(
+        json.dumps(
+            {
+                "history": [{"state": {"url": "https://example.test", "screenshot_path": str(screenshot_path)}}],
+                "user_data_dir": "C:/secret/profile",
+                "storage_state": "C:/secret/state.json",
+            }
+        ),
+        encoding="utf-8",
+    )
+    _FakeBrowserUseWalker.result_status = "completed"
+    _FakeBrowserUseWalker.final_output = '{"completed": true}'
+    _FakeBrowserUseWalker.errors = []
+    _FakeBrowserUseWalker.timed_out = False
+    _FakeBrowserUseWalker.screenshot_path = str(screenshot_path)
+    _FakeBrowserUseWalker.history_path = str(history_path)
+    _FakeBrowserUseWalker.init_args = None
+    monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
+    monkeypatch.setattr(
+        runtime_module.RunRuntime,
+        "_browser_use_readiness_errors",
+        lambda self, request, *, user_data_dir, storage_state: [],
+    )
+
+    with _client(tmp_path) as client:
+        response = client.post(
+            "/api/runs",
+            json={
+                "plan_name": "smoke_plan.json",
+                "mode": "browser-use-local",
+                "out": "runs",
+                "browser_model": "gpt-test",
+                "browser_max_steps": 7,
+                "browser_timeout_sec": 12,
+                "browser_user_data_dir": ".prodwalk/browser-profiles/test",
+                "browser_storage_state": ".prodwalk/browser-profiles/test/state.json",
+                "verification_mode": "manual",
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+        detail = _wait_for_terminal(client, run_id)
+        artifacts = client.get(f"/api/runs/{run_id}/artifacts")
+        evidence = client.get(f"/api/runs/{run_id}/evidence")
+        report = client.get(f"/api/runs/{run_id}/report")
+        evaluation = client.get(f"/api/runs/{run_id}/evaluation")
+        events = client.get(f"/api/runs/{run_id}/events")
+
+        artifact_items = artifacts.json()["items"]
+        history_artifact = next(item for item in artifact_items if item["type"] == "browser_history")
+        history_content = client.get(f"/api/runs/{run_id}/artifacts/{history_artifact['id']}/content")
+
+    assert detail["status"] == "succeeded"
+    assert detail["params"]["mode"] == "browser-use-local"
+    assert detail["params"]["concurrency"] == 1
+    assert detail["params"]["verification_mode"] == "auto"
+    assert detail["params"]["browser_user_data_dir_configured"] is True
+    assert detail["params"]["browser_storage_state_configured"] is True
+    assert _FakeBrowserUseWalker.init_args == {
+        "model": "gpt-test",
+        "max_steps": 7,
+        "run_timeout_sec": 12.0,
+        "user_data_dir": str((tmp_path / ".prodwalk/browser-profiles/test").resolve()),
+        "storage_state": str((tmp_path / ".prodwalk/browser-profiles/test/state.json").resolve()),
+    }
+    assert artifacts.status_code == 200
+    assert {item["type"] for item in artifact_items} >= {
+        "report_markdown",
+        "evidence_json",
+        "evaluation_json",
+        "screenshot",
+        "browser_history",
+    }
+    assert evidence.status_code == 200
+    evidence_item = evidence.json()["evidence"][0]
+    assert evidence_item["screenshot_artifact_id"]
+    assert evidence_item["screenshot_artifact_ids"] == [evidence_item["screenshot_artifact_id"]]
+    assert "user_data_dir" not in evidence_item["data"]
+    assert "storage_state" not in evidence_item["data"]
+    assert "history_file" not in evidence_item["data"]
+    assert evidence_item["data"]["browser_history_artifact_id"] == history_artifact["id"]
+    assert report.status_code == 200
+    assert evaluation.status_code == 200
+    assert history_content.status_code == 200
+    assert "C:/secret" not in history_content.text
+    event_types = [event["type"] for event in events.json()["items"]]
+    assert "artifact.created" in event_types
+    assert "run.completed" in event_types
+
+
+def test_browser_use_run_status_reflects_blocked_timeout_failed_and_verification(tmp_path: Path, monkeypatch) -> None:
+    _write_plan(tmp_path)
+    monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
+    monkeypatch.setattr(
+        runtime_module.RunRuntime,
+        "_browser_use_readiness_errors",
+        lambda self, request, *, user_data_dir, storage_state: [],
+    )
+    cases = [
+        ("blocked", "blocked", "A loading state blocked progress.", False, [], "off", "run.blocked"),
+        ("timeout", "blocked", "The run timed out.", True, ["timed out"], "off", "run.timeout"),
+        ("failed", "blocked", "browser-use run failed: missing model", False, ["missing model"], "off", "run.failed"),
+        (
+            "awaiting_verification",
+            "blocked",
+            "manual_verification_required: true",
+            False,
+            ["manual_verification_required"],
+            "auto",
+            "run.awaiting_verification",
+        ),
+    ]
+
+    with _client(tmp_path) as client:
+        for expected_status, result_status, final_output, timed_out, errors, verification_mode, event_type in cases:
+            _FakeBrowserUseWalker.result_status = result_status
+            _FakeBrowserUseWalker.final_output = final_output
+            _FakeBrowserUseWalker.timed_out = timed_out
+            _FakeBrowserUseWalker.errors = errors
+            _FakeBrowserUseWalker.screenshot_path = None
+            _FakeBrowserUseWalker.history_path = None
+            response = client.post(
+                "/api/runs",
+                json={
+                    "plan_name": "smoke_plan.json",
+                    "mode": "browser-use",
+                    "out": "runs",
+                    "verification_mode": verification_mode,
+                },
+            )
+            assert response.status_code == 200
+            run_id = response.json()["run_id"]
+            detail = _wait_for_terminal(client, run_id)
+            events = client.get(f"/api/runs/{run_id}/events")
+
+            assert detail["status"] == expected_status
+            assert event_type in [event["type"] for event in events.json()["items"]]
 
 
 def test_plan_name_path_traversal_is_rejected(tmp_path: Path) -> None:

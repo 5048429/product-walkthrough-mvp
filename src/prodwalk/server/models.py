@@ -11,6 +11,7 @@ RunStatus = Literal[
     "running",
     "awaiting_verification",
     "blocked",
+    "timeout",
     "finalizing",
     "succeeded",
     "failed",

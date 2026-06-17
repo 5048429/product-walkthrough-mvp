@@ -96,13 +96,13 @@ export function EvidenceItemCard({ item, result, artifacts, runId, selected = fa
         <ScreenshotPreview artifactId={primaryScreenshotId} artifacts={artifacts} runId={runId} alt={item.title} />
         {screenshotIds.length > 1 ? (
           <div className="artifact-strip">
-            {screenshotIds.slice(1).map((artifactId) => (
+            {screenshotIds.slice(1).map((artifactId, index) => (
                 <ArtifactLink
                   key={artifactId}
                   artifactId={artifactId}
                   artifacts={artifacts}
                   runId={runId}
-                  label={artifactId}
+                  label={`Screenshot ${index + 2}`}
                 />
               ))}
           </div>

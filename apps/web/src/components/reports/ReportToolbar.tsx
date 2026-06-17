@@ -50,30 +50,32 @@ export function ReportToolbar({
         <span>{formatGeneratedAt(report?.generated_at)}</span>
       </div>
 
-      <div className="artifact-strip">
-        <ArtifactLink
-          artifactId={report?.markdown_artifact_id}
-          artifacts={resolvedArtifacts}
-          runId={report?.run_id}
-          label="report.md"
-          disabledReason={report ? undefined : "Report artifact is not ready"}
-        />
-        <ArtifactLink
-          artifactId={report?.evaluation_artifact_id}
-          artifacts={resolvedArtifacts}
-          runId={report?.run_id}
-          label="evaluation.json"
-          disabledReason={report?.evaluation_artifact_id ? undefined : "Evaluation artifact is unavailable"}
-        />
-      </div>
-
-      <div className="toolbar-meta">
+      <div className="toolbar-meta report-primary-actions">
         <button type="button" onClick={onCopyMarkdown} disabled={!canCopy}>
           {copyButtonLabel(copyState)}
         </button>
-        <button type="button" onClick={onDownloadMarkdown} disabled={!canDownload}>
-          Download report.md
-        </button>
+        <details className="toolbar-details">
+          <summary>More</summary>
+          <div className="artifact-strip">
+            <button type="button" onClick={onDownloadMarkdown} disabled={!canDownload}>
+              Download report.md
+            </button>
+            <ArtifactLink
+              artifactId={report?.markdown_artifact_id}
+              artifacts={resolvedArtifacts}
+              runId={report?.run_id}
+              label="Open report source"
+              disabledReason={report ? undefined : "Report artifact is not ready"}
+            />
+            <ArtifactLink
+              artifactId={report?.evaluation_artifact_id}
+              artifacts={resolvedArtifacts}
+              runId={report?.run_id}
+              label="Open evaluation JSON"
+              disabledReason={report?.evaluation_artifact_id ? undefined : "Evaluation artifact is unavailable"}
+            />
+          </div>
+        </details>
       </div>
     </div>
   );

@@ -8,6 +8,30 @@ Pipeline:
 
 The default `mock` walker validates orchestration without opening a browser. The local `browser-use` walker controls a local Chrome/Edge browser for real walkthroughs.
 
+## Local Web Console
+
+The Phase 6 local Web Console is available under `apps/web`. It provides a simplified PM-facing dashboard for selecting plans, starting mock or browser-use runs, watching run progress, and reading report/evidence/evaluation artifacts.
+
+Start the FastAPI backend:
+
+```powershell
+pip install -e ".[server]"
+python -m uvicorn prodwalk.server.app:app --host 127.0.0.1 --port 8000
+```
+
+Start the frontend:
+
+```powershell
+cd apps/web
+npm install
+$env:VITE_API_BASE_URL="http://127.0.0.1:8000"
+npm run dev -- --host 127.0.0.1 --port 5173
+```
+
+Open `http://127.0.0.1:5173/`. If port `8000` is occupied by an older backend, start the current backend on another port, for example `8001`, and set `VITE_API_BASE_URL` to the same port before starting Vite.
+
+The most stable Web Console path is currently `mock` mode with `examples/smoke_plan.json`. Browser-use can be submitted from the UI and has been smoke-tested against a public page, but it may still finish as `awaiting_verification`; full resumable human-verification continuation remains follow-up work. See `docs/frontend_console_zh.md` for the Chinese operator guide and current limitations.
+
 ## Key Files
 
 - `src/prodwalk/cli.py`: command entry point.

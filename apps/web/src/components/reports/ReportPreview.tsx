@@ -172,7 +172,7 @@ export function ReportPreview({ report, artifacts, status, error, evaluationErro
       <div className="panel-header report-header">
         <div>
           <h2 id="report-preview-title">Report Preview</h2>
-          <p>{report ? `${report.markdown_artifact_id} / ${report.language}` : "No report artifact selected"}</p>
+          <p>{report ? `Markdown report / ${report.language ?? "default language"}` : "No report selected"}</p>
         </div>
       </div>
 

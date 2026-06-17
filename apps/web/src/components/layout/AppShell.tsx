@@ -2,20 +2,18 @@ import type { ReactNode } from "react";
 
 interface AppShellProps {
   topBar: ReactNode;
-  left: ReactNode;
-  main: ReactNode;
-  right: ReactNode;
-  bottom: ReactNode;
+  navigation: ReactNode;
+  children: ReactNode;
 }
 
-export function AppShell({ topBar, left, main, right, bottom }: AppShellProps) {
+export function AppShell({ topBar, navigation, children }: AppShellProps) {
   return (
-    <div className="app-shell">
+    <div className="app-shell app-shell-workbench">
       <header className="top-region">{topBar}</header>
-      <aside className="left-region">{left}</aside>
-      <main className="main-region">{main}</main>
-      <aside className="right-region">{right}</aside>
-      <section className="bottom-region">{bottom}</section>
+      <nav className="nav-region" aria-label="Console views">
+        {navigation}
+      </nav>
+      <main className="workspace-region">{children}</main>
     </div>
   );
 }

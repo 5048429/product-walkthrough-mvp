@@ -34,6 +34,7 @@ const runStatuses = new Set<RunStatus>([
   "running",
   "awaiting_verification",
   "blocked",
+  "timeout",
   "finalizing",
   "succeeded",
   "failed",
@@ -172,7 +173,11 @@ function normalizeRunStatus(value: unknown): RunStatus {
 }
 
 function normalizeRunMode(value: unknown): RunMode {
-  return value === "mock" || value === "browser-use" ? value : "unknown";
+  if (value === "mock" || value === "browser-use") {
+    return value;
+  }
+
+  return value === "browser-use-local" ? "browser-use" : "unknown";
 }
 
 function normalizeAgentStatus(value: unknown): AgentStatus {
@@ -216,6 +221,7 @@ function normalizeRunSummary(value: unknown): RunSummary {
 
 function normalizeRunParams(value: unknown): RunParams {
   const raw = asRecord(value);
+  const verificationMode = raw.verification_mode === "auto" || raw.verification_mode === "manual" ? "auto" : "off";
 
   return {
     mode: normalizeRunMode(raw.mode),
@@ -224,7 +230,12 @@ function normalizeRunParams(value: unknown): RunParams {
     browser_model: asNullableString(raw.browser_model),
     browser_max_steps: asNumber(raw.browser_max_steps, 25),
     browser_timeout_sec: asNumber(raw.browser_timeout_sec, 600),
-    verification_mode: raw.verification_mode === "manual" ? "manual" : "off",
+    browser_user_data_dir: asNullableString(raw.browser_user_data_dir),
+    browser_storage_state: asNullableString(raw.browser_storage_state),
+    verification_mode: verificationMode,
+    verification_timeout_sec: asNumber(raw.verification_timeout_sec, 300),
+    verification_success_url_contains: asStringArray(raw.verification_success_url_contains),
+    verification_login_url_contains: asString(raw.verification_login_url_contains, "/auth/login"),
   };
 }
 

@@ -4,6 +4,7 @@ export type RunStatus =
   | "running"
   | "awaiting_verification"
   | "blocked"
+  | "timeout"
   | "finalizing"
   | "succeeded"
   | "failed"
@@ -71,13 +72,14 @@ export type RunEventType =
   | "run.finalizing"
   | "run.completed"
   | "run.failed"
+  | "run.timeout"
   | "run.canceled";
 
-export type ConsoleStatus = "idle" | "running" | "done" | "blocked" | "failed";
+export type ConsoleStatus = "idle" | "running" | "done" | "blocked" | "failed" | "timeout";
 
 export type RunMode = "mock" | "browser-use" | "unknown";
 
-export type VerificationMode = "off" | "manual";
+export type VerificationMode = "off" | "auto";
 
 export interface RunProgress {
   total_scenarios: number;
@@ -92,7 +94,12 @@ export interface RunParams {
   browser_model?: string | null;
   browser_max_steps?: number;
   browser_timeout_sec?: number;
+  browser_user_data_dir?: string | null;
+  browser_storage_state?: string | null;
   verification_mode?: VerificationMode;
+  verification_timeout_sec?: number;
+  verification_success_url_contains?: string[];
+  verification_login_url_contains?: string;
 }
 
 export interface RunSummary {
@@ -301,6 +308,34 @@ export type ApiErrorLike =
       [key: string]: unknown;
     };
 
+function stringifyErrorDetail(value: unknown): string | null {
+  if (!value) {
+    return null;
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => stringifyErrorDetail(item)).filter(Boolean).join("; ") || null;
+  }
+
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const errors = stringifyErrorDetail(record.errors);
+    const reason = stringifyErrorDetail(record.reason);
+    const message = stringifyErrorDetail(record.message);
+    const type = stringifyErrorDetail(record.type);
+    const path = stringifyErrorDetail(record.path);
+    const compact = [type, message ?? reason, path].filter(Boolean).join(": ");
+
+    return errors ?? (compact || JSON.stringify(record));
+  }
+
+  return String(value);
+}
+
 export interface ListResponse<T> {
   items: T[];
 }
@@ -356,6 +391,10 @@ export function toConsoleStatus(status?: RunStatus | null): ConsoleStatus {
     return "failed";
   }
 
+  if (status === "timeout") {
+    return "timeout";
+  }
+
   if (status === "awaiting_verification" || status === "blocked" || status === "canceled") {
     return "blocked";
   }
@@ -374,6 +413,10 @@ export function toRunStatus(status: ConsoleStatus): RunStatus {
 
   if (status === "failed") {
     return "failed";
+  }
+
+  if (status === "timeout") {
+    return "timeout";
   }
 
   if (status === "idle") {
@@ -395,12 +438,7 @@ export function formatApiError(error: ApiErrorLike | null | undefined): string |
   const message = typeof error.message === "string" ? error.message : null;
   const code = typeof error.code === "string" ? error.code : null;
   const type = typeof error.type === "string" ? error.type : null;
-  const details =
-    typeof error.details === "string"
-      ? error.details
-      : error.details
-        ? JSON.stringify(error.details)
-        : null;
+  const details = stringifyErrorDetail(error.details);
 
   return [code ?? type, message, details].filter(Boolean).join(": ") || JSON.stringify(error);
 }

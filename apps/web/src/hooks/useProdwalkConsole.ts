@@ -25,8 +25,8 @@ import type {
 import { formatApiError, toConsoleStatus, toRunStatus } from "../types/contracts";
 
 const ACTIVE_RUN_KEY = "prodwalk.activeRunId";
-const terminalRunStatuses = new Set<RunStatus>(["succeeded", "failed", "canceled"]);
-const terminalEventTypes = new Set(["run.completed", "run.failed", "run.canceled"]);
+const terminalRunStatuses = new Set<RunStatus>(["succeeded", "blocked", "timeout", "failed", "canceled"]);
+const terminalEventTypes = new Set(["run.completed", "run.blocked", "run.timeout", "run.failed", "run.canceled"]);
 const artifactEventTypes = new Set(["artifact.created", "screenshot.archived", "report.generated", "evaluation.generated"]);
 const agentStatuses = new Set<AgentStatus>([
   "pending",
@@ -44,8 +44,14 @@ export interface StartRunOptions {
   mode: RunMode;
   concurrency: number;
   reportLanguage: string;
-  browserMaxSteps: number;
-  verificationMode: VerificationMode;
+  browserMaxSteps?: number;
+  browserTimeoutSec?: number;
+  browserUserDataDir?: string | null;
+  browserStorageState?: string | null;
+  verificationMode?: VerificationMode;
+  verificationTimeoutSec?: number;
+  verificationSuccessUrlContains?: string[];
+  verificationLoginUrlContains?: string;
 }
 
 export interface ConsoleLoadingState {
@@ -61,6 +67,7 @@ export interface ConsoleLoadingState {
   historyReport: boolean;
   historyEvidence: boolean;
   historyEvaluation: boolean;
+  verification: boolean;
 }
 
 export interface ConsoleErrorState {
@@ -76,6 +83,7 @@ export interface ConsoleErrorState {
   historyReport: string | null;
   historyEvidence: string | null;
   historyEvaluation: string | null;
+  verification: string | null;
 }
 
 function readStoredActiveRunId(): string | null {
@@ -100,7 +108,11 @@ function storeActiveRunId(runId: string | null): void {
 
 function errorMessage(error: unknown): string {
   if (error instanceof ProdwalkApiError) {
-    return `${error.code}: ${error.message}`;
+    return formatApiError({
+      code: error.code,
+      message: error.message,
+      details: error.details,
+    }) ?? `${error.code}: ${error.message}`;
   }
 
   return error instanceof Error ? error.message : "Unknown API error.";
@@ -115,7 +127,7 @@ function buildMockRun(status: ConsoleStatus): RunDetail | null {
     return null;
   }
 
-  const completedAt = status === "done" || status === "failed" ? "2026-06-16T08:31:16Z" : null;
+  const completedAt = status === "done" || status === "failed" || status === "timeout" ? "2026-06-16T08:31:16Z" : null;
   const base = mockConsoleData.activeRun;
   const progress =
     status === "done"
@@ -135,6 +147,12 @@ function buildMockRun(status: ConsoleStatus): RunDetail | null {
               completed_scenarios: 1,
               failed_scenarios: 0,
             }
+          : status === "timeout"
+            ? {
+                ...base.progress,
+                completed_scenarios: 1,
+                failed_scenarios: 1,
+              }
           : base.progress;
 
   return {
@@ -145,6 +163,8 @@ function buildMockRun(status: ConsoleStatus): RunDetail | null {
     error:
       status === "failed"
         ? "Mock adapter reported a simulated failure."
+        : status === "timeout"
+          ? "Mock browser-use preview timed out while waiting for a walkthrough result."
         : status === "blocked"
           ? "Manual verification required before continuing browser-use flow."
           : null,
@@ -315,6 +335,10 @@ function statusFromRunEvent(event: RunEvent): RunStatus | null {
     return "failed";
   }
 
+  if (event.type === "run.timeout") {
+    return "timeout";
+  }
+
   if (event.type === "run.canceled") {
     return "canceled";
   }
@@ -407,6 +431,7 @@ export function useProdwalkConsole() {
     historyReport: false,
     historyEvidence: false,
     historyEvaluation: false,
+    verification: false,
   });
   const [errors, setErrors] = useState<ConsoleErrorState>({
     initial: null,
@@ -421,6 +446,7 @@ export function useProdwalkConsole() {
     historyReport: null,
     historyEvidence: null,
     historyEvaluation: null,
+    verification: null,
   });
 
   const eventSeqsRef = useRef(new Set<number>());
@@ -487,6 +513,7 @@ export function useProdwalkConsole() {
         historyReport: false,
         historyEvidence: false,
         historyEvaluation: false,
+        verification: false,
       });
       updateErrors({
         initial: reason,
@@ -500,6 +527,7 @@ export function useProdwalkConsole() {
         historyReport: null,
         historyEvidence: null,
         historyEvaluation: null,
+        verification: null,
       });
     },
     [updateErrors, updateLoading],
@@ -899,15 +927,14 @@ export function useProdwalkConsole() {
 
   const startRun = useCallback(
     async (options: StartRunOptions) => {
-      updateErrors({ start: null });
-
-      if (options.mode !== "mock") {
-        updateErrors({ start: "Browser-use runs are gated until the backend exposes the browser-use API path." });
-        return;
-      }
+      updateErrors({ start: null, verification: null });
 
       if (source === "mock") {
-        activateMockFallback("Mock fallback preview is active because the API is not connected.", "running");
+        if (options.mode === "mock") {
+          activateMockFallback("Mock fallback preview is active because the API is not connected.", "running");
+        } else {
+          updateErrors({ start: "Browser-use runs require the FastAPI backend. Reconnect the API before starting a local browser run." });
+        }
         return;
       }
 
@@ -920,22 +947,31 @@ export function useProdwalkConsole() {
 
       updateLoading({ start: true });
 
+      const isBrowserUse = options.mode === "browser-use";
+      const browserMaxSteps = options.browserMaxSteps ?? 25;
+      const browserTimeoutSec = options.browserTimeoutSec ?? 600;
+      const verificationMode = isBrowserUse ? options.verificationMode ?? "auto" : "off";
+      const verificationTimeoutSec = options.verificationTimeoutSec ?? 300;
+      const verificationSuccessUrlContains = options.verificationSuccessUrlContains ?? [];
+      const verificationLoginUrlContains = options.verificationLoginUrlContains || "/auth/login";
+      const concurrency = isBrowserUse ? 1 : options.concurrency;
+
       const request: RunCreateRequest = {
         config_path: planPath,
         plan: null,
-        mode: "mock",
+        mode: isBrowserUse ? "browser-use" : "mock",
         out: "runs",
-        concurrency: options.concurrency,
+        concurrency,
         report_language: options.reportLanguage,
         browser_model: null,
-        browser_max_steps: options.browserMaxSteps,
-        browser_timeout_sec: 600,
-        browser_user_data_dir: null,
-        browser_storage_state: null,
-        verification_mode: options.verificationMode,
-        verification_timeout_sec: 300,
-        verification_success_url_contains: [],
-        verification_login_url_contains: "/auth/login",
+        browser_max_steps: browserMaxSteps,
+        browser_timeout_sec: browserTimeoutSec,
+        browser_user_data_dir: options.browserUserDataDir?.trim() || null,
+        browser_storage_state: options.browserStorageState?.trim() || null,
+        verification_mode: verificationMode,
+        verification_timeout_sec: verificationTimeoutSec,
+        verification_success_url_contains: verificationSuccessUrlContains,
+        verification_login_url_contains: verificationLoginUrlContains,
       };
 
       try {
@@ -951,13 +987,18 @@ export function useProdwalkConsole() {
         setActiveRun({
           ...response.run,
           params: {
-            mode: "mock",
-            concurrency: options.concurrency,
+            mode: request.mode,
+            concurrency,
             report_language: options.reportLanguage,
             browser_model: null,
-            browser_max_steps: options.browserMaxSteps,
-            browser_timeout_sec: 600,
-            verification_mode: options.verificationMode,
+            browser_max_steps: browserMaxSteps,
+            browser_timeout_sec: browserTimeoutSec,
+            browser_user_data_dir: request.browser_user_data_dir,
+            browser_storage_state: request.browser_storage_state,
+            verification_mode: verificationMode,
+            verification_timeout_sec: verificationTimeoutSec,
+            verification_success_url_contains: verificationSuccessUrlContains,
+            verification_login_url_contains: verificationLoginUrlContains,
           },
           artifact_ids: [],
           error: null,
@@ -991,6 +1032,73 @@ export function useProdwalkConsole() {
       updateLoading,
     ],
   );
+
+  const confirmVerification = useCallback(async () => {
+    updateErrors({ verification: null });
+
+    if (source === "mock") {
+      setMockStatus("running");
+      setActiveRun((current) => (current ? { ...current, status: "running", error: null } : current));
+      setEvents(mockConsoleData.getEventsForStatus("running"));
+      return;
+    }
+
+    if (!activeRunId) {
+      updateErrors({ verification: "No active run is waiting for verification." });
+      return;
+    }
+
+    updateLoading({ verification: true });
+
+    try {
+      const response = await prodwalkApi.confirmVerification(activeRunId, {
+        confirmed: true,
+        note: "Confirmed from the web console.",
+      });
+
+      setActiveRun((current) =>
+        current
+          ? {
+              ...current,
+              status: response.status,
+              error:
+                response.status === "blocked"
+                  ? {
+                      code: "VERIFICATION_RECORDED_BUT_BLOCKED",
+                      message: "Verification was recorded, but the backend no longer has a waiting browser task to continue.",
+                    }
+                  : current.error,
+            }
+          : current,
+      );
+
+      if (response.status === "blocked") {
+        updateErrors({
+          verification:
+            "Verification was recorded, but the backend reported this run as blocked. Check Details for the latest auth-session event.",
+        });
+      }
+
+      const eventResult = await prodwalkApi.getEvents(activeRunId, lastSeqRef.current, 100);
+      const fresh = appendEvents(eventResult.items);
+      handleFreshEvents(fresh);
+      void loadRun(activeRunId);
+      void refreshRunHistory();
+    } catch (error) {
+      updateErrors({ verification: errorMessage(error) });
+    } finally {
+      updateLoading({ verification: false });
+    }
+  }, [
+    activeRunId,
+    appendEvents,
+    handleFreshEvents,
+    loadRun,
+    refreshRunHistory,
+    source,
+    updateErrors,
+    updateLoading,
+  ]);
 
   const selectRun = useCallback(
     (runId: string) => {
@@ -1106,6 +1214,7 @@ export function useProdwalkConsole() {
     errors,
     mockStatus,
     startRun,
+    confirmVerification,
     selectRun,
     clearHistorySelection,
     refreshRunHistory,
@@ -1120,6 +1229,6 @@ export function useProdwalkConsole() {
     viewedReportLoading,
     viewedEvidenceLoading,
     viewedEvaluationLoading,
-    runError: formatApiError(activeRun?.error) ?? errors.activeRun,
+    runError: formatApiError(activeRun?.error),
   };
 }

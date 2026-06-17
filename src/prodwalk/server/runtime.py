@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib.util
 import json
 import mimetypes
+import os
 import re
+import shutil
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,7 +17,7 @@ from urllib.parse import quote
 
 from prodwalk.agents.director import ResearchDirector
 from prodwalk.agents.planner import ScenarioPlanner
-from prodwalk.agents.walker import MockBrowserWalker
+from prodwalk.agents.walker import BrowserUseLocalWalker, BrowserWalker, MockBrowserWalker
 from prodwalk.config_loader import ConfigError, parse_research_plan
 from prodwalk.events import RunEvent as PipelineRunEvent
 from prodwalk.models import ResearchPlan, normalize_report_language, to_jsonable, utc_now
@@ -59,6 +62,16 @@ class PlanBundle:
     raw: dict[str, Any]
 
 
+@dataclass(slots=True)
+class RunExecutionOptions:
+    mode: str
+    concurrency: int
+    report_language: str
+    browser_user_data_dir: str | None = None
+    browser_storage_state: str | None = None
+    verification_mode: str = "off"
+
+
 PIPELINE_AGENT_TYPES = {
     "ResearchDirector": "director",
     "ScenarioPlanner": "planner",
@@ -78,7 +91,8 @@ PIPELINE_ARTIFACT_IDS = {
 }
 
 AGENT_TERMINAL_STATUSES = {"succeeded", "failed", "skipped", "canceled"}
-RUN_TERMINAL_STATUSES = {"succeeded", "failed", "canceled"}
+RUN_TERMINAL_STATUSES = {"succeeded", "blocked", "timeout", "failed", "canceled"}
+BROWSER_USE_MODES = {"browser-use", "browser-use-local"}
 IMAGE_MEDIA_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -152,23 +166,26 @@ class PipelineEventAdapter:
         await self.runtime.append_event(
             self.run_id,
             "stage.started",
-            "Mock research pipeline started",
+            "Research pipeline started",
             agent_id="agent_director",
             agent_type="director",
             status="running",
         )
 
     async def _run_completed(self, event: PipelineRunEvent) -> None:
+        self.runtime._postprocess_run_outputs(self.run_id, self.run_dir)
         progress = self.runtime._progress_from_evidence(self.run_dir / "evidence.json")
         artifacts = self.runtime._refresh_artifacts(self.run_id)
         artifact_ids = [artifact["id"] for artifact in artifacts]
+        final_status, final_error = self.runtime._final_status_from_evidence(self.run_id, self.run_dir)
         completed_at = event.created_at
         self.runtime._update_run(
             self.run_id,
-            status="succeeded",
+            status=final_status,
             completed_at=completed_at,
             progress=progress,
             artifact_ids=artifact_ids,
+            error=final_error,
         )
         self.runtime._upsert_agent(
             self.run_id,
@@ -181,20 +198,40 @@ class PipelineEventAdapter:
         await self.runtime.append_event(
             self.run_id,
             "stage.completed",
-            "Mock research pipeline completed",
+            "Research pipeline completed",
             agent_id="agent_director",
             agent_type="director",
             status="finalizing",
             payload={"progress": progress},
         )
+        for artifact in artifacts:
+            if artifact.get("type") != "browser_history":
+                continue
+            await self.runtime.append_event(
+                self.run_id,
+                "artifact.created",
+                "Browser history archived",
+                agent_id="agent_director",
+                agent_type="director",
+                status="finalizing",
+                payload={
+                    "artifact_type": "browser_history",
+                    "artifact_path": artifact.get("path"),
+                },
+                artifact_ids=[str(artifact["id"])],
+            )
+        terminal_event_type = self.runtime._terminal_event_type(final_status)
+        terminal_level = "info" if final_status == "succeeded" else ("error" if final_status == "failed" else "warn")
+        terminal_message = event.message if final_status == "succeeded" and event.message else self.runtime._terminal_message(final_status)
         await self.runtime.append_event(
             self.run_id,
-            "run.completed",
-            event.message or "Run completed",
+            terminal_event_type,
+            terminal_message,
+            level=terminal_level,
             agent_id="agent_director",
             agent_type="director",
-            status="succeeded",
-            payload=dict(event.data),
+            status=final_status,
+            payload={**dict(event.data), "final_status": final_status, "error": final_error},
             artifact_ids=artifact_ids,
         )
         self.terminal_emitted = True
@@ -374,6 +411,7 @@ class RunRuntime:
         self._runs: dict[str, dict[str, Any]] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._subscribers: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
+        self._active_browser_run_id: str | None = None
         self._lock = asyncio.Lock()
 
     def list_plans(self) -> PlanListResponse:
@@ -408,18 +446,9 @@ class RunRuntime:
         return PlanDetailResponse(id=rel_path, name=bundle.name, path=rel_path, plan=bundle.raw)
 
     async def start_run(self, request: RunStartRequest) -> RunStartResponse:
-        if request.mode != "mock":
-            raise ApiError(400, "BAD_REQUEST", "Only mock mode is supported by the first backend API version.")
-        if request.concurrency is not None and request.concurrency < 1:
-            raise ApiError(400, "BAD_REQUEST", "concurrency must be greater than or equal to 1.")
-
+        mode = self._normalize_run_mode(request.mode)
         bundle = self._resolve_request_plan(request)
         out_root = self._resolve_output_root(request.out)
-        run_id = self._new_run_id()
-        run_dir = out_root / run_id
-        run_dir.mkdir(parents=True, exist_ok=False)
-
-        created_at = utc_now()
         scenarios = ScenarioPlanner().plan(bundle.plan)
         total_scenarios = len(bundle.plan.products) * len(scenarios)
         try:
@@ -430,11 +459,33 @@ class RunRuntime:
             )
         except ValueError as exc:
             raise ApiError(400, "BAD_REQUEST", str(exc), {"report_language": request.report_language}) from exc
-        params = self._request_params(request, report_language=report_language)
+
+        options = self._execution_options(request, mode=mode, report_language=report_language)
+        if mode in BROWSER_USE_MODES:
+            self._ensure_no_active_browser_use_run()
+            readiness_errors = self._browser_use_readiness_errors(
+                request,
+                user_data_dir=options.browser_user_data_dir,
+                storage_state=options.browser_storage_state,
+            )
+            if readiness_errors:
+                raise ApiError(
+                    503,
+                    "BROWSER_USE_UNAVAILABLE",
+                    "browser-use mode is not ready on this server.",
+                    {"errors": readiness_errors},
+                )
+
+        run_id = self._new_run_id()
+        run_dir = out_root / run_id
+        run_dir.mkdir(parents=True, exist_ok=False)
+
+        created_at = utc_now()
+        params = self._request_params(request, options=options)
         run = {
             "id": run_id,
             "status": "queued",
-            "mode": request.mode,
+            "mode": mode,
             "research_goal": bundle.plan.research_goal,
             "run_dir": self._relative_path(run_dir),
             "created_at": created_at,
@@ -458,7 +509,9 @@ class RunRuntime:
         self._runs[run_id] = {"run": run, "run_dir": run_dir, "last_seq": 0}
         await self.append_event(run_id, "run.created", "Run created", status="queued")
         self._refresh_artifacts(run_id)
-        task = asyncio.create_task(self._execute_mock_run(run_id, bundle.plan, run_dir, request))
+        if mode in BROWSER_USE_MODES:
+            self._active_browser_run_id = run_id
+        task = asyncio.create_task(self._execute_run(run_id, bundle.plan, run_dir, request, options))
         self._tasks[run_id] = task
 
         summary = self._summary_from_record(run)
@@ -539,7 +592,8 @@ class RunRuntime:
         state = self._state_for_run(run_id)
         status = str(state["run"].get("status") or "running")
         if confirmed and status == "awaiting_verification":
-            status = "running"
+            task = self._tasks.get(run_id)
+            status = "running" if task is not None and not task.done() else "blocked"
             self._update_run(run_id, status=status)
         await self.append_event(
             run_id,
@@ -596,7 +650,7 @@ class RunRuntime:
             status = str(self._record_for_run(run_id).get("status") or "")
         except ApiError:
             return True
-        return status in RUN_TERMINAL_STATUSES
+        return status in RUN_TERMINAL_STATUSES or status == "awaiting_verification"
 
     def list_artifacts(self, run_id: str) -> list[Artifact]:
         run_dir = self._run_dir_for_id(run_id)
@@ -814,6 +868,7 @@ class RunRuntime:
                         screenshot_artifact_id = self._screenshot_artifact_id(screenshot_path, screenshot_map)
                         if screenshot_artifact_id:
                             break
+            screenshot_artifact_ids = self._screenshot_artifact_ids(item, data, screenshot_map)
 
             errors = data.get("errors")
             if not isinstance(errors, list):
@@ -834,6 +889,7 @@ class RunRuntime:
                     "step_index": context.get("step_index"),
                     "action": data.get("action") or context.get("action"),
                     "screenshot_artifact_id": screenshot_artifact_id,
+                    "screenshot_artifact_ids": screenshot_artifact_ids,
                     "confidence": item.get("confidence"),
                     "created_at": item.get("created_at"),
                     "errors": errors,
@@ -925,6 +981,26 @@ class RunRuntime:
             return screenshot_map[name]
         return None
 
+    def _screenshot_artifact_ids(
+        self,
+        item: dict[str, Any],
+        data: dict[str, Any],
+        screenshot_map: dict[str, str],
+    ) -> list[str]:
+        refs: list[Any] = [item.get("screenshot"), data.get("screenshot_path")]
+        screenshot_paths = data.get("screenshot_paths")
+        if isinstance(screenshot_paths, list):
+            refs.extend(screenshot_paths)
+        seen: set[str] = set()
+        artifact_ids: list[str] = []
+        for ref in refs:
+            artifact_id = self._screenshot_artifact_id(ref, screenshot_map)
+            if not artifact_id or artifact_id in seen:
+                continue
+            seen.add(artifact_id)
+            artifact_ids.append(artifact_id)
+        return artifact_ids
+
     async def append_event(
         self,
         run_id: str,
@@ -970,34 +1046,38 @@ class RunRuntime:
             queue.put_nowait(event)
         return event
 
-    async def _execute_mock_run(
+    async def _execute_run(
         self,
         run_id: str,
         plan: ResearchPlan,
         run_dir: Path,
         request: RunStartRequest,
+        options: RunExecutionOptions,
     ) -> None:
         adapter = PipelineEventAdapter(self, run_id, run_dir)
         try:
-            report_language = request.report_language or plan.report_language
+            walker = self._walker_for_options(request, options)
             director = ResearchDirector(
-                walker=MockBrowserWalker(),
-                concurrency=request.concurrency or 3,
-                report_language=report_language,
+                walker=walker,
+                concurrency=options.concurrency,
+                report_language=options.report_language,
                 event_sink=adapter,
             )
             await director.run(plan, run_dir)
             if not adapter.terminal_emitted:
+                self._postprocess_run_outputs(run_id, run_dir)
                 progress = self._progress_from_evidence(run_dir / "evidence.json")
                 artifacts = self._refresh_artifacts(run_id)
                 artifact_ids = [artifact["id"] for artifact in artifacts]
+                final_status, final_error = self._final_status_from_evidence(run_id, run_dir)
                 completed_at = utc_now()
                 self._update_run(
                     run_id,
-                    status="succeeded",
+                    status=final_status,
                     completed_at=completed_at,
                     progress=progress,
                     artifact_ids=artifact_ids,
+                    error=final_error,
                 )
                 self._upsert_agent(
                     run_id,
@@ -1006,7 +1086,15 @@ class RunRuntime:
                     started_at=adapter.started_at,
                     completed_at=completed_at,
                 )
-                await self.append_event(run_id, "run.completed", "Run completed", status="succeeded")
+                await self.append_event(
+                    run_id,
+                    self._terminal_event_type(final_status),
+                    self._terminal_message(final_status),
+                    level="info" if final_status == "succeeded" else ("error" if final_status == "failed" else "warn"),
+                    status=final_status,
+                    payload={"final_status": final_status, "error": final_error},
+                    artifact_ids=artifact_ids,
+                )
         except Exception as exc:  # noqa: BLE001 - surfaced through run status and events.
             if not adapter.terminal_emitted:
                 completed_at = utc_now()
@@ -1021,6 +1109,225 @@ class RunRuntime:
                     status="failed",
                     payload=error,
                 )
+        finally:
+            if self._active_browser_run_id == run_id:
+                self._active_browser_run_id = None
+
+    async def _execute_mock_run(
+        self,
+        run_id: str,
+        plan: ResearchPlan,
+        run_dir: Path,
+        request: RunStartRequest,
+    ) -> None:
+        options = self._execution_options(
+            request,
+            mode="mock",
+            report_language=normalize_report_language(request.report_language or plan.report_language),
+        )
+        await self._execute_run(run_id, plan, run_dir, request, options)
+
+    def _walker_for_options(self, request: RunStartRequest, options: RunExecutionOptions) -> BrowserWalker:
+        if options.mode in BROWSER_USE_MODES:
+            return BrowserUseLocalWalker(
+                model=request.browser_model,
+                max_steps=request.browser_max_steps,
+                run_timeout_sec=request.browser_timeout_sec,
+                user_data_dir=options.browser_user_data_dir,
+                storage_state=options.browser_storage_state,
+            )
+        return MockBrowserWalker()
+
+    def _normalize_run_mode(self, mode: str) -> str:
+        normalized = (mode or "mock").strip().lower()
+        if normalized not in {"mock", *BROWSER_USE_MODES}:
+            raise ApiError(
+                400,
+                "BAD_REQUEST",
+                "mode must be one of: mock, browser-use, browser-use-local.",
+                {"mode": mode},
+            )
+        return normalized
+
+    def _normalize_verification_mode(self, mode: str | None) -> str:
+        normalized = (mode or "off").strip().lower()
+        if normalized == "manual":
+            return "auto"
+        if normalized not in {"auto", "off"}:
+            raise ApiError(
+                400,
+                "BAD_REQUEST",
+                "verification_mode must be auto, off, or manual.",
+                {"verification_mode": mode},
+            )
+        return normalized
+
+    def _execution_options(
+        self,
+        request: RunStartRequest,
+        *,
+        mode: str,
+        report_language: str,
+    ) -> RunExecutionOptions:
+        if request.concurrency is not None and request.concurrency < 1:
+            raise ApiError(400, "BAD_REQUEST", "concurrency must be greater than or equal to 1.")
+
+        is_browser_use = mode in BROWSER_USE_MODES
+        concurrency = request.concurrency if request.concurrency is not None else (1 if is_browser_use else 3)
+        verification_mode = self._normalize_verification_mode(request.verification_mode)
+        browser_user_data_dir = None
+        browser_storage_state = None
+
+        if is_browser_use:
+            if concurrency != 1:
+                raise ApiError(
+                    400,
+                    "BAD_REQUEST",
+                    "browser-use runs must use concurrency 1 in the local backend.",
+                    {"concurrency": concurrency},
+                )
+            if request.browser_max_steps < 1 or request.browser_max_steps > 200:
+                raise ApiError(
+                    400,
+                    "BAD_REQUEST",
+                    "browser_max_steps must be between 1 and 200.",
+                    {"browser_max_steps": request.browser_max_steps},
+                )
+            if request.browser_timeout_sec < 0 or request.browser_timeout_sec > 7200:
+                raise ApiError(
+                    400,
+                    "BAD_REQUEST",
+                    "browser_timeout_sec must be between 0 and 7200.",
+                    {"browser_timeout_sec": request.browser_timeout_sec},
+                )
+            if request.verification_timeout_sec <= 0 or request.verification_timeout_sec > 3600:
+                raise ApiError(
+                    400,
+                    "BAD_REQUEST",
+                    "verification_timeout_sec must be between 1 and 3600.",
+                    {"verification_timeout_sec": request.verification_timeout_sec},
+                )
+            browser_user_data_dir = self._resolve_browser_runtime_path(
+                request.browser_user_data_dir,
+                label="browser_user_data_dir",
+                expect_file=False,
+            )
+            browser_storage_state = self._resolve_browser_runtime_path(
+                request.browser_storage_state,
+                label="browser_storage_state",
+                expect_file=True,
+            )
+
+        return RunExecutionOptions(
+            mode=mode,
+            concurrency=concurrency,
+            report_language=report_language,
+            browser_user_data_dir=browser_user_data_dir,
+            browser_storage_state=browser_storage_state,
+            verification_mode=verification_mode,
+        )
+
+    def _resolve_browser_runtime_path(
+        self,
+        value: str | None,
+        *,
+        label: str,
+        expect_file: bool,
+    ) -> str | None:
+        if not value:
+            return None
+        raw = Path(value).expanduser()
+        if not raw.is_absolute():
+            raw = self.workspace_root / raw
+        resolved = raw.resolve()
+        workspace = self.workspace_root.resolve()
+        if not resolved.is_relative_to(workspace):
+            raise ApiError(
+                400,
+                "BAD_REQUEST",
+                f"{label} must stay inside the prodwalk workspace.",
+                {label: value},
+            )
+        if expect_file and resolved.exists() and not resolved.is_file():
+            raise ApiError(400, "BAD_REQUEST", f"{label} must be a JSON file path.", {label: value})
+        if not expect_file and resolved.exists() and not resolved.is_dir():
+            raise ApiError(400, "BAD_REQUEST", f"{label} must be a directory path.", {label: value})
+        return str(resolved)
+
+    def _ensure_no_active_browser_use_run(self) -> None:
+        run_id = self._active_browser_run_id
+        if not run_id:
+            return
+        task = self._tasks.get(run_id)
+        if task is not None and not task.done():
+            raise ApiError(
+                409,
+                "BROWSER_USE_RUN_ACTIVE",
+                "Another local browser-use run is already active.",
+                {"run_id": run_id},
+            )
+        self._active_browser_run_id = None
+
+    def _browser_use_readiness_errors(
+        self,
+        request: RunStartRequest,
+        *,
+        user_data_dir: str | None,
+        storage_state: str | None,
+    ) -> list[str]:
+        missing: list[str] = []
+        if not self._module_available("browser_use"):
+            missing.append('browser-use is not installed. Install with `pip install -e ".[browser-use-local]"`.')
+        if not self._module_available("playwright.async_api"):
+            missing.append('Playwright is not installed. Install with `pip install -e ".[browser-use-local]"`.')
+        if missing:
+            return missing
+
+        try:
+            walker = BrowserUseLocalWalker(
+                model=request.browser_model,
+                max_steps=request.browser_max_steps,
+                run_timeout_sec=request.browser_timeout_sec,
+                user_data_dir=user_data_dir,
+                storage_state=storage_state,
+            )
+        except Exception as exc:  # noqa: BLE001 - configuration errors are returned to the API caller.
+            return [f"browser-use configuration failed: {exc}"]
+
+        config_error = self._browser_use_llm_config_error(walker)
+        return [config_error] if config_error else []
+
+    def _module_available(self, module_name: str) -> bool:
+        try:
+            return importlib.util.find_spec(module_name) is not None
+        except (ImportError, ValueError):
+            return False
+
+    def _browser_use_llm_config_error(self, walker: BrowserUseLocalWalker) -> str | None:
+        provider = str(getattr(walker, "provider", "openai") or "openai").lower()
+        codex_config = getattr(walker, "codex_config", {})
+        if not isinstance(codex_config, dict):
+            codex_config = {}
+        api_key = os.getenv("BROWSER_USE_LLM_API_KEY")
+        if provider == "openai":
+            key = api_key or os.getenv("OPENAI_API_KEY") or codex_config.get("api_key")
+            if not key:
+                return (
+                    "OpenAI-compatible browser-use runs need OPENAI_API_KEY, "
+                    "BROWSER_USE_LLM_API_KEY, or a Codex auth.json API key."
+                )
+            return None
+        if provider == "anthropic" and not (api_key or os.getenv("ANTHROPIC_API_KEY")):
+            return "Anthropic browser-use runs need ANTHROPIC_API_KEY or BROWSER_USE_LLM_API_KEY."
+        if provider == "google" and not (api_key or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")):
+            return "Google browser-use runs need GOOGLE_API_KEY, GEMINI_API_KEY, or BROWSER_USE_LLM_API_KEY."
+        if provider == "openrouter" and not (api_key or os.getenv("OPENROUTER_API_KEY")):
+            return "OpenRouter browser-use runs need OPENROUTER_API_KEY or BROWSER_USE_LLM_API_KEY."
+        if provider == "ollama":
+            return None
+        if provider not in {"openai", "anthropic", "google", "openrouter", "ollama"}:
+            return f"Unsupported BROWSER_USE_LLM_PROVIDER: {provider}."
+        return None
 
     def _resolve_request_plan(self, request: RunStartRequest) -> PlanBundle:
         inline = request.plan or (request.config if isinstance(request.config, dict) else None)
@@ -1093,15 +1400,17 @@ class RunRuntime:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         return f"run-{timestamp}-{uuid.uuid4().hex[:6]}"
 
-    def _request_params(self, request: RunStartRequest, *, report_language: str) -> dict[str, Any]:
+    def _request_params(self, request: RunStartRequest, *, options: RunExecutionOptions) -> dict[str, Any]:
         return {
-            "mode": request.mode,
-            "concurrency": request.concurrency or 3,
-            "report_language": report_language,
+            "mode": options.mode,
+            "concurrency": options.concurrency,
+            "report_language": options.report_language,
             "browser_model": request.browser_model,
             "browser_max_steps": request.browser_max_steps,
             "browser_timeout_sec": request.browser_timeout_sec,
-            "verification_mode": request.verification_mode,
+            "browser_user_data_dir_configured": options.browser_user_data_dir is not None,
+            "browser_storage_state_configured": options.browser_storage_state is not None,
+            "verification_mode": options.verification_mode,
             "verification_timeout_sec": request.verification_timeout_sec,
             "verification_success_url_contains": request.verification_success_url_contains,
             "verification_login_url_contains": request.verification_login_url_contains,
@@ -1375,6 +1684,301 @@ class RunRuntime:
             ),
         }
 
+    def _postprocess_run_outputs(self, run_id: str, run_dir: Path) -> None:
+        try:
+            record = self._record_for_run(run_id)
+        except ApiError:
+            return
+        mode = str(record.get("mode") or record.get("params", {}).get("mode") or "")
+        if mode not in BROWSER_USE_MODES:
+            return
+        history_map = self._archive_browser_histories(run_dir)
+        self._sanitize_browser_use_evidence_file(run_dir, history_map)
+
+    def _archive_browser_histories(self, run_dir: Path) -> dict[str, str]:
+        evidence_path = run_dir / "evidence.json"
+        if not evidence_path.exists():
+            return {}
+        try:
+            payload = self._read_json(evidence_path)
+        except Exception:
+            return {}
+
+        refs = self._collect_history_refs(payload)
+        if not refs:
+            return {}
+
+        history_dir = run_dir / "browser-history"
+        history_map: dict[str, str] = {}
+        for ref in refs:
+            source = self._history_source_path(ref, run_dir)
+            if source is None:
+                continue
+            history_dir.mkdir(parents=True, exist_ok=True)
+            filename = self._unique_filename(source.name or "browser-use-history.json", history_dir)
+            target = (history_dir / filename).resolve()
+            try:
+                if source.resolve() != target:
+                    shutil.copy2(source, target)
+                self._sanitize_json_file(target)
+            except Exception:
+                continue
+            rel_path = target.relative_to(run_dir.resolve()).as_posix()
+            for key in {ref, ref.replace("\\", "/"), str(source), str(source.resolve()), str(source.resolve()).replace("\\", "/")}:
+                history_map[key] = rel_path
+        return history_map
+
+    def _collect_history_refs(self, value: Any) -> list[str]:
+        refs: list[str] = []
+
+        def visit(item: Any) -> None:
+            if isinstance(item, dict):
+                history_file = item.get("history_file")
+                if isinstance(history_file, str) and history_file.strip():
+                    refs.append(history_file)
+                for child in item.values():
+                    visit(child)
+            elif isinstance(item, list):
+                for child in item:
+                    visit(child)
+
+        visit(value)
+        seen: set[str] = set()
+        unique: list[str] = []
+        for ref in refs:
+            if ref in seen:
+                continue
+            seen.add(ref)
+            unique.append(ref)
+        return unique
+
+    def _history_source_path(self, ref: str, run_dir: Path) -> Path | None:
+        candidate = Path(ref).expanduser()
+        candidates = [candidate] if candidate.is_absolute() else [run_dir / candidate, self.workspace_root / candidate, Path.cwd() / candidate]
+        for path in candidates:
+            try:
+                resolved = path.resolve()
+            except OSError:
+                continue
+            if resolved.is_file():
+                return resolved
+        return None
+
+    def _sanitize_json_file(self, path: Path) -> None:
+        try:
+            payload = self._read_json(path)
+        except Exception:
+            return
+        sanitized = self._sanitize_browser_use_value(payload, {})
+        self._write_json(path, sanitized)
+
+    def _sanitize_browser_use_evidence_file(self, run_dir: Path, history_map: dict[str, str]) -> None:
+        evidence_path = run_dir / "evidence.json"
+        if not evidence_path.exists():
+            return
+        try:
+            payload = self._read_json(evidence_path)
+        except Exception:
+            return
+        sanitized = self._sanitize_browser_use_value(payload, history_map)
+        self._write_json(evidence_path, sanitized)
+
+    def _sanitize_browser_use_value(self, value: Any, history_map: dict[str, str]) -> Any:
+        if isinstance(value, list):
+            return [self._sanitize_browser_use_value(item, history_map) for item in value]
+        if not isinstance(value, dict):
+            return value
+
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            lowered = key_text.lower()
+            if lowered == "history_file":
+                rel_path = self._history_artifact_ref(item, history_map)
+                if rel_path:
+                    sanitized["browser_history_path"] = rel_path
+                    sanitized["browser_history_artifact_id"] = self._artifact_id_for_path("art_browser_history", rel_path)
+                continue
+            if lowered in {"screenshot", "screenshot_path"}:
+                safe_ref = self._safe_run_artifact_ref(item, allowed_prefix="screenshots")
+                if safe_ref:
+                    sanitized[key_text] = safe_ref
+                continue
+            if lowered == "screenshot_paths":
+                if isinstance(item, list):
+                    safe_refs = [
+                        safe_ref
+                        for raw in item
+                        if (safe_ref := self._safe_run_artifact_ref(raw, allowed_prefix="screenshots"))
+                    ]
+                    if safe_refs:
+                        sanitized[key_text] = safe_refs
+                continue
+            if lowered in SENSITIVE_DATA_KEYS:
+                continue
+            if any(marker in lowered for marker in ("secret", "token", "credential", "password", "api_key")):
+                sanitized[key_text] = "<redacted>"
+                continue
+            sanitized[key_text] = self._sanitize_browser_use_value(item, history_map)
+        return sanitized
+
+    def _history_artifact_ref(self, value: Any, history_map: dict[str, str]) -> str | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        ref = value.strip()
+        for key in (ref, ref.replace("\\", "/")):
+            if key in history_map:
+                return history_map[key]
+        name = Path(ref).name
+        for source, rel_path in history_map.items():
+            if Path(source).name == name:
+                return rel_path
+        return self._safe_run_artifact_ref(ref, allowed_prefix="browser-history")
+
+    def _safe_run_artifact_ref(self, value: Any, *, allowed_prefix: str) -> str | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        normalized = value.strip().replace("\\", "/")
+        parsed = PurePosixPath(normalized)
+        parts = parsed.parts
+        if parsed.is_absolute() or not parts or parts[0] != allowed_prefix:
+            return None
+        if any(part in {"", ".", ".."} or ":" in part for part in parts):
+            return None
+        return parsed.as_posix()
+
+    def _unique_filename(self, preferred: str, directory: Path) -> str:
+        candidate = Path(preferred).name or "artifact.json"
+        stem = Path(candidate).stem or "artifact"
+        suffix = Path(candidate).suffix or ".json"
+        index = 2
+        while (directory / candidate).exists():
+            candidate = f"{stem}-{index}{suffix}"
+            index += 1
+        return candidate
+
+    def _final_status_from_evidence(self, run_id: str, run_dir: Path) -> tuple[str, dict[str, Any] | None]:
+        record = self._record_for_run(run_id)
+        mode = str(record.get("mode") or record.get("params", {}).get("mode") or "")
+        if mode not in BROWSER_USE_MODES:
+            return "succeeded", None
+        evidence_path = run_dir / "evidence.json"
+        if not evidence_path.exists():
+            return "failed", {"message": "browser-use run did not produce evidence.json", "type": "failed"}
+        try:
+            payload = self._read_json(evidence_path)
+        except Exception as exc:  # noqa: BLE001
+            return "failed", {"message": f"browser-use evidence.json could not be read: {exc}", "type": "failed"}
+
+        results = payload.get("results") if isinstance(payload.get("results"), list) else []
+        if not results:
+            return "failed", {"message": "browser-use run produced no walkthrough results", "type": "failed"}
+
+        text = self._browser_status_text(payload)
+        lower_text = text.lower()
+        if self._browser_results_timed_out(results) or any(marker in lower_text for marker in ("timed out", "run timed out")):
+            return "timeout", {"message": "One or more browser-use walkthroughs timed out.", "type": "timeout"}
+        if any(result.get("status") == "failed" for result in results if isinstance(result, dict)) or any(
+            marker in lower_text
+            for marker in (
+                "browser-use run failed:",
+                "browser-use is not installed",
+                "required for local openai-compatible runs",
+                "unsupported browser_use",
+            )
+        ):
+            return "failed", {"message": "One or more browser-use walkthroughs failed.", "type": "failed"}
+
+        verification_mode = str(record.get("params", {}).get("verification_mode") or "off")
+        auth_markers = (
+            "manual_verification_required",
+            "verification expired",
+            "authentication is required",
+            "login failed",
+            "login did not complete",
+            "no authenticated dashboard",
+            "/auth/login",
+        )
+        if verification_mode != "off" and any(marker in lower_text for marker in auth_markers):
+            return (
+                "awaiting_verification",
+                {
+                    "message": "Browser-use reported that manual verification is required.",
+                    "type": "awaiting_verification",
+                },
+            )
+        if any(result.get("status") == "blocked" for result in results if isinstance(result, dict)):
+            return "blocked", {"message": "One or more browser-use walkthroughs are blocked.", "type": "blocked"}
+        return "succeeded", None
+
+    def _browser_results_timed_out(self, results: list[Any]) -> bool:
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+            if metrics.get("timed_out"):
+                return True
+            evidence_items = result.get("evidence") if isinstance(result.get("evidence"), list) else []
+            for item in evidence_items:
+                if not isinstance(item, dict):
+                    continue
+                data = item.get("data") if isinstance(item.get("data"), dict) else {}
+                if data.get("timed_out"):
+                    return True
+        return False
+
+    def _browser_status_text(self, payload: dict[str, Any]) -> str:
+        parts: list[str] = []
+        results = payload.get("results") if isinstance(payload.get("results"), list) else []
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            parts.append(str(result.get("status") or ""))
+            for error in result.get("errors") or []:
+                parts.append(str(error))
+            for step in result.get("steps") or []:
+                if not isinstance(step, dict):
+                    continue
+                parts.extend(str(step.get(key) or "") for key in ("status", "observation", "url"))
+            for item in result.get("evidence") or []:
+                self._append_browser_item_text(parts, item)
+        for item in payload.get("evidence") or []:
+            self._append_browser_item_text(parts, item)
+        return " ".join(part for part in parts if part)
+
+    def _append_browser_item_text(self, parts: list[str], item: Any) -> None:
+        if not isinstance(item, dict):
+            return
+        parts.extend(str(item.get(key) or "") for key in ("kind", "summary", "url"))
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        for key in ("final_output", "status_reason"):
+            if isinstance(data.get(key), str):
+                parts.append(data[key])
+        for key in ("errors", "urls"):
+            values = data.get(key)
+            if isinstance(values, list):
+                parts.extend(str(value) for value in values)
+
+    def _terminal_event_type(self, status: str) -> str:
+        return {
+            "succeeded": "run.completed",
+            "blocked": "run.blocked",
+            "timeout": "run.timeout",
+            "failed": "run.failed",
+            "awaiting_verification": "run.awaiting_verification",
+            "canceled": "run.canceled",
+        }.get(status, "run.completed")
+
+    def _terminal_message(self, status: str) -> str:
+        return {
+            "succeeded": "Run completed",
+            "blocked": "Run blocked",
+            "timeout": "Run timed out",
+            "failed": "Run failed",
+            "awaiting_verification": "Run is awaiting manual verification",
+            "canceled": "Run canceled",
+        }.get(status, "Run completed")
+
     def _refresh_artifacts(self, run_id: str) -> list[dict[str, Any]]:
         run_dir = self._run_dir_for_id(run_id)
         artifacts = self._build_artifacts(run_id, run_dir)
@@ -1447,6 +2051,33 @@ class RunRuntime:
                             ),
                             "path_url": f"/api/runs/{run_id}/artifacts/{quote(rel_path, safe='/')}",
                             "screenshot_url": f"/api/runs/{run_id}/screenshots/{quote(path.name)}",
+                        },
+                    }
+                )
+        history_dir = run_dir / "browser-history"
+        if history_dir.exists():
+            for path in sorted(history_dir.glob("*.json")):
+                if not path.is_file():
+                    continue
+                resolved = path.resolve()
+                run_root = run_dir.resolve()
+                if not resolved.is_relative_to(run_root):
+                    continue
+                rel_path = resolved.relative_to(run_root).as_posix()
+                artifact_id = self._artifact_id_for_path("art_browser_history", rel_path)
+                artifacts.append(
+                    {
+                        "id": artifact_id,
+                        "run_id": run_id,
+                        "type": "browser_history",
+                        "title": path.name,
+                        "path": rel_path,
+                        "media_type": "application/json",
+                        "size_bytes": path.stat().st_size,
+                        "created_at": self._mtime_iso(path),
+                        "metadata": {
+                            "content_url": f"/api/runs/{run_id}/artifacts/{artifact_id}/content",
+                            "path_url": f"/api/runs/{run_id}/artifacts/{quote(rel_path, safe='/')}",
                         },
                     }
                 )

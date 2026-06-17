@@ -1,17 +1,14 @@
 import { StatusBadge } from "../StatusBadge";
-import type { RunEventConnectionState } from "../../api/sse";
-import type { ConsoleDataSource } from "../../hooks/useProdwalkConsole";
 import type { ConsoleStatus, PlanSummary, RunDetail } from "../../types/contracts";
 
 interface TopRunContextBarProps {
   activeRun: RunDetail | null;
   selectedPlan: PlanSummary | undefined;
   consoleStatus: ConsoleStatus;
-  source: ConsoleDataSource;
-  connectionState: RunEventConnectionState;
   onStartMock: () => void;
-  onStartBrowser: () => void;
-  onRetryApi: () => void;
+  onOpenReport: () => void;
+  canOpenReport: boolean;
+  startDisabled?: boolean;
 }
 
 function formatElapsed(run: RunDetail | null): string {
@@ -28,27 +25,34 @@ function formatElapsed(run: RunDetail | null): string {
   return `${minutes}m ${remainder}s`;
 }
 
+function formatProgress(run: RunDetail | null): string {
+  if (!run || run.progress.total_scenarios === 0) {
+    return "--";
+  }
+
+  return `${run.progress.completed_scenarios}/${run.progress.total_scenarios}`;
+}
+
 export function TopRunContextBar({
   activeRun,
   selectedPlan,
   consoleStatus,
-  source,
-  connectionState,
   onStartMock,
-  onStartBrowser,
-  onRetryApi,
+  onOpenReport,
+  canOpenReport,
+  startDisabled = false,
 }: TopRunContextBarProps) {
   return (
     <div className="top-context-bar">
       <div className="brand-block">
-        <div className="app-title">Prodwalk Console</div>
-        <div className="app-subtitle">{selectedPlan?.title ?? "No plan selected"}</div>
+        <div className="app-title">Prodwalk PM Workbench</div>
+        <div className="app-subtitle">{selectedPlan?.title ?? "Choose a local research plan"}</div>
       </div>
 
       <div className="context-grid">
         <div>
-          <span className="context-label">Run</span>
-          <strong>{activeRun?.id ?? "No active run"}</strong>
+          <span className="context-label">Plan</span>
+          <strong>{selectedPlan?.path ?? "No plan selected"}</strong>
         </div>
         <div>
           <span className="context-label">Mode</span>
@@ -59,24 +63,29 @@ export function TopRunContextBar({
           <StatusBadge status={consoleStatus} />
         </div>
         <div>
-          <span className="context-label">Source</span>
-          <strong>{source === "api" ? connectionState : "mock fallback"}</strong>
+          <span className="context-label">Progress</span>
+          <strong>{formatProgress(activeRun)}</strong>
         </div>
         <div>
           <span className="context-label">Elapsed</span>
           <strong>{formatElapsed(activeRun)}</strong>
         </div>
         <div>
-          <span className="context-label">Run dir</span>
-          <strong>{activeRun?.run_dir ?? "runs/"}</strong>
+          <span className="context-label">Run</span>
+          <strong>{activeRun?.id ?? "No active run"}</strong>
         </div>
       </div>
 
       <div className="top-actions" aria-label="Run actions">
-        <button type="button" onClick={onStartMock}>Start Mock</button>
-        <button type="button" onClick={onStartBrowser}>Start Browser</button>
-        <button type="button" disabled title="Stop is not wired in this console yet.">Stop</button>
-        <button type="button" onClick={onRetryApi}>Retry API</button>
+        <button type="button" className="primary-action" onClick={onStartMock} disabled={startDisabled}>
+          Start Mock Run
+        </button>
+        <button type="button" disabled title="Stop is not wired in this console yet.">
+          Stop
+        </button>
+        <button type="button" onClick={onOpenReport} disabled={!canOpenReport}>
+          Open Report
+        </button>
       </div>
     </div>
   );

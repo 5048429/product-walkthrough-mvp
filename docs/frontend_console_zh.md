@@ -1,37 +1,100 @@
 # Prodwalk 前端控制台中文说明
 
-本文档说明当前 `prodwalk` 前端控制台的阶段性成果、启动方式、使用流程、系统架构和后续建议。当前版本已经完成 Phase 1 到 Phase 5 的核心闭环：可以通过本地 Web 页面启动 mock 产品走查、实时查看 agent 事件、查看报告、证据、评估结果和历史 run。
+本文档说明当前 `prodwalk` Web 控制台的能力、启动方式、简化后的使用流程、browser-use 支持状态、测试验收记录和常见问题。当前版本已经完成 Phase 6 集成验收：默认 Dashboard 更偏 PM 工作台，mock run 闭环可用，browser-use 请求可从前端提交，后端真实 browser-use smoke run 已验证可以启动并产出 artifact。
 
 ## 当前结论
 
-Phase 6 不需要立刻开始。Phase 6 更适合作为正式发布前的稳定化、真实 browser-use 验证和桌面化评估阶段。
+Phase 6 的重点已经从继续堆功能转为稳定化和交接：
 
-当前更优先的事情是：
-
-1. 保存已有工作到远程仓库。
-2. 固化一份中文说明文档，方便后续 agent 或团队成员接手。
-3. 在需要真实 UAT 走查时，再进入 Phase 6 或单独做 browser-use 联调。
+1. 默认 UI 已简化，普通使用者优先看到 plan、run 状态、agent progress、report、evidence、evaluation 和 history。
+2. Debug 信息默认收起，API / Debug、完整 Agent Status 和 Live Event Log 保留在 Details tab 中。
+3. `mock` mode 是当前最稳定的 Web 控制台主路径。
+4. `browser-use` mode 已能从 Web 控制台提交请求，后端也已完成公开 smoke run 验证；但最终状态仍可能折算为 `awaiting_verification`，完整可恢复的人工验证 continuation 仍是后续工作。
+5. 旧 CLI 入口仍然可用，适合自动化脚本、真实 UAT 调试和回归验证。
 
 ## 当前能力
 
-当前 Web 控制台已经具备以下能力：
+当前 Web 控制台具备以下能力：
 
 - 本地 FastAPI 后端服务。
 - React + Vite + TypeScript 前端控制台。
 - 从前端读取 `examples/` 下的 research plan。
 - 从前端启动 `mock` mode run。
-- 通过 SSE 实时展示 run 事件。
-- 展示各 agent 的运行状态。
-- run 完成后展示 `report.md`。
-- 展示 `evidence.json` 中的证据列表。
-- 展示 `evaluation.json` 中的评分结果。
+- 从前端提交 `browser-use` mode run 参数。
+- 通过 SSE 实时接收 run 事件。
+- 展示当前 run 状态、进度、elapsed、run id 和 selected plan。
+- 展示简化 Agent Progress 和 Recent Activity。
+- run 完成后展示 `report.md` 预览。
+- 展示 `evidence.json` 摘要、证据列表和截图入口。
+- 展示 `evaluation.json` 评分。
 - 展示历史 run。
-- 支持 artifact 和 screenshot 安全读取接口。
+- 支持 artifact、report、evidence、evaluation 和 screenshot 的安全读取接口。
 - 保持原有 CLI 入口兼容。
+
+## UI 简化后的使用说明
+
+默认 Dashboard 现在面向日常 PM 走查，不再把调试信息作为第一屏主内容。
+
+常用区域：
+
+- Plan selector：选择 `examples/` 中的 research plan，并查看 plan summary。
+- Mode selector：选择 `mock` 或 `browser-use`。
+- Start Mock Run / Start Browser-use Run：启动当前 plan。
+- Stop：请求取消当前 run。
+- Open Report：在有 report artifact 后快速打开报告。
+- Current Run Status：查看状态、进度、耗时和 run id。
+- Agent Progress：查看各 agent 的精简进度。
+- Recent Activity：查看最近事件摘要。
+- Results shortcut：快速跳转 report、evidence、evaluation、screenshots。
+- Report Preview：直接查看报告内容。
+- Evidence / Screenshots：默认折叠，按需展开。
+- Run History：打开历史 run。
+
+调试区域：
+
+- Details tab 中保留 `API / Debug`、`Agent Status`、`Live Event Log`。
+- 默认 Dashboard 不直接显示 API source、SSE 状态、run dir、artifact ids 和 raw event payload。
+- 如果 run 行为异常，先打开 Details tab 查看 SSE 是否连接、事件是否到达、artifact id 是否存在。
+
+## browser-use 当前支持状态
+
+当前状态可以概括为：可启动、可提交、可产物化，但还不是完全自动闭环。
+
+已验证：
+
+- 后端真实 `browser-use` 可以运行公开 smoke plan。
+- 前端切换到 `browser-use` mode 后可以提交请求。
+- 前端会显示 browser-use 参数，包括 max steps、timeout、verification mode 和 headless/visible server env note。
+- Advanced browser-use parameters 默认折叠。
+- 后端参数校验有效，例如 `browser_max_steps=0` 会返回可读错误。
+- 真实 browser-use smoke run 已产出 report、evidence、evaluation、screenshots 和 browser history artifact。
+
+Phase 6 验收记录：
+
+```text
+API valid run: run-20260617-142228-c53abd
+final status: awaiting_verification
+progress: 1/1
+screenshots: 6
+run error: Browser-use reported that manual verification is required.
+
+Frontend valid run: run-20260617-143500-d11c97
+final status: awaiting_verification
+progress: 1/1
+screenshots: 3
+UI: Awaiting verification panel, Report Preview, Evidence summary, Evaluation 100%
+```
+
+当前限制：
+
+- `awaiting_verification` 在部分 badge 中仍可能显示为 `Blocked`，页面内已有 Awaiting verification 专用 panel。
+- 真实 browser-use run 的 Web confirm 当前主要是状态记录，完整可恢复的 visible-browser continuation 后续还需要继续打通。
+- 当前仍建议一次只跑一个 browser-use run，避免多个本地浏览器/CDP 会话并发。
+- 真实 UAT 账号、Altcha、CAPTCHA、SSO、MFA 等流程仍优先使用 CLI 的 human-assisted login profile 流程。
 
 ## 目录结构
 
-核心新增结构如下：
+核心结构如下：
 
 ```text
 apps/web/
@@ -59,18 +122,32 @@ docs/
     phase*_*.md       # 各阶段交接文档
 ```
 
-## 后端启动
+## 启动命令
 
-首次使用时建议安装 server 依赖：
+### 后端
+
+首次使用时安装 server 依赖：
 
 ```powershell
 pip install -e ".[server]"
+```
+
+如果需要本地 browser-use 能力，安装 browser-use local 依赖：
+
+```powershell
+pip install -e ".[browser-use-local]"
 ```
 
 启动 FastAPI 后端：
 
 ```powershell
 python -m uvicorn prodwalk.server.app:app --host 127.0.0.1 --port 8000
+```
+
+如果 `8000` 端口已有旧进程，可以换一个明确端口，例如：
+
+```powershell
+python -m uvicorn prodwalk.server.app:app --host 127.0.0.1 --port 8001
 ```
 
 健康检查：
@@ -85,9 +162,9 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 ok=true, service=prodwalk-server
 ```
 
-## 前端启动
+### 前端
 
-进入前端目录：
+进入前端目录并安装依赖：
 
 ```powershell
 cd apps/web
@@ -101,31 +178,57 @@ $env:VITE_API_BASE_URL="http://127.0.0.1:8000"
 npm run dev -- --host 127.0.0.1 --port 5173
 ```
 
+如果后端使用 `8001`，前端也要指向同一个端口：
+
+```powershell
+$env:VITE_API_BASE_URL="http://127.0.0.1:8001"
+npm run dev -- --host 127.0.0.1 --port 3000
+```
+
 打开：
 
 ```text
 http://127.0.0.1:5173/
 ```
 
-构建检查：
+或你实际指定的前端端口，例如：
+
+```text
+http://127.0.0.1:3000/
+```
+
+前端构建检查：
 
 ```powershell
+cd apps/web
 npm run build
 ```
 
-## 使用流程
+## Web 控制台推荐流程
 
-推荐第一条验证路径：
+### Mock run
 
-1. 启动后端 `http://127.0.0.1:8000`。
-2. 启动前端 `http://127.0.0.1:5173/`。
-3. 在前端选择 `examples/smoke_plan.json`。
-4. 选择 `mock` mode。
-5. 点击启动 run。
-6. 观察 Live Event Log 中的实时事件。
-7. 观察 Agent Status 中各 agent 状态变化。
-8. run 完成后查看 Report、Evidence、Evaluation。
-9. 在 Run History 中打开历史 run。
+1. 启动后端，例如 `http://127.0.0.1:8000`。
+2. 启动前端，并确认 `VITE_API_BASE_URL` 指向同一个后端端口。
+3. 打开前端页面。
+4. 在 Plan selector 中选择 `examples/smoke_plan.json`。
+5. 选择 `mock` mode。
+6. 点击 Start Mock Run。
+7. 观察 Current Run Status、Agent Progress 和 Recent Activity。
+8. run 完成后查看 Report Preview、Evidence、Evaluation。
+9. 在 Run History 中重新打开历史 run。
+
+### browser-use smoke run
+
+1. 确认已安装 `pip install -e ".[browser-use-local]"`。
+2. 确认本机有可用 Chrome/Edge。
+3. 确认 LLM 配置可用，默认可继承本地 Codex 配置。
+4. 启动后端和前端。
+5. 选择 `examples/smoke_plan.json`。
+6. 切换到 `browser-use` mode。
+7. 设置较小的 max steps，例如 `12`。
+8. 点击 Start Browser-use Run。
+9. 如果进入 `awaiting_verification`，先查看 Report/Evidence/Screenshots 是否已生成，再根据 Details tab 判断是否需要人工确认或后续 CLI 调试。
 
 ## 原有 CLI 仍然可用
 
@@ -141,6 +244,24 @@ python -m prodwalk.cli run --config examples/smoke_plan.json --mode mock --out r
 ```powershell
 prodwalk run --config examples/smoke_plan.json --mode mock --out runs --concurrency 1
 ```
+
+browser-use CLI smoke：
+
+```powershell
+$env:PYTHONPATH="src"
+$env:BROWSER_USE_HEADLESS="true"
+python -m prodwalk.cli run --config examples/smoke_plan.json --mode browser-use --out runs --concurrency 1 --browser-max-steps 12 --verification-mode off
+```
+
+Clink-style UAT 推荐继续使用持久浏览器 profile：
+
+```powershell
+$env:PYTHONPATH="src"
+$env:BROWSER_USE_HEADLESS="true"
+python -m prodwalk.cli run --config examples/clink_uat_full_continuous_plan.json --mode browser-use --out runs-clink-full --concurrency 1 --browser-max-steps 55 --browser-timeout-sec 900 --browser-user-data-dir .prodwalk\browser-profiles\clink_uat_account --report-language zh
+```
+
+如果 verification 需要人工操作，按 CLI 提示完成浏览器窗口中的登录或验证，然后回到终端按 Enter。
 
 ## 主要 API
 
@@ -168,14 +289,6 @@ POST /api/runs/{run_id}/cancel
 POST /api/runs/{run_id}/verification/confirm
 ```
 
-其中 Phase 5 已验证的主路径是：
-
-- `mock` run 创建。
-- SSE 实时事件。
-- report/evidence/evaluation 读取。
-- artifact 安全读取。
-- history run 打开。
-
 ## 事件机制
 
 后端通过 pipeline 事件把原本 CLI 内部的执行过程暴露给前端。事件会被映射成前端可消费的 run event，例如：
@@ -202,43 +315,35 @@ run.failed
 
 然后根据事件更新：
 
-- Live Event Log
-- Agent Status
-- Active Run 状态
+- Current Run Status
+- Agent Progress
+- Recent Activity
+- Details tab 中的 Live Event Log
 - Report/Evidence/Evaluation 加载状态
-
-## 当前限制
-
-当前版本仍有这些限制：
-
-- Web 控制台主路径只完整验证了 `mock` mode。
-- `browser-use` run 在 Web 控制台中仍属于后续增强项。
-- 人工登录 checkpoint 和验证码/Altcha 流程还没有在 Web UI 中完整闭环。
-- 当前没有引入数据库，run 状态主要由内存状态和 `runs/` 目录扫描组成。
-- 当前没有多用户、权限、云端部署。
-- 截图展示能力已有后端接口和前端状态，但当前 workspace 中没有真实截图样例可做完整 UI 验证。
-- CORS 当前主要面向本地开发端口，例如 `5173`、`5174`、`3000`。
 
 ## 测试和验收
 
-Phase 5 结束时的验收记录显示：
+Phase 6 Final Integration QA 的验收记录：
 
 ```text
 python -m pytest
-46 passed, 1 warning
+50 passed, 1 warning in 10.27s
 ```
+
+warning 来自 FastAPI/Starlette TestClient 的 `httpx` deprecation。
 
 前端构建：
 
 ```text
 cd apps/web
 npm run build
+tsc --noEmit -p tsconfig.json
+tsc --noEmit -p tsconfig.node.json
+vite build
 built successfully
 ```
 
-旧 CLI mock run 也已验证可用。
-
-如果后续重新验收，建议运行：
+重新验收建议运行：
 
 ```powershell
 python -m pytest
@@ -246,48 +351,57 @@ cd apps/web
 npm run build
 ```
 
-再手动验证：
+手动 smoke：
 
 ```text
 前端启动 mock run -> SSE 事件出现 -> agent 状态完成 -> report/evidence/evaluation 可查看
 ```
 
-## 后续建议
+browser-use smoke：
 
-建议后续不要立刻继续堆功能，而是按优先级选择：
+```text
+前端提交 browser-use -> 后端创建 run -> report/evidence/evaluation/screenshots 生成 -> 若 awaiting_verification，确认 UI 有专用 panel 且 Details tab 可读
+```
 
-### 选项 A：先封存 v0.1
+## 常见问题
 
-适合当前要保存成果、同步远程仓库、让团队或后续 agent 接手。
+### 前端报 API 错误或只支持 mock mode
 
-要做的事：
+通常是前端连到了旧后端。确认 `VITE_API_BASE_URL` 指向当前启动的 FastAPI 端口。Phase 6 验收中曾遇到 `127.0.0.1:8000` 有旧后端进程，导致 browser-use 返回：
 
-- 提交代码。
-- 推送远程仓库。
-- 保留本文档作为中文入口说明。
+```text
+BAD_REQUEST: Only mock mode is supported by the first backend API version.
+```
 
-### 选项 B：进入 Phase 6
+解决方式：
 
-适合准备把它作为稳定工具使用。
+- 停掉旧 uvicorn 进程后重启当前后端。
+- 或把当前后端启动在 `8001`，并把前端 `VITE_API_BASE_URL` 也设置为 `http://127.0.0.1:8001`。
 
-Phase 6 应聚焦：
+### SSE 没有事件
 
-- 稳定性审计。
-- browser-use smoke 验证。
-- 文档完善。
-- 是否封装 Tauri 桌面应用的决策。
+先确认：
 
-### 选项 C：直接做 browser-use Web 联调
+- 后端 `/api/health` 正常。
+- 前端 API base URL 和后端端口一致。
+- Details tab 中 SSE 状态不是断开。
+- 浏览器控制台没有 CORS 或网络错误。
 
-适合你已经要用它跑真实 Clink UAT 走查。
+### report/evidence/evaluation 没有显示
 
-要重点处理：
+先看 Current Run Status 是否完成，再打开 Details tab 检查 artifact ids。artifact 已生成但预览失败时，通常是 artifact 读取路径或 artifact id 问题；run 本身失败时，优先看 Recent Activity 和 Live Event Log。
 
-- Web UI 启动 browser-use 参数。
-- 人工验证 checkpoint。
-- 浏览器 profile 选择。
-- 真实截图和 browser history artifact 展示。
-- read-only 安全约束。
+### browser-use 一直 awaiting_verification
+
+这代表 browser-use 已启动但认为需要人工验证，或最终状态被保守折算为需要验证。当前可以先检查已生成的 report/evidence/screenshots；如果是真实 UAT 或登录流程，优先使用 CLI 的 human-assisted profile 流程继续排查。
+
+### 启动多个 browser-use run 是否安全
+
+不建议。当前本地 browser-use 仍建议一次一个 run，尤其是可见浏览器、持久 profile 或需要人工验证时。多个本地浏览器/CDP 会话并发可能导致启动超时或状态混淆。
+
+### apps/web/src/components/runs/ 文件不显示在 git status
+
+仓库 `.gitignore` 中的 `runs/` 规则可能影响该路径。后续如果需要新增该目录下文件，要特别检查 ignore 规则或使用明确的 git add 路径。
 
 ## 给后续 agent 的接手说明
 
@@ -297,7 +411,7 @@ Phase 6 应聚焦：
 docs/frontend_console_zh.md
 docs/frontend_console_mvp_spec.md
 docs/api_event_contract.md
-docs/handoffs/phase5_final_handoff.md
+docs/handoffs/phase6_final_handoff.md
 ```
 
 如果是做后端：
@@ -328,4 +442,3 @@ examples/clink_uat_full_continuous_plan.json
 src/prodwalk/agents/walker.py
 src/prodwalk/auth_session.py
 ```
-

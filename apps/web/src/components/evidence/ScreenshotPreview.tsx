@@ -140,7 +140,7 @@ export function ScreenshotPreview({
     return (
       <div className="screenshot-placeholder" style={placeholderStyle}>
         <span>Unsupported artifact media</span>
-        <ArtifactLink artifact={resolvedArtifact} artifactId={resolvedArtifactId} runId={resolvedRunId} label={resolvedArtifactId} />
+        <ArtifactLink artifact={resolvedArtifact} artifactId={resolvedArtifactId} runId={resolvedRunId} label="Open screenshot artifact" />
       </div>
     );
   }
@@ -165,7 +165,7 @@ export function ScreenshotPreview({
       {imageState === "missing" ? (
         <>
           <span>Screenshot URL unavailable</span>
-          <ArtifactLink artifact={resolvedArtifact} artifactId={resolvedArtifactId} runId={resolvedRunId} label={resolvedArtifactId} />
+          <ArtifactLink artifact={resolvedArtifact} artifactId={resolvedArtifactId} runId={resolvedRunId} label="Open screenshot artifact" />
         </>
       ) : null}
     </div>

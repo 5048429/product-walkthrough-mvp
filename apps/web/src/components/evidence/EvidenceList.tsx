@@ -317,15 +317,15 @@ export function EvidenceList({ evidence, artifacts, status, error, loading = fal
           <h2 id="evidence-title">Evidence</h2>
           <p>
             {evidence
-              ? `${evidence.artifact_id} / ${filteredItems.length} of ${items.length} items`
-              : "No evidence artifact selected"}
+              ? `${filteredItems.length} of ${items.length} evidence items`
+              : "No evidence selected"}
           </p>
         </div>
         <ArtifactLink
           artifactId={evidence?.artifact_id}
           artifacts={resolvedArtifacts}
           runId={evidence?.run_id}
-          label="evidence.json"
+          label="Open evidence source"
           disabledReason={evidence ? undefined : "Evidence artifact is not ready"}
         />
       </div>
@@ -357,41 +357,46 @@ export function EvidenceList({ evidence, artifacts, status, error, loading = fal
             ))}
           </select>
         </label>
-        <label className="field" style={{ flex: "1 1 130px", marginBottom: 0 }}>
-          <span>Kind</span>
-          <select value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}>
-            <option value={allFilter}>all</option>
-            {filterOptions.kinds.map((option) => (
-              <option key={option} value={option}>
-                {option.replaceAll("_", " ")}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field" style={{ flex: "1 1 130px", marginBottom: 0 }}>
-          <span>Status</span>
-          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-            <option value={allFilter}>all</option>
-            {filterOptions.statuses.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </label>
         <button type="button" disabled={!hasActiveFilters} onClick={resetFilters}>
           Reset
         </button>
       </div>
 
-      <div className="filter-row evidence-group-control" aria-label="Evidence grouping">
-        <span className="section-title">Group</span>
-        {groupOptions.map((option) => (
-          <button key={option} type="button" className={option === groupBy ? "selected" : ""} onClick={() => setGroupBy(option)}>
-            {option}
-          </button>
-        ))}
-      </div>
+      <details className="filter-details evidence-group-control">
+        <summary>More filters</summary>
+        <div className="filter-row" aria-label="Evidence advanced filters">
+          <label className="field" style={{ flex: "1 1 130px", marginBottom: 0 }}>
+            <span>Kind</span>
+            <select value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}>
+              <option value={allFilter}>all</option>
+              {filterOptions.kinds.map((option) => (
+                <option key={option} value={option}>
+                  {option.replaceAll("_", " ")}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field" style={{ flex: "1 1 130px", marginBottom: 0 }}>
+            <span>Status</span>
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+              <option value={allFilter}>all</option>
+              {filterOptions.statuses.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="button-row" aria-label="Evidence grouping">
+            <span className="section-title">Group</span>
+            {groupOptions.map((option) => (
+              <button key={option} type="button" className={option === groupBy ? "selected" : ""} onClick={() => setGroupBy(option)}>
+                {option}
+              </button>
+            ))}
+          </div>
+        </div>
+      </details>
 
       {loading && items.length === 0 ? (
         <EmptyState title="Loading evidence" message="Reading evidence.json from the API." />
@@ -451,10 +456,6 @@ export function EvidenceList({ evidence, artifacts, status, error, loading = fal
                     <p>{selectedItem.summary}</p>
                     <dl className="detail-list">
                       <div>
-                        <dt>ID</dt>
-                        <dd>{selectedItem.id}</dd>
-                      </div>
-                      <div>
                         <dt>Product</dt>
                         <dd>{selectedItem.product}</dd>
                       </div>
@@ -499,21 +500,6 @@ export function EvidenceList({ evidence, artifacts, status, error, loading = fal
                         <ScreenshotPreview variant="detail" />
                       </div>
                     )}
-                    {selectedArtifactIds.length ? (
-                      <div className="linked-list">
-                        <div className="section-title">Artifacts</div>
-                        {selectedArtifactIds.map((artifactId) => (
-                          <ArtifactLink
-                            key={artifactId}
-                            artifactId={artifactId}
-                            artifacts={resolvedArtifacts}
-                            runId={evidence?.run_id}
-                            label={artifactId}
-                          />
-                        ))}
-                      </div>
-                    ) : null}
-                    {selectedItem.final_output ? <p className="raw-note">{selectedItem.final_output}</p> : null}
                     {selectedItem.finding_ids?.length ? (
                       <div className="linked-list">
                         <div className="section-title">Linked Findings</div>
@@ -522,14 +508,35 @@ export function EvidenceList({ evidence, artifacts, status, error, loading = fal
                         ))}
                       </div>
                     ) : null}
-                    {selectedItem.data ? (
-                      <details className="linked-list">
-                        <summary className="section-title">Sanitized Data</summary>
+                    <details className="linked-list debug-details">
+                      <summary>Debug data</summary>
+                      <dl className="detail-list">
+                        <div>
+                          <dt>Evidence ID</dt>
+                          <dd>{selectedItem.id}</dd>
+                        </div>
+                      </dl>
+                      {selectedArtifactIds.length ? (
+                        <div className="linked-list">
+                          <div className="section-title">Artifacts</div>
+                          {selectedArtifactIds.map((artifactId, index) => (
+                            <ArtifactLink
+                              key={artifactId}
+                              artifactId={artifactId}
+                              artifacts={resolvedArtifacts}
+                              runId={evidence?.run_id}
+                              label={`Open linked artifact ${index + 1}`}
+                            />
+                          ))}
+                        </div>
+                      ) : null}
+                      {selectedItem.final_output ? <p className="raw-note">{selectedItem.final_output}</p> : null}
+                      {selectedItem.data ? (
                         <pre style={{ overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12 }}>
                           {JSON.stringify(selectedItem.data, null, 2)}
                         </pre>
-                      </details>
-                    ) : null}
+                      ) : null}
+                    </details>
                   </>
                 ) : (
                   <EmptyState title="No evidence selected" message="Choose an evidence item to inspect its details." compact />

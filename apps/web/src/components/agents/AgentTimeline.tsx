@@ -28,6 +28,7 @@ const statusTone: Record<ConsoleStatus, string> = {
   done: "#1f8a5f",
   blocked: "#a56300",
   failed: "#ba2d2d",
+  timeout: "#ba2d2d",
 };
 
 function getStageStatus(stageAgents: AgentExecution[], consoleStatus: ConsoleStatus): ConsoleStatus {

@@ -14,6 +14,7 @@ function normalizeStatus(status: StatusKind): ConsoleStatus | EventLevel | Agent
     status === "starting" ||
     status === "awaiting_verification" ||
     status === "blocked" ||
+    status === "timeout" ||
     status === "finalizing" ||
     status === "succeeded" ||
     status === "canceling" ||
