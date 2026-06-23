@@ -604,18 +604,41 @@ img {
   overflow-wrap: anywhere;
 }
 
-.live-agent-meter {
+.live-agent-timing {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.live-agent-timing span {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #f8fafc;
+  padding: 6px;
+}
+
+.live-agent-meter,
+.live-stage-meter {
   height: 7px;
   overflow: hidden;
   border-radius: 999px;
   background: #dbe6f5;
 }
 
-.live-agent-meter span {
+.live-agent-meter span,
+.live-stage-meter span {
   display: block;
   height: 100%;
   border-radius: inherit;
   background: var(--blue);
+}
+
+.live-stage-meter {
+  background: #dfe7f1;
+}
+
+.live-stage-meter span {
+  background: var(--green);
 }
 
 .live-metric-card {
@@ -758,6 +781,41 @@ img {
   max-width: 76ch;
 }
 
+.run-time-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(130px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.run-time-grid div {
+  min-width: 0;
+  border: 1px solid #d6e1ee;
+  border-radius: var(--radius);
+  background: rgb(255 255 255 / 78%);
+  padding: 8px;
+}
+
+.run-time-grid span,
+.live-agent-timing span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.run-time-grid strong {
+  display: block;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+}
+
 .run-overview-progress {
   display: grid;
   gap: 9px;
@@ -780,6 +838,32 @@ img {
   padding: 4px 7px;
   color: var(--text-soft);
   font-weight: 650;
+}
+
+.progress-label-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.progress-label-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.progress-label-row strong,
+.live-focus-card .progress-label-row strong,
+.live-metric-card .progress-label-row strong {
+  flex: none;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
 }
 
 .agent-panel,
@@ -1879,9 +1963,7 @@ dd {
 }
 
 .report-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(240px, 280px);
-  gap: 12px;
+  display: block;
   flex: 1;
   height: auto;
   min-height: 0;
@@ -1928,9 +2010,6 @@ dd {
 }
 
 .report-outcome {
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(220px, 0.65fr);
-  gap: 12px;
   margin-bottom: 12px;
   border: 1px solid #c4d6ef;
   border-left: 4px solid var(--blue);
@@ -1950,90 +2029,9 @@ dd {
 .report-outcome-main h3 {
   margin: 0;
   color: var(--text);
-  font-size: 19px;
+  font-size: 20px;
   line-height: 1.32;
   text-wrap: pretty;
-}
-
-.report-outcome-list {
-  display: grid;
-  gap: 6px;
-  margin: 0;
-  padding-left: 18px;
-  color: var(--text);
-}
-
-.report-outcome-list li {
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.report-progress-card {
-  display: grid;
-  gap: 8px;
-  border: 1px solid #d1deef;
-  border-radius: var(--radius);
-  background: #ffffff;
-  padding: 10px;
-}
-
-.report-progress-card > div:first-child {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: center;
-}
-
-.report-progress-card span {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.report-progress-card strong {
-  color: var(--text);
-  font-size: 13px;
-}
-
-.report-progress-bar {
-  overflow: hidden;
-  height: 8px;
-  border-radius: 999px;
-  background: #dfe8f4;
-}
-
-.report-progress-bar span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--green), #2f9f75);
-}
-
-.report-outcome-metrics {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.report-outcome-metrics div {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: #ffffff;
-  padding: 9px;
-}
-
-.report-outcome-metrics span {
-  color: var(--text-muted);
-  font-size: 11px;
-}
-
-.report-outcome-metrics strong {
-  color: var(--text);
-  font-size: 14px;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
 }
 
 .report-section-heading {
@@ -2056,7 +2054,7 @@ dd {
 
 .report-insight-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -2151,11 +2149,13 @@ dd {
   line-height: 1.35;
 }
 
-.report-markdown-details {
+.report-markdown-details,
+.report-advanced-details {
   margin-top: 12px;
 }
 
-.report-markdown-details > summary {
+.report-markdown-details > summary,
+.report-advanced-details > summary {
   display: flex;
   justify-content: space-between;
   gap: 10px;
@@ -2167,16 +2167,25 @@ dd {
   cursor: pointer;
 }
 
-.report-markdown-details > summary strong {
+.report-markdown-details > summary strong,
+.report-advanced-details > summary strong {
   color: var(--text);
 }
 
-.report-markdown-details > summary span {
+.report-markdown-details > summary span,
+.report-advanced-details > summary span {
   color: var(--text-muted);
   font-size: 12px;
 }
 
 .report-markdown-body {
+  margin-top: 12px;
+}
+
+.report-advanced-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
   margin-top: 12px;
 }
 
@@ -2658,6 +2667,8 @@ dd {
 
   .agent-activity-meter span,
   .agent-card-meter span,
+  .live-agent-meter span,
+  .live-stage-meter span,
   .progress-track div {
     transition: width 260ms ease;
   }
@@ -2722,7 +2733,8 @@ dd {
   .run-overview-strip,
   .run-live-snapshot,
   .report-outcome,
-  .report-insight-grid {
+  .report-insight-grid,
+  .report-advanced-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -2755,7 +2767,6 @@ dd {
   .browser-basic-grid,
   .login-prep-summary,
   .report-toolbar,
-  .report-outcome-metrics,
   .evidence-card,
   .verification-panel {
     grid-template-columns: minmax(0, 1fr);
@@ -2826,6 +2837,8 @@ dd {
 
   .detail-list div,
   .score-list div,
+  .run-time-grid,
+  .live-agent-timing,
   .evidence-meta-grid,
   .agent-activity-detail dl {
     grid-template-columns: minmax(0, 1fr);

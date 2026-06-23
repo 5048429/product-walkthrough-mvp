@@ -108,6 +108,20 @@ export interface RunProgress {
   total_scenarios: number;
   completed_scenarios: number;
   failed_scenarios: number;
+  current_stage?: string | null;
+  current_stage_label?: string | null;
+  current_stage_status?: string | null;
+  stage_started_at?: string | null;
+  elapsed_ms?: number;
+  elapsed_sec?: number;
+  stage_elapsed_ms?: number;
+  stage_elapsed_sec?: number;
+  completed_stage_count?: number;
+  total_stage_count?: number;
+  evidence_count?: number;
+  artifact_count?: number;
+  screenshot_count?: number;
+  browser_history_count?: number;
 }
 
 export interface RunParams {

@@ -394,6 +394,7 @@ def test_browser_use_local_run_uses_walker_and_exposes_artifacts(tmp_path: Path,
         report = client.get(f"/api/runs/{run_id}/report")
         evaluation = client.get(f"/api/runs/{run_id}/evaluation")
         events = client.get(f"/api/runs/{run_id}/events")
+        agents = client.get(f"/api/runs/{run_id}/agents")
 
         artifact_items = artifacts.json()["items"]
         history_artifact = next(item for item in artifact_items if item["type"] == "browser_history")
@@ -432,9 +433,38 @@ def test_browser_use_local_run_uses_walker_and_exposes_artifacts(tmp_path: Path,
     assert evaluation.status_code == 200
     assert history_content.status_code == 200
     assert "C:/secret" not in history_content.text
-    event_types = [event["type"] for event in events.json()["items"]]
+    assert agents.status_code == 200
+    event_items = events.json()["items"]
+    event_types = [event["type"] for event in event_items]
     assert "artifact.created" in event_types
     assert "run.completed" in event_types
+    browser_started = next(event for event in event_items if event["type"] == "agent.started" and event["agent_type"] == "walker")
+    browser_completed = next(event for event in event_items if event["type"] == "agent.completed" and event["agent_type"] == "walker")
+    assert "Browser-use walkthrough started" in browser_started["message"]
+    assert browser_started["payload"]["stage_label"] == "Browser-use walkthrough"
+    assert browser_started["payload"]["action"] == "Starting browser-use walker"
+    assert browser_started["payload"]["started_at"]
+    assert browser_started["payload"]["max_steps"] == 7
+    assert browser_started["payload"]["timeout_sec"] == 12.0
+    assert browser_started["payload"]["progress"]["current_stage_label"] == "Browser-use walkthrough"
+    assert browser_started["payload"]["progress"]["completed_stage_count"] >= 1
+    assert "Browser-use walkthrough completed" in browser_completed["message"]
+    assert browser_completed["payload"]["browser_steps"] == 1
+    assert browser_completed["payload"]["timed_out"] is False
+    assert browser_completed["payload"]["artifact_count"] >= 1
+    assert browser_completed["payload"]["evidence_count"] == 1
+    assert browser_completed["payload"]["stage_elapsed_ms"] >= 0
+    walker_agent = next(agent for agent in agents.json()["items"] if agent["type"] == "walker")
+    assert walker_agent["metrics"]["stage_label"] == "Browser-use walkthrough"
+    assert walker_agent["metrics"]["browser_steps"] == 1
+    assert walker_agent["metrics"]["timed_out"] is False
+    assert walker_agent["metrics"]["agent_elapsed_ms"] >= 0
+    assert detail["progress"]["current_stage_label"] == "Run completed"
+    assert detail["progress"]["completed_stage_count"] == detail["progress"]["total_stage_count"]
+    assert detail["progress"]["artifact_count"] >= len(artifact_items)
+    assert detail["progress"]["screenshot_count"] == 1
+    assert detail["progress"]["browser_history_count"] == 1
+    assert detail["progress"]["evidence_count"] >= 1
 
 
 def test_browser_use_default_verification_off_does_not_await_verification(tmp_path: Path, monkeypatch) -> None:

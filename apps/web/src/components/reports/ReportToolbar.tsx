@@ -28,7 +28,7 @@ function copyButtonLabel(copyState: ReportToolbarProps["copyState"]): string {
     return "复制失败";
   }
 
-  return "复制 Markdown";
+  return "复制全文";
 }
 
 export function ReportToolbar({
@@ -55,24 +55,24 @@ export function ReportToolbar({
           {copyButtonLabel(copyState)}
         </button>
         <details className="toolbar-details">
-          <summary>更多</summary>
+          <summary>高级信息</summary>
           <div className="artifact-strip">
             <button type="button" onClick={onDownloadMarkdown} disabled={!canDownload}>
-              下载 report.md
+              下载原始报告
             </button>
             <ArtifactLink
               artifactId={report?.markdown_artifact_id}
               artifacts={resolvedArtifacts}
               runId={report?.run_id}
-              label="打开报告源文件"
-              disabledReason={report ? undefined : "报告产物尚未就绪"}
+              label="打开原始报告文件"
+              disabledReason={report ? undefined : "报告文件尚未就绪"}
             />
             <ArtifactLink
               artifactId={report?.evaluation_artifact_id}
               artifacts={resolvedArtifacts}
               runId={report?.run_id}
-              label="打开评分 JSON"
-              disabledReason={report?.evaluation_artifact_id ? undefined : "评分产物不可用"}
+              label="打开评估源文件"
+              disabledReason={report?.evaluation_artifact_id ? undefined : "评估文件暂不可用"}
             />
           </div>
         </details>

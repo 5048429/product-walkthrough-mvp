@@ -21,7 +21,7 @@ interface ReportScreenshot {
   title: string;
   summary: string;
   url: string;
-  sourceUrl: string | null;
+  sourceLabel: string | null;
 }
 
 interface MarkdownSection {
@@ -29,20 +29,10 @@ interface MarkdownSection {
   lines: string[];
 }
 
-interface CompletionSummary {
-  total: number;
-  completed: number;
-  blocked: number;
-  failed: number;
-  running: number;
-  label: string;
-}
-
-const completedStatuses = new Set(["completed", "succeeded", "done", "passed"]);
-const runningStatuses = new Set(["queued", "starting", "running", "finalizing", "pending"]);
 const blockedStatuses = new Set(["blocked", "awaiting_verification", "waiting", "friction"]);
 const failedStatuses = new Set(["failed", "timeout", "canceled", "cancelled", "error"]);
 const imageExtensions = /\.(?:png|jpe?g|webp|gif|bmp)$/i;
+const longTextLimit = 180;
 
 function inferStatus(report: ReportResponse | null, status?: ConsoleStatus): ConsoleStatus {
   if (status) {
@@ -54,6 +44,25 @@ function inferStatus(report: ReportResponse | null, status?: ConsoleStatus): Con
 
 function formatScore(value: number): string {
   return value <= 1 ? `${Math.round(value * 100)}%` : String(value);
+}
+
+function scoreLabel(key: string): string | null {
+  const normalized = key.toLowerCase();
+  const labels: Record<string, string> = {
+    accuracy: "结论准确性",
+    completeness: "覆盖完整度",
+    evidence_quality: "线索质量",
+    clarity: "表达清晰度",
+    overall_score: "总体评分",
+    relevance: "相关性",
+    usefulness: "可执行性",
+  };
+
+  if (/scenario_id|artifact|markdown|report\.md|evaluation\.json|run_id|evidence_count/.test(normalized)) {
+    return null;
+  }
+
+  return labels[normalized] ?? key.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function mergeArtifacts(...artifactGroups: Array<Artifact[] | undefined>): Artifact[] {
@@ -83,6 +92,78 @@ function stripInlineMarkdown(value: string): string {
     .replace(/[`*_~]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function truncateText(value: string, limit = longTextLimit): string {
+  if (value.length <= limit) {
+    return value;
+  }
+
+  return `${value.slice(0, Math.max(0, limit - 1)).trim()}…`;
+}
+
+function shortPageLabel(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(value);
+    const pathParts = parsed.pathname.split("/").filter(Boolean);
+    const lastPart = pathParts[pathParts.length - 1]?.replace(/[-_]+/g, " ");
+    const pageName = lastPart ? ` · ${truncateText(lastPart, 28)}` : "";
+
+    return `页面 ${parsed.hostname}${pageName}`;
+  } catch {
+    return null;
+  }
+}
+
+function cleanUserFacingText(value: string, fallback = ""): string {
+  const cleaned = stripInlineMarkdown(value)
+    .replace(/\bscenario_id\s*[:：=]\s*[\w.-]+/gi, "对应场景")
+    .replace(/\boverall_score\b/gi, "总体评分")
+    .replace(/\bevidence_count\b/gi, "证据数量")
+    .replace(/\breport\.md\b/gi, "原始报告")
+    .replace(/\bevaluation\.json\b/gi, "评估信息")
+    .replace(/\bMarkdown\b/g, "原文")
+    .replace(/\bartifacts?\b/gi, "文件")
+    .replace(/https?:\/\/\S+/gi, "相关页面")
+    .replace(/[A-Za-z]:[\\/][^\s，。；、)）]+/g, "本地文件")
+    .replace(/(?:^|\s)[./\\][^\s，。；、)）]+/g, " 本地文件")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return cleaned || fallback;
+}
+
+function oneSentence(value: string, fallback: string): string {
+  const cleaned = cleanUserFacingText(value, fallback);
+  const sentence = /^(.+?[。！？!?])(?:\s|$)/.exec(cleaned)?.[1] ?? cleaned;
+
+  return truncateText(sentence, 160);
+}
+
+function cleanInsightItems(items: string[], limit: number): string[] {
+  const seen = new Set<string>();
+  const cleanedItems: string[] = [];
+
+  for (const item of items) {
+    const cleaned = truncateText(cleanUserFacingText(item), longTextLimit);
+
+    if (!cleaned || seen.has(cleaned)) {
+      continue;
+    }
+
+    seen.add(cleaned);
+    cleanedItems.push(cleaned);
+
+    if (cleanedItems.length >= limit) {
+      break;
+    }
+  }
+
+  return cleanedItems;
 }
 
 function parseMarkdownSections(markdown: string): MarkdownSection[] {
@@ -163,76 +244,6 @@ function getSectionItems(sections: MarkdownSection[], keywords: string[], limit:
   return section ? extractItemsFromLines(section.lines, limit) : [];
 }
 
-function summarizeCompletion(evidence: EvidenceResponse | null | undefined, status: ConsoleStatus): CompletionSummary {
-  const results = evidence?.results ?? [];
-
-  if (results.length === 0) {
-    return {
-      total: 0,
-      completed: status === "done" ? 1 : 0,
-      blocked: blockedStatuses.has(status) ? 1 : 0,
-      failed: failedStatuses.has(status) ? 1 : 0,
-      running: runningStatuses.has(status) ? 1 : 0,
-      label: status === "done" ? "报告已完成" : statusCopy(status),
-    };
-  }
-
-  let completed = 0;
-  let blocked = 0;
-  let failed = 0;
-  let running = 0;
-
-  for (const result of results) {
-    const resultStatus = result.status.toLowerCase();
-
-    if (completedStatuses.has(resultStatus)) {
-      completed += 1;
-    } else if (blockedStatuses.has(resultStatus)) {
-      blocked += 1;
-    } else if (failedStatuses.has(resultStatus)) {
-      failed += 1;
-    } else if (runningStatuses.has(resultStatus)) {
-      running += 1;
-    }
-  }
-
-  return {
-    total: results.length,
-    completed,
-    blocked,
-    failed,
-    running,
-    label: `${completed}/${results.length} 个场景完成`,
-  };
-}
-
-function completionPercent(summary: CompletionSummary): number {
-  if (summary.total === 0) {
-    return summary.completed > 0 ? 100 : 0;
-  }
-
-  return Math.round((summary.completed / summary.total) * 100);
-}
-
-function statusCopy(status: ConsoleStatus): string {
-  switch (status) {
-    case "done":
-      return "已完成";
-    case "running":
-      return "正在生成";
-    case "awaiting_verification":
-      return "暂停等待验证";
-    case "blocked":
-      return "受阻";
-    case "failed":
-      return "失败";
-    case "timeout":
-      return "超时";
-    default:
-      return "未开始";
-  }
-}
-
 function metadataString(artifact: Artifact, keys: string[]): string | null {
   for (const key of keys) {
     const value = artifact.metadata[key];
@@ -267,6 +278,49 @@ function getScreenshotArtifactIds(item: EvidenceItem): string[] {
   return item.screenshot_artifact_id ? [item.screenshot_artifact_id] : [];
 }
 
+function readableScreenshotTitle(item: EvidenceItem, artifact: Artifact): string {
+  const candidates = [item.scenario_title, item.title, item.product, artifact.title];
+
+  for (const candidate of candidates) {
+    const cleaned = cleanUserFacingText(candidate ?? "");
+
+    if (cleaned && !imageExtensions.test(cleaned) && !/^[\w.-]{18,}$/.test(cleaned)) {
+      return truncateText(cleaned, 56);
+    }
+  }
+
+  return "关键页面截图";
+}
+
+function readableScreenshotSummary(item: EvidenceItem): string {
+  const candidates = [item.summary, item.scenario_title, shortPageLabel(item.url), item.product];
+
+  for (const candidate of candidates) {
+    const cleaned = cleanUserFacingText(candidate ?? "");
+
+    if (cleaned) {
+      return truncateText(cleaned, 96);
+    }
+  }
+
+  return "本次走查保留的页面画面。";
+}
+
+function readableArtifactScreenshot(artifact: Artifact): Pick<ReportScreenshot, "title" | "summary" | "sourceLabel"> {
+  const title = cleanUserFacingText(artifact.title);
+  const fileTitle = artifact.path
+    .split(/[\\/]/)
+    .pop()
+    ?.replace(/\.[^.]+$/, "")
+    .replace(/[-_]+/g, " ");
+
+  return {
+    title: truncateText(title || cleanUserFacingText(fileTitle ?? "") || "关键页面截图", 56),
+    summary: "本次走查保留的页面画面。",
+    sourceLabel: null,
+  };
+}
+
 function collectReportScreenshots(evidence: EvidenceResponse | null | undefined, artifacts: Artifact[], limit = 6): ReportScreenshot[] {
   const imageArtifacts = new Map(artifacts.filter(isImageArtifact).map((artifact) => [artifact.id, artifact]));
   const screenshots: ReportScreenshot[] = [];
@@ -283,10 +337,10 @@ function collectReportScreenshots(evidence: EvidenceResponse | null | undefined,
       seen.add(artifact.id);
       screenshots.push({
         id: artifact.id,
-        title: item.title || artifact.title,
-        summary: item.summary || artifact.title,
+        title: readableScreenshotTitle(item, artifact),
+        summary: readableScreenshotSummary(item),
         url: getArtifactUrl(artifact),
-        sourceUrl: item.url,
+        sourceLabel: shortPageLabel(item.url),
       });
 
       if (screenshots.length >= limit) {
@@ -301,12 +355,13 @@ function collectReportScreenshots(evidence: EvidenceResponse | null | undefined,
     }
 
     seen.add(artifact.id);
+    const screenshotCopy = readableArtifactScreenshot(artifact);
     screenshots.push({
       id: artifact.id,
-      title: artifact.title,
-      summary: artifact.path,
+      title: screenshotCopy.title,
+      summary: screenshotCopy.summary,
       url: getArtifactUrl(artifact),
-      sourceUrl: null,
+      sourceLabel: screenshotCopy.sourceLabel,
     });
 
     if (screenshots.length >= limit) {
@@ -333,7 +388,7 @@ function getSummaryText(markdown: string, sections: MarkdownSection[]): string {
     1,
   );
 
-  return summary[0] ?? markdownLines(markdown)[0] ?? "报告已生成，完整 Markdown 保留在下方。";
+  return oneSentence(summary[0] ?? markdownLines(markdown)[0] ?? "", "报告已生成，可先查看主要结论和关键截图。");
 }
 
 function getEvidenceStatus(item: EvidenceItem): string {
@@ -370,12 +425,12 @@ function getRiskItems(
     status === "awaiting_verification"
       ? ["真实浏览器仍在等待人工验证，最终结论可能需要补充确认。"]
       : status === "blocked"
-        ? ["任务被阻塞，建议先查看证据和错误信息后再重跑。"]
+        ? ["任务被阻塞，建议先复核已保留的线索，再决定是否重试。"]
         : status === "failed"
           ? ["任务未干净完成，报告中的结论应结合已有证据复核。"]
           : [];
 
-  return Array.from(new Set([...sectionItems, ...evidenceItems, ...statusItems])).slice(0, limit);
+  return cleanInsightItems([...sectionItems, ...evidenceItems, ...statusItems], limit);
 }
 
 function getReportInsights(
@@ -402,8 +457,11 @@ function getReportInsights(
 
   return {
     summary: getSummaryText(markdown, sections),
-    findings: (findingsFromReport.length ? findingsFromReport : evidenceFindings).slice(0, 4),
-    recommendations: recommendations.length ? recommendations : (evaluationNotes?.filter(Boolean) ?? []).slice(0, 3),
+    findings: cleanInsightItems(findingsFromReport.length ? findingsFromReport : evidenceFindings, 4),
+    recommendations: cleanInsightItems(
+      recommendations.length ? recommendations : (evaluationNotes?.filter(Boolean) ?? []),
+      4,
+    ),
     risks: getRiskItems(sections, evidence, status, 4),
   };
 }
@@ -430,8 +488,8 @@ function getReportState(
   if (error && !hasMarkdown) {
     return {
       kind: "error",
-      title: "报告产物不可用",
-      message: error,
+      title: "报告暂时不可用",
+      message: "这次结果还没有整理成可查看的报告，请稍后刷新或重试。",
       tone: "failed",
     };
   }
@@ -448,7 +506,7 @@ function getReportState(
     return {
       kind: "empty",
       title: "报告仍在生成",
-      message: "报告写入器尚未产出 report.md；产物生成后这里会自动展示。",
+      message: "结果还在整理中，完成后这里会自动展示。",
     };
   }
 
@@ -465,7 +523,7 @@ function getReportState(
     return {
       kind: "error",
       title: "报告生成受阻",
-      message: "任务在生成 report.md 前被阻塞，已有证据仍可复核。",
+      message: "任务在整理结果前被阻塞，已有线索仍可复核。",
       tone: "blocked",
     };
   }
@@ -474,7 +532,7 @@ function getReportState(
     return {
       kind: "error",
       title: "报告读取失败",
-      message: "任务失败时还没有可读取的 Markdown 报告。",
+      message: "任务失败时还没有可读取的报告。",
       tone: "failed",
     };
   }
@@ -482,8 +540,8 @@ function getReportState(
   if (!hasMarkdown) {
     return {
       kind: "empty",
-      title: "report.md 为空",
-      message: "当前任务返回了报告响应，但 Markdown 正文为空。",
+      title: "报告暂无正文",
+      message: "当前任务已有报告记录，但正文还没有内容。",
     };
   }
 
@@ -533,7 +591,7 @@ function downloadMarkdown(markdown: string): void {
   const link = document.createElement("a");
 
   link.href = url;
-  link.download = "report.md";
+  link.download = "原始报告.md";
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -567,9 +625,13 @@ export function ReportPreview({
     () => getReportInsights(markdown, evidence, effectiveStatus, report?.evaluation?.notes),
     [effectiveStatus, evidence, markdown, report?.evaluation?.notes],
   );
-  const completion = useMemo(() => summarizeCompletion(evidence, effectiveStatus), [effectiveStatus, evidence]);
-  const completionValue = completionPercent(completion);
-  const evidenceCount = evidence?.evidence.length ?? 0;
+  const scoreEntries = useMemo(
+    () =>
+      Object.entries(report?.evaluation?.scores ?? {})
+        .map(([key, value]) => ({ label: scoreLabel(key), value }))
+        .filter((entry): entry is { label: string; value: number } => Boolean(entry.label)),
+    [report?.evaluation?.scores],
+  );
 
   async function handleCopyMarkdown() {
     if (!hasMarkdown) {
@@ -599,7 +661,7 @@ export function ReportPreview({
       <div className="panel-header report-header">
         <div>
           <h2 id="report-preview-title">报告结论</h2>
-          <p>{report ? `先看结论和截图，完整 Markdown 在下方保留。` : "尚未选择报告"}</p>
+          <p>{report ? "先看结论、建议动作和关键截图。" : "尚未选择报告"}</p>
         </div>
       </div>
 
@@ -612,83 +674,44 @@ export function ReportPreview({
         onDownloadMarkdown={handleDownloadMarkdown}
       />
 
-      {loading && !hasMarkdown ? (
-        <EmptyState title="正在读取报告" message="正在从 API 读取 report.md 和 evaluation.json。" />
-      ) : null}
+      {loading && !hasMarkdown ? <EmptyState title="正在读取报告" message="正在整理最新结论，请稍候。" /> : null}
       {!loading && state.kind === "empty" ? <EmptyState title={state.title} message={state.message} /> : null}
       {state.kind === "error" ? (
-        <ErrorState title={state.title} message={state.message} tone={state.tone} details={error ?? undefined} />
+        <ErrorState title={state.title} message={state.message} tone={state.tone} />
       ) : null}
       {evaluationError && hasMarkdown ? (
         <ErrorState
-          title="评分暂不可用"
-          message="evaluation.json 缺失或不可读，但 Markdown 报告仍可查看。"
-          details={evaluationError}
+          title="评估信息暂不可用"
+          message="不影响查看报告结论和原始报告全文。"
           compact
         />
       ) : null}
       {error && hasMarkdown ? (
         <ErrorState
           title="报告刷新异常"
-          message="当前仍显示已缓存或部分生成的 Markdown 报告，但最新请求返回了错误。"
-          details={error}
+          message="当前仍显示已缓存或部分生成的报告；最新结果稍后可再次刷新。"
           compact
         />
       ) : null}
 
       {hasMarkdown ? (
         <div className="report-layout">
-          <article className="markdown-preview" aria-label="Markdown report">
+          <article className="markdown-preview" aria-label="报告内容">
             <section className="report-outcome" aria-label="报告结论摘要">
               <div className="report-outcome-main">
                 <div className="section-title">总体结论</div>
                 <h3>{insights.summary}</h3>
-                <div className="report-progress-card">
-                  <div>
-                    <span>完成情况</span>
-                    <strong>{completion.label}</strong>
-                  </div>
-                  <div className="report-progress-bar" aria-label={`完成度 ${completionValue}%`}>
-                    <span style={{ width: `${completionValue}%` }} />
-                  </div>
-                </div>
-              </div>
-              <div className="report-outcome-metrics" aria-label="报告关键指标">
-                <div>
-                  <span>总体评分</span>
-                  <strong>{report?.evaluation ? formatScore(report.evaluation.overall_score) : "待生成"}</strong>
-                </div>
-                <div>
-                  <span>任务状态</span>
-                  <strong>{statusCopy(effectiveStatus)}</strong>
-                </div>
-                <div>
-                  <span>证据</span>
-                  <strong>{evidenceCount} 条</strong>
-                </div>
-                <div>
-                  <span>截图</span>
-                  <strong>{screenshots.length} 张</strong>
-                </div>
-                <div>
-                  <span>风险跟进</span>
-                  <strong>{completion.blocked + completion.failed} 项</strong>
-                </div>
-                <div>
-                  <span>进行中</span>
-                  <strong>{completion.running} 项</strong>
-                </div>
               </div>
             </section>
 
             <section className="report-insight-grid" aria-label="关键结论">
               <article className="report-insight-card">
                 <div className="section-title">主要发现</div>
-                {renderInsightList(insights.findings, "报告暂未提炼出独立发现，可在完整 Markdown 中查看原始内容。")}
+                {renderInsightList(insights.findings, "报告暂未提炼出独立发现，可在原始报告全文中查看。")}
               </article>
               <article className="report-insight-card">
                 <div className="section-title">建议动作</div>
-                {renderInsightList(insights.recommendations, "报告暂未写入建议动作。")}
+                {renderInsightList(insights.recommendations, "暂无明确建议动作。")}
               </article>
               <article className="report-insight-card report-insight-card-risk">
                 <div className="section-title">风险 / 需跟进</div>
@@ -699,8 +722,8 @@ export function ReportPreview({
             <section className="report-screenshot-strip" aria-label="报告关键截图">
               <div className="report-section-heading">
                 <div>
-                  <div className="section-title">关联截图</div>
-                  <strong>直接查看页面证据</strong>
+                  <div className="section-title">关键截图</div>
+                  <strong>快速确认对应页面画面</strong>
                 </div>
                 <span>{screenshots.length} 张</span>
               </div>
@@ -714,84 +737,96 @@ export function ReportPreview({
                       <figcaption>
                         <strong>{screenshot.title}</strong>
                         <span>{screenshot.summary}</span>
-                        {screenshot.sourceUrl ? <small>{screenshot.sourceUrl}</small> : null}
+                        {screenshot.sourceLabel ? <small>{screenshot.sourceLabel}</small> : null}
                       </figcaption>
                     </figure>
                   ))}
                 </div>
               ) : (
-                <EmptyState title="暂无可预览截图" message="如果 evidence 或 artifacts 写入截图，截图会直接出现在这里。" compact />
+                <EmptyState title="暂无关键截图" message="如果本次走查保存了页面截图，会显示在这里。" compact />
               )}
             </section>
 
             <details className="report-markdown-details">
               <summary>
-                <strong>完整 Markdown 报告</strong>
-                <span>保留原始过程、证据和建议</span>
+                <strong>原始报告全文</strong>
+                <span>保留完整描述，默认收起</span>
               </summary>
               <div className="report-markdown-body">
-            {loading ? (
-              <div className="partial-banner partial-banner-running">
-                <strong>正在刷新报告</strong>
-                <span>正在从 API 读取最新 report.md。</span>
+                {loading ? (
+                  <div className="partial-banner partial-banner-running">
+                    <strong>正在刷新报告</strong>
+                    <span>正在读取最新结果。</span>
+                  </div>
+                ) : null}
+                {effectiveStatus === "running" ||
+                effectiveStatus === "awaiting_verification" ||
+                effectiveStatus === "blocked" ||
+                effectiveStatus === "failed" ? (
+                  <div className={`partial-banner partial-banner-${effectiveStatus}`}>
+                    <strong>{effectiveStatus === "running" ? "报告仍在生成" : "已保留部分报告"}</strong>
+                    <span>
+                      {effectiveStatus === "running"
+                        ? "任务仍在运行；报告生成完成后这里可能继续更新。"
+                        : effectiveStatus === "awaiting_verification"
+                          ? "浏览器正在等待人工验证，当前报告仍可查看。"
+                          : "任务未干净完成，但已生成的报告仍可复核。"}
+                    </span>
+                  </div>
+                ) : null}
+                <ReportMarkdown markdown={markdown} artifacts={resolvedArtifacts} runId={report?.run_id} />
               </div>
-            ) : null}
-            {effectiveStatus === "running" ||
-            effectiveStatus === "awaiting_verification" ||
-            effectiveStatus === "blocked" ||
-            effectiveStatus === "failed" ? (
-              <div className={`partial-banner partial-banner-${effectiveStatus}`}>
-                <strong>{effectiveStatus === "running" ? "报告仍在生成" : "已保留部分报告"}</strong>
-                <span>
-                  {effectiveStatus === "running"
-                    ? "任务仍在运行；报告生成完成后这里可能继续更新。"
-                    : effectiveStatus === "awaiting_verification"
-                      ? "浏览器正在等待人工验证，当前报告仍可查看。"
-                      : "任务未干净完成，但已生成的报告仍可复核。"}
-                </span>
-              </div>
-            ) : null}
-            <ReportMarkdown markdown={markdown} artifacts={resolvedArtifacts} runId={report?.run_id} />
+            </details>
+
+            <details className="report-advanced-details">
+              <summary>
+                <strong>高级信息</strong>
+                <span>提纲和评估细项</span>
+              </summary>
+              <div className="report-advanced-grid">
+                <section className="evaluation-panel">
+                  <div className="section-title">报告提纲</div>
+                  {headings.length > 0 ? (
+                    <ol className="outline-list">
+                      {headings.map((heading) => (
+                        <li key={heading.id} className={`outline-level-${heading.level}`}>
+                          <a href={`#${heading.id}`}>{cleanUserFacingText(heading.text, "报告段落")}</a>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : (
+                    <EmptyState title="暂无提纲" message="原始报告里暂时没有可提取的标题。" compact />
+                  )}
+                </section>
+
+                <section className="evaluation-panel">
+                  <div className="section-title evaluation-title">评估细项</div>
+                  {report?.evaluation ? (
+                    <>
+                      <div className="score-display">{formatScore(report.evaluation.overall_score)}</div>
+                      {scoreEntries.length > 0 ? (
+                        <dl className="score-list">
+                          {scoreEntries.map((entry) => (
+                            <div key={entry.label}>
+                              <dt>{entry.label}</dt>
+                              <dd>{formatScore(entry.value)}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      ) : null}
+                      <ul className="notes-list">
+                        {report.evaluation.notes.map((note) => (
+                          <li key={note}>{cleanUserFacingText(note)}</li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : (
+                    <EmptyState title="评估信息暂不可用" message="仍可查看报告结论和原始报告全文。" compact />
+                  )}
+                </section>
               </div>
             </details>
           </article>
-
-          <aside className="evaluation-panel">
-            <div className="section-title">报告目录</div>
-            {headings.length > 0 ? (
-              <ol className="outline-list">
-                {headings.map((heading) => (
-                  <li key={heading.id} className={`outline-level-${heading.level}`}>
-                    <a href={`#${heading.id}`}>{heading.text}</a>
-                  </li>
-                ))}
-              </ol>
-            ) : (
-              <EmptyState title="暂无目录" message="Markdown 中还没有可提取的标题。" compact />
-            )}
-
-            <div className="section-title evaluation-title">评分明细</div>
-            {report?.evaluation ? (
-              <>
-                <div className="score-display">{formatScore(report.evaluation.overall_score)}</div>
-                <dl className="score-list">
-                  {Object.entries(report.evaluation.scores).map(([key, value]) => (
-                    <div key={key}>
-                      <dt>{key.replaceAll("_", " ")}</dt>
-                      <dd>{formatScore(value)}</dd>
-                    </div>
-                  ))}
-                </dl>
-                <ul className="notes-list">
-                  {report.evaluation.notes.map((note) => (
-                    <li key={note}>{note}</li>
-                  ))}
-                </ul>
-              </>
-            ) : (
-              <EmptyState title="评分暂不可用" message="evaluation.json 缺失时仍可查看 Markdown 报告。" compact />
-            )}
-          </aside>
         </div>
       ) : null}
     </section>

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AgentStatusBoard } from "../components/agents/AgentStatusBoard";
 import { AgentTimeline } from "../components/agents/AgentTimeline";
 import { EmptyState } from "../components/common/EmptyState";
@@ -58,6 +58,12 @@ const progressStages: ProgressStage[] = [
   { label: "评分", types: ["evaluator"] },
 ];
 
+const liveRunStatuses = ["queued", "starting", "running", "awaiting_verification", "finalizing", "canceling"] as const;
+
+function isRunLive(run: RunDetail | null): boolean {
+  return Boolean(run && (liveRunStatuses as readonly string[]).includes(run.status));
+}
+
 function getCompletion(run: RunDetail | null): number {
   if (!run || run.progress.total_scenarios === 0) {
     return 0;
@@ -97,11 +103,11 @@ function getRunMessage(status: ConsoleStatus, run: RunDetail | null): string {
   }
 
   if (status === "blocked") {
-    return "走查受阻，需要人工处理或环境操作；已有产物仍可查看。";
+    return "走查受阻，需要人工处理或环境操作；已有结果仍可查看。";
   }
 
   if (status === "failed") {
-    return "走查失败，部分产物和诊断详情仍可查看。";
+    return "走查失败，部分结果和诊断详情仍可查看。";
   }
 
   if (status === "timeout") {
@@ -164,19 +170,96 @@ function formatClock(value: string | null | undefined): string {
   return value ? new Date(value).toLocaleTimeString() : "--";
 }
 
+function timestampMs(value: string | null | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : null;
+}
+
+function formatDateTime(value: string | null | undefined): string {
+  const time = timestampMs(value);
+
+  if (time === null) {
+    return "--";
+  }
+
+  return new Date(time).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+function formatElapsed(start: string | null | undefined, endMs: number): string {
+  const startMs = timestampMs(start);
+
+  if (startMs === null) {
+    return "--";
+  }
+
+  const totalSeconds = Math.max(0, Math.floor((endMs - startMs) / 1000));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (days > 0) {
+    return `${days} 天 ${hours} 小时`;
+  }
+
+  if (hours > 0) {
+    return `${hours} 小时 ${minutes} 分`;
+  }
+
+  if (minutes > 0) {
+    return `${minutes} 分 ${seconds} 秒`;
+  }
+
+  return `${seconds} 秒`;
+}
+
+function getRunElapsedEnd(run: RunDetail | null, nowMs: number): number {
+  if (!run) {
+    return nowMs;
+  }
+
+  return timestampMs(run.completed_at) ?? nowMs;
+}
+
+function getAgentElapsedEnd(agent: AgentExecution | null, nowMs: number): number {
+  if (!agent) {
+    return nowMs;
+  }
+
+  if (agent.status === "running" || agent.status === "waiting" || agent.status === "pending") {
+    return nowMs;
+  }
+
+  return timestampMs(agent.completed_at ?? agent.updated_at) ?? nowMs;
+}
+
 function getActiveAgent(agents: AgentExecution[]): AgentExecution | null {
+  const candidates = agents.filter((agent) => ["running", "waiting", "failed", "pending"].includes(agent.status));
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
   const priority = new Map<AgentExecution["status"], number>([
     ["running", 0],
     ["waiting", 1],
     ["failed", 2],
     ["pending", 3],
-    ["succeeded", 4],
-    ["skipped", 5],
-    ["canceled", 6],
   ]);
 
   return (
-    [...agents].sort((a, b) => {
+    [...candidates].sort((a, b) => {
       const statusDiff = (priority.get(a.status) ?? 10) - (priority.get(b.status) ?? 10);
 
       if (statusDiff !== 0) {
@@ -224,7 +307,8 @@ function getAgentProgress(agent: AgentExecution): number {
   const completionScore = metricNumber(agent.metrics.completion_score);
 
   if (completionScore !== null) {
-    return Math.max(0, Math.min(100, Math.round(completionScore * 100)));
+    const normalizedScore = completionScore <= 1 ? completionScore * 100 : completionScore;
+    return Math.max(0, Math.min(100, Math.round(normalizedScore)));
   }
 
   const stepCount = metricNumber(agent.metrics.step_count);
@@ -269,7 +353,7 @@ function getAgentDetail(agent: AgentExecution | null, status: ConsoleStatus): st
     return "执行失败，错误和上下文已保留在详情与事件日志。";
   }
 
-  const target = [agent.product, agent.scenario_id ? `场景 ${agent.scenario_id}` : null].filter(Boolean).join(" / ");
+  const target = agent.product ? `产品：${agent.product}` : "全局任务";
   const actionByType: Record<AgentExecution["type"], string> = {
     director: "正在调度走查流程",
     planner: "正在拆解产品、场景和检查点",
@@ -290,16 +374,120 @@ function getAgentDetail(agent: AgentExecution | null, status: ConsoleStatus): st
         : `第 ${agent.current_step} 步`
       : null;
 
-  return [actionByType[agent.type], step, target || "全局任务"].filter(Boolean).join(" · ");
+  return [actionByType[agent.type], step, target].filter(Boolean).join(" · ");
+}
+
+function describeEventAction(event: RunEvent): string {
+  if (event.status === "awaiting_verification" || event.type === "run.awaiting_verification" || event.type === "auth_session.awaiting_user") {
+    return "暂停等待人工验证";
+  }
+
+  if (event.agent_type === "walker" || event.type === "scenario.started" || event.type === "scenario.step.started") {
+    return "浏览器正在走查页面";
+  }
+
+  if (event.agent_type === "evidence_extractor" || event.type === "evidence.created") {
+    return "证据已整理";
+  }
+
+  if (event.agent_type === "report_writer" || event.type === "report.generated") {
+    return event.type === "report.generated" ? "报告已生成" : "正在生成报告";
+  }
+
+  if (event.agent_type === "reviewer") {
+    return "发现和证据正在复核";
+  }
+
+  if (event.agent_type === "product_analyst" || event.agent_type === "competitive_analyst" || event.type === "finding.created") {
+    return event.type === "finding.created" ? "发现已提炼" : "正在分析页面发现";
+  }
+
+  if (event.agent_type === "evaluator" || event.type === "evaluation.generated") {
+    return event.type === "evaluation.generated" ? "评分已生成" : "正在计算评分";
+  }
+
+  if (event.agent_type === "planner") {
+    return "走查计划正在拆解";
+  }
+
+  if (event.agent_type === "director") {
+    return "任务流程正在调度";
+  }
+
+  switch (event.type) {
+    case "run.created":
+      return "任务已创建";
+    case "plan.loaded":
+      return "走查计划已读取";
+    case "run.started":
+      return "任务已开始";
+    case "stage.started":
+      return "新的阶段已开始";
+    case "stage.completed":
+      return "阶段已完成";
+    case "agent.started":
+      return `${event.agent_type ? labelAgentType(event.agent_type) : "执行单元"}开始执行`;
+    case "agent.completed":
+      return `${event.agent_type ? labelAgentType(event.agent_type) : "执行单元"}已完成`;
+    case "agent.failed":
+      return `${event.agent_type ? labelAgentType(event.agent_type) : "执行单元"}执行失败`;
+    case "scenario.step.completed":
+      return "页面步骤已记录";
+    case "scenario.completed":
+      return "一个场景已走查完成";
+    case "screenshot.archived":
+      return "截图已保存";
+    case "artifact.created":
+      return "结果已保存";
+    case "auth_session.started":
+      return "可见浏览器已打开";
+    case "auth_session.completed":
+      return "人工验证已完成";
+    case "auth_session.failed":
+      return "人工验证失败";
+    case "run.retry_started":
+      return "验证后任务已重新启动";
+    case "run.blocked":
+      return "任务受阻，等待处理";
+    case "run.finalizing":
+      return "正在整理结果和报告";
+    case "run.completed":
+      return "任务已完成";
+    case "run.failed":
+      return "任务失败";
+    case "run.timeout":
+      return "任务超时";
+    case "run.canceled":
+      return "任务已取消";
+    default:
+      return labelEventType(event.type);
+  }
+}
+
+function isTechnicalMessage(message: string): boolean {
+  return /\b(seq|agent_id|artifact_id|scenario_id|run_id)\b/i.test(message) || /[0-9a-f]{8}-[0-9a-f]{4}/i.test(message);
+}
+
+function describeEventContext(event: RunEvent): string {
+  const message = event.message.trim();
+  const parts = [
+    message && message !== event.type && !isTechnicalMessage(message) ? message : null,
+    event.product ? `产品：${event.product}` : null,
+    typeof event.step_index === "number" ? `第 ${event.step_index} 步` : null,
+    event.status ? `状态：${labelStatus(event.status)}` : null,
+    event.artifact_ids?.length ? `新增 ${event.artifact_ids.length} 项结果` : null,
+  ];
+
+  return parts.filter(Boolean).join(" · ") || "等待下一步更新";
 }
 
 function formatEventMeta(event: RunEvent): string {
-  const agent = event.agent_type ? labelAgentType(event.agent_type) : event.agent_id ?? "系统";
+  const agent = event.agent_type ? labelAgentType(event.agent_type) : "系统";
   const parts = [
-    agent,
-    event.product,
-    event.scenario_id ? `场景 ${event.scenario_id}` : null,
-    event.status ? labelStatus(event.status) : null,
+    `执行：${agent}`,
+    event.product ? `产品：${event.product}` : null,
+    event.status ? `状态：${labelStatus(event.status)}` : null,
+    event.artifact_ids?.length ? `${event.artifact_ids.length} 项结果` : null,
   ];
 
   return parts.filter(Boolean).join(" · ");
@@ -342,19 +530,40 @@ function RunProgressPanel({
 }: RunProgressPanelProps) {
   const completion = getCompletion(run);
   const awaitingVerification = run?.status === "awaiting_verification";
-  const activeAgent = getActiveAgent(agents);
+  const activeAgent = status === "done" ? null : getActiveAgent(agents);
+  const livePanel = isRunLive(run) || Boolean(activeAgent && (activeAgent.status === "running" || activeAgent.status === "waiting"));
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!livePanel) {
+      setNowMs(Date.now());
+      return;
+    }
+
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [activeAgent?.id, activeAgent?.status, livePanel, run?.id]);
+
   const recentEvents = meaningfulEvents(events);
   const phases = phaseCounts(agents);
+  const phaseTotal = Math.max(run?.progress.total_stage_count ?? 0, phases.total);
+  const phaseDoneCount = status === "done" ? phaseTotal : Math.max(run?.progress.completed_stage_count ?? 0, phases.done);
+  const phaseProgress = phaseTotal
+    ? Math.min(100, Math.round(((phaseDoneCount + (phases.active ? 0.35 : 0)) / phaseTotal) * 100))
+    : 0;
   const activeAgentProgress = activeAgent ? getAgentProgress(activeAgent) : 0;
+  const runStartedAt = run?.started_at ?? run?.created_at ?? null;
+  const runElapsed = formatElapsed(runStartedAt, getRunElapsedEnd(run, nowMs));
+  const stageStartedAt = activeAgent?.started_at ?? run?.progress.stage_started_at ?? null;
+  const stageElapsed = stageStartedAt ? formatElapsed(stageStartedAt, activeAgent ? getAgentElapsedEnd(activeAgent, nowMs) : getRunElapsedEnd(run, nowMs)) : "--";
   const screenshotCount = Math.max(
+    run?.progress.screenshot_count ?? 0,
     run?.screenshot_count ?? 0,
     evidenceScreenshotCount(evidence),
     artifacts.filter((artifact) => artifact.type === "screenshot").length,
   );
-  const evidenceCount = evidence?.evidence.length ?? null;
-  const canStopRun = Boolean(
-    run && ["queued", "starting", "running", "awaiting_verification", "finalizing", "canceling"].includes(run.status),
-  );
+  const evidenceCount = run?.progress.evidence_count ?? evidence?.evidence.length ?? null;
+  const canStopRun = isRunLive(run);
   const panelSession = authSession?.run_id === run?.id ? authSession : null;
   const sessionStatus = panelSession?.status ?? "not_started";
   const canStartAuthSession =
@@ -385,11 +594,24 @@ function RunProgressPanel({
       {run ? (
         <div className="active-summary run-overview-strip">
           <div className="run-overview-main">
-            <div className="section-title">任务概览</div>
-            <strong className="run-id">{run.id}</strong>
+            <div className="section-title">任务目标</div>
             <p>{run.research_goal}</p>
+            <div className="run-time-grid">
+              <div>
+                <span>任务开始</span>
+                <strong>{formatDateTime(runStartedAt)}</strong>
+              </div>
+              <div>
+                <span>已运行</span>
+                <strong>{runElapsed}</strong>
+              </div>
+            </div>
           </div>
           <div className="run-overview-progress">
+            <div className="progress-label-row">
+              <span>场景进度</span>
+              <strong>{completion}%</strong>
+            </div>
             <div className="progress-track" aria-label={`已完成 ${completion}%`}>
               <div style={{ width: `${completion}%` }} />
             </div>
@@ -409,7 +631,7 @@ function RunProgressPanel({
       {run ? (
         <div className={`run-live-snapshot ${awaitingVerification ? "run-live-paused" : ""}`} aria-label="运行现场">
           <div className="live-focus-card">
-            <div className="section-title">当前 Agent</div>
+            <div className="section-title">当前阶段</div>
             <div className="live-focus-heading">
               <strong>{activeAgent ? labelAgentType(activeAgent.type) : status === "done" ? "报告已完成" : "等待事件"}</strong>
               {activeAgent ? (
@@ -424,18 +646,34 @@ function RunProgressPanel({
                 ? getAgentDetail(activeAgent, status)
                 : status === "done"
                   ? "报告、证据和评分都已生成。"
-                  : "启动后会显示正在执行的 Agent 和页面动作。"}
+                  : "启动后会显示正在执行的阶段和页面动作。"}
             </span>
-            {activeAgent ? (
-              <div className="live-agent-meter" aria-label={`${labelAgentType(activeAgent.type)} 完成度 ${activeAgentProgress}%`}>
-                <span style={{ width: `${activeAgentProgress}%` }} />
-              </div>
-            ) : null}
+            <div className="live-agent-timing">
+              <span>阶段开始：{formatDateTime(stageStartedAt)}</span>
+              <span>阶段已运行：{stageElapsed}</span>
+            </div>
+            <div className="progress-label-row">
+              <span>当前阶段进度</span>
+              <strong>{activeAgent ? `${activeAgentProgress}%` : "--"}</strong>
+            </div>
+            <div
+              className="live-agent-meter"
+              aria-label={activeAgent ? `${labelAgentType(activeAgent.type)} 完成度 ${activeAgentProgress}%` : "当前阶段尚未开始"}
+            >
+              <span style={{ width: `${activeAgentProgress}%` }} />
+            </div>
           </div>
-          <div className="live-metric-card">
+          <div className="live-metric-card live-stage-card">
             <span>阶段</span>
+            <div className="progress-label-row">
+              <span>阶段进度</span>
+              <strong>{phaseProgress}%</strong>
+            </div>
+            <div className="live-stage-meter" aria-label={`阶段进度 ${phaseProgress}%`}>
+              <span style={{ width: `${phaseProgress}%` }} />
+            </div>
             <strong>
-              {phases.done}/{phases.total}
+              {phaseDoneCount}/{phaseTotal}
             </strong>
             <small>
               {phases.active
@@ -453,7 +691,7 @@ function RunProgressPanel({
           <div className="live-metric-card">
             <span>最近更新</span>
             <strong>{recentEvents[0] ? formatClock(recentEvents[0].ts) : "--"}</strong>
-            <small>{recentEvents[0]?.message ?? "暂无事件"}</small>
+            <small>{recentEvents[0] ? describeEventAction(recentEvents[0]) : "暂无事件"}</small>
           </div>
         </div>
       ) : null}
@@ -473,18 +711,15 @@ function RunProgressPanel({
                 <li key={event.id}>
                   <time dateTime={event.ts}>{formatClock(event.ts)}</time>
                   <div>
-                    <strong>{labelEventType(event.type)}</strong>
-                    <p>{event.message}</p>
-                    <span>
-                      {formatEventMeta(event)}
-                      {event.artifact_ids?.length ? ` · ${event.artifact_ids.length} 个产物` : ""}
-                    </span>
+                    <strong>{describeEventAction(event)}</strong>
+                    <p>{describeEventContext(event)}</p>
+                    <span>{formatEventMeta(event)}</span>
                   </div>
                 </li>
               ))}
             </ol>
           ) : (
-            <p className="empty-copy">任务启动后，这里会显示最近的 Agent、证据和报告生成事件。</p>
+            <p className="empty-copy">任务启动后，这里会显示最近的执行阶段、证据和报告生成事件。</p>
           )}
         </details>
       ) : null}
@@ -498,8 +733,8 @@ function RunProgressPanel({
             <span>3. 回到这里点击“完成验证并继续”，用新的登录态继续走查。</span>
             <span>
               验证会话：{labelStatus(sessionStatus)}
-              {panelSession?.storage_state_saved ? "，storage state 已保存" : ""}
-              {activeRetryRunId ? `，重试任务：${activeRetryRunId}` : ""}
+              {panelSession?.storage_state_saved ? "，登录态已保存" : ""}
+              {activeRetryRunId ? "，重试任务已创建" : ""}
             </span>
             {error ? <span>暂停原因：{error}</span> : null}
           </div>
@@ -523,12 +758,12 @@ function RunProgressPanel({
       {retryOfRunId ? (
         <div className="verification-inline">
           <strong>人工验证后的重试任务</strong>
-          <span>来源任务：{retryOfRunId}；验证会话：{metadataString(run, "verification_session_id") ?? "未记录"}。</span>
+          <span>已沿用新的登录态继续走查；原任务上下文可在详情页查看。</span>
         </div>
       ) : null}
 
       <div className="stage-summary">
-        <div className="section-title">Agent 进度</div>
+        <div className="section-title">执行单元进度</div>
         <p>{getCurrentPhase(agents, status)}</p>
         <AgentTimeline agents={agents} consoleStatus={status} />
       </div>
@@ -733,7 +968,7 @@ function DashboardReportPreview({
         <StatusBadge status={status} />
       </div>
 
-      {loading ? <EmptyState title="正在读取报告" message="正在从 API 读取 Markdown 报告和评分。" /> : null}
+      {loading ? <EmptyState title="正在读取报告" message="正在整理最新摘要、截图和评分。" /> : null}
       {!loading && error ? <ErrorState title="报告暂不可用" message="当前报告请求返回错误。" details={error} compact /> : null}
 
       {!loading && !error && !hasReport ? (
@@ -880,13 +1115,13 @@ export function ConsolePage() {
       return;
     }
 
-    if (window.confirm("确定要立即停止当前任务吗？已生成的产物会保留。")) {
+    if (window.confirm("确定要立即停止当前任务吗？已生成的结果会保留。")) {
       void console.stopActiveRun();
     }
   };
 
   const deleteRunRecord = (runId: string) => {
-    if (window.confirm(`确定要删除任务记录 ${runId} 吗？这会删除本地 run 目录和产物。`)) {
+    if (window.confirm(`确定要删除任务记录 ${runId} 吗？这会删除本地记录和结果文件。`)) {
       void console.deleteRunRecord(runId);
     }
   };

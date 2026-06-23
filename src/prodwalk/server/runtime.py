@@ -105,6 +105,20 @@ PIPELINE_ARTIFACT_IDS = {
     "evaluation_json": "art_evaluation_json",
 }
 
+PIPELINE_STAGE_LABELS = {
+    "ResearchDirector": "Research orchestration",
+    "ScenarioPlanner": "Planning scenarios",
+    "BrowserWalker": "Browser walkthrough",
+    "EvidenceExtractor": "Collecting evidence",
+    "ProductAnalyst": "Analyzing product experience",
+    "CompetitiveAnalyst": "Comparing products",
+    "Reviewer": "Reviewing findings",
+    "Evaluator": "Scoring results",
+    "MarkdownReportWriter": "Writing report",
+    "AuthSession": "Manual authentication",
+}
+PIPELINE_FIXED_STAGE_COUNT = 7
+
 AGENT_TERMINAL_STATUSES = {"succeeded", "failed", "skipped", "canceled"}
 RUN_TERMINAL_STATUSES = {"succeeded", "blocked", "timeout", "failed", "canceled"}
 BROWSER_USE_MODES = {"browser-use", "browser-use-local"}
@@ -156,12 +170,29 @@ class PipelineEventAdapter:
 
     async def _run_started(self, event: PipelineRunEvent) -> None:
         self.started_at = event.created_at
-        self.runtime._update_run(self.run_id, status="running", started_at=self.started_at)
+        progress = self.runtime._progress_with_runtime_context(
+            self.run_id,
+            stage_key="director",
+            stage_label=self.runtime._stage_label(event.agent or "ResearchDirector", self.run_id),
+            stage_started_at=self.started_at,
+            event_time=event.created_at,
+            status="running",
+        )
+        self.runtime._update_run(self.run_id, status="running", started_at=self.started_at, progress=progress)
         self.runtime._upsert_agent(
             self.run_id,
             event.agent or "ResearchDirector",
             "running",
             started_at=self.started_at,
+            metrics={
+                **dict(event.data),
+                **self.runtime._agent_progress_metrics(
+                    self.run_id,
+                    agent=event.agent or "ResearchDirector",
+                    stage_started_at=self.started_at,
+                    status="running",
+                ),
+            },
         )
         await self.runtime.append_event(
             self.run_id,
@@ -170,7 +201,17 @@ class PipelineEventAdapter:
             agent_id=self.runtime._agent_id(event.agent or "ResearchDirector"),
             agent_type=self.runtime._agent_type(event.agent),
             status="running",
-            payload=dict(event.data),
+            payload={
+                **dict(event.data),
+                **self.runtime._event_progress_fields(
+                    self.run_id,
+                    agent=event.agent or "ResearchDirector",
+                    base_progress=progress,
+                    stage_started_at=self.started_at,
+                    event_time=event.created_at,
+                    status="running",
+                ),
+            },
         )
         await self._stage_started()
 
@@ -178,6 +219,14 @@ class PipelineEventAdapter:
         if self.stage_started_emitted:
             return
         self.stage_started_emitted = True
+        payload = self.runtime._event_progress_fields(
+            self.run_id,
+            agent="ResearchDirector",
+            stage_key="pipeline",
+            stage_label="Research pipeline",
+            stage_started_at=self.started_at,
+            status="running",
+        )
         await self.runtime.append_event(
             self.run_id,
             "stage.started",
@@ -185,6 +234,7 @@ class PipelineEventAdapter:
             agent_id="agent_director",
             agent_type="director",
             status="running",
+            payload=payload,
         )
 
     async def _run_completed(self, event: PipelineRunEvent) -> None:
@@ -196,6 +246,15 @@ class PipelineEventAdapter:
         completed_at = event.created_at
         if final_status == "awaiting_verification":
             progress = self.runtime._progress_for_awaiting_verification(progress)
+        progress = self.runtime._progress_with_runtime_context(
+            self.run_id,
+            base_progress=progress,
+            stage_key=final_status,
+            stage_label=self.runtime._terminal_message(final_status),
+            stage_started_at=completed_at,
+            event_time=completed_at,
+            status=final_status,
+        )
         run_completed_at = None if final_status == "awaiting_verification" else completed_at
         self.runtime._update_run(
             self.run_id,
@@ -211,7 +270,16 @@ class PipelineEventAdapter:
             "waiting" if final_status == "awaiting_verification" else "succeeded",
             started_at=self.started_at,
             completed_at=None if final_status == "awaiting_verification" else completed_at,
-            metrics=dict(event.data),
+            metrics={
+                **dict(event.data),
+                **self.runtime._agent_progress_metrics(
+                    self.run_id,
+                    agent=event.agent or "ResearchDirector",
+                    stage_started_at=self.started_at,
+                    completed_at=completed_at,
+                    status=final_status,
+                ),
+            },
             error=final_error if final_status == "awaiting_verification" else None,
         )
         await self.runtime.append_event(
@@ -221,11 +289,34 @@ class PipelineEventAdapter:
             agent_id="agent_director",
             agent_type="director",
             status="finalizing",
-            payload={"progress": progress},
+            payload=self.runtime._event_progress_fields(
+                self.run_id,
+                agent="ResearchDirector",
+                stage_key="finalizing",
+                base_progress=progress,
+                stage_label="Research pipeline completed",
+                stage_started_at=completed_at,
+                event_time=completed_at,
+                status="finalizing",
+            ),
         )
         for artifact in artifacts:
             if artifact.get("type") != "browser_history":
                 continue
+            artifact_payload = {
+                "artifact_type": "browser_history",
+                "artifact_path": artifact.get("path"),
+                **self.runtime._event_progress_fields(
+                    self.run_id,
+                    agent="ResearchDirector",
+                    stage_key="finalizing",
+                    base_progress=progress,
+                    stage_label="Archiving browser history",
+                    stage_started_at=completed_at,
+                    event_time=completed_at,
+                    status="finalizing",
+                ),
+            }
             await self.runtime.append_event(
                 self.run_id,
                 "artifact.created",
@@ -233,10 +324,7 @@ class PipelineEventAdapter:
                 agent_id="agent_director",
                 agent_type="director",
                 status="finalizing",
-                payload={
-                    "artifact_type": "browser_history",
-                    "artifact_path": artifact.get("path"),
-                },
+                payload=artifact_payload,
                 artifact_ids=[str(artifact["id"])],
             )
         terminal_event_type = self.runtime._terminal_event_type(final_status)
@@ -250,7 +338,21 @@ class PipelineEventAdapter:
             agent_id="agent_director",
             agent_type="director",
             status=final_status,
-            payload={**dict(event.data), "final_status": final_status, "error": final_error},
+            payload={
+                **dict(event.data),
+                "final_status": final_status,
+                "error": final_error,
+                **self.runtime._event_progress_fields(
+                    self.run_id,
+                    agent="ResearchDirector",
+                    stage_key=final_status,
+                    base_progress=progress,
+                    stage_label=self.runtime._terminal_message(final_status),
+                    stage_started_at=completed_at,
+                    event_time=completed_at,
+                    status=final_status,
+                ),
+            },
             artifact_ids=artifact_ids,
         )
         self.terminal_emitted = True
@@ -262,13 +364,28 @@ class PipelineEventAdapter:
             "type": event.data.get("error_type"),
             "details": event.data.get("error"),
         }
-        self.runtime._update_run(self.run_id, status="failed", completed_at=completed_at, error=error)
+        progress = self.runtime._progress_with_runtime_context(
+            self.run_id,
+            stage_key="failed",
+            stage_label="Run failed",
+            stage_started_at=completed_at,
+            event_time=completed_at,
+            status="failed",
+        )
+        self.runtime._update_run(self.run_id, status="failed", completed_at=completed_at, progress=progress, error=error)
         self.runtime._upsert_agent(
             self.run_id,
             event.agent or "ResearchDirector",
             "failed",
             started_at=self.started_at,
             completed_at=completed_at,
+            metrics=self.runtime._agent_progress_metrics(
+                self.run_id,
+                agent=event.agent or "ResearchDirector",
+                stage_started_at=self.started_at,
+                completed_at=completed_at,
+                status="failed",
+            ),
             error=error,
         )
         await self.runtime.append_event(
@@ -279,7 +396,19 @@ class PipelineEventAdapter:
             agent_id="agent_director",
             agent_type="director",
             status="failed",
-            payload=error,
+            payload={
+                **error,
+                **self.runtime._event_progress_fields(
+                    self.run_id,
+                    agent="ResearchDirector",
+                    stage_key="failed",
+                    base_progress=progress,
+                    stage_label="Run failed",
+                    stage_started_at=completed_at,
+                    event_time=completed_at,
+                    status="failed",
+                ),
+            },
         )
         self.terminal_emitted = True
 
@@ -287,6 +416,17 @@ class PipelineEventAdapter:
         await self._stage_started()
         agent_id = self.runtime._agent_id(event.agent, event.product, event.scenario_id)
         agent_type = self.runtime._agent_type(event.agent)
+        browser_fields = self.runtime._browser_use_start_fields(self.run_id, event.agent)
+        stage_label = browser_fields.get("stage_label") or self.runtime._stage_label(event.agent, self.run_id)
+        progress = self.runtime._progress_with_runtime_context(
+            self.run_id,
+            stage_key=agent_type or "agent",
+            stage_label=str(stage_label),
+            stage_started_at=event.created_at,
+            event_time=event.created_at,
+            status="running",
+        )
+        self.runtime._update_run(self.run_id, progress=progress)
         self.runtime._upsert_agent(
             self.run_id,
             event.agent,
@@ -294,69 +434,180 @@ class PipelineEventAdapter:
             product=event.product,
             scenario_id=event.scenario_id,
             started_at=event.created_at,
-            metrics=self._metrics(event),
+            metrics={
+                **self._metrics(event),
+                **browser_fields,
+                **self.runtime._agent_progress_metrics(
+                    self.run_id,
+                    agent=event.agent,
+                    stage_started_at=event.created_at,
+                    status="running",
+                ),
+            },
         )
+        message = event.message or f"{event.agent or 'Agent'} started"
+        if event.agent == "BrowserWalker" and browser_fields:
+            message = f"Browser-use walkthrough started: {event.product or 'product'} / {event.scenario_id or 'scenario'}"
         await self.runtime.append_event(
             self.run_id,
             "agent.started",
-            event.message or f"{event.agent or 'Agent'} started",
+            message,
             agent_id=agent_id,
             agent_type=agent_type,
             product=event.product,
             scenario_id=event.scenario_id,
             status="running",
-            payload=dict(event.data),
+            payload={
+                **dict(event.data),
+                **browser_fields,
+                **self.runtime._event_progress_fields(
+                    self.run_id,
+                    agent=event.agent,
+                    base_progress=progress,
+                    stage_label=str(stage_label),
+                    stage_started_at=event.created_at,
+                    event_time=event.created_at,
+                    status="running",
+                ),
+            },
         )
 
     async def _agent_finished(self, event: PipelineRunEvent) -> None:
         agent_status = self._agent_status(event.status)
         api_event_type = "agent.completed" if agent_status == "succeeded" else "agent.status_changed"
+        started_at = self.runtime._agent_started_at(self.run_id, event.agent, event.product, event.scenario_id)
+        completed_at = event.created_at if agent_status in AGENT_TERMINAL_STATUSES else None
+        completion_fields = self.runtime._browser_use_completion_fields(self.run_id, event.agent, dict(event.data))
         self.runtime._upsert_agent(
             self.run_id,
             event.agent,
             agent_status,
             product=event.product,
             scenario_id=event.scenario_id,
-            completed_at=event.created_at if agent_status in AGENT_TERMINAL_STATUSES else None,
-            metrics=self._metrics(event),
+            completed_at=completed_at,
+            metrics={
+                **self._metrics(event),
+                **completion_fields,
+                **self.runtime._agent_progress_metrics(
+                    self.run_id,
+                    agent=event.agent,
+                    stage_started_at=started_at,
+                    completed_at=event.created_at,
+                    status=agent_status,
+                ),
+            },
         )
+        stage_label = self.runtime._stage_label(event.agent, self.run_id)
+        progress = self.runtime._progress_with_runtime_context(
+            self.run_id,
+            stage_key=self.runtime._stage_key(event.agent),
+            stage_label=stage_label,
+            stage_started_at=started_at or event.created_at,
+            event_time=event.created_at,
+            status=agent_status,
+        )
+        self.runtime._update_run(self.run_id, progress=progress)
+        message = event.message or f"{event.agent or 'Agent'} completed"
+        if event.agent == "BrowserWalker" and completion_fields:
+            if agent_status == "succeeded":
+                message = f"Browser-use walkthrough completed: {event.product or 'product'} / {event.scenario_id or 'scenario'}"
+            else:
+                message = f"Browser-use walkthrough status changed: {event.product or 'product'} / {event.scenario_id or 'scenario'}"
         await self.runtime.append_event(
             self.run_id,
             api_event_type,
-            event.message or f"{event.agent or 'Agent'} completed",
+            message,
             agent_id=self.runtime._agent_id(event.agent, event.product, event.scenario_id),
             agent_type=self.runtime._agent_type(event.agent),
             product=event.product,
             scenario_id=event.scenario_id,
             status=agent_status,
-            payload=dict(event.data),
+            payload={
+                **dict(event.data),
+                **self.runtime._event_progress_fields(
+                    self.run_id,
+                    agent=event.agent,
+                    base_progress=progress,
+                    stage_label=stage_label,
+                    stage_started_at=started_at or event.created_at,
+                    event_time=event.created_at,
+                    status=agent_status,
+                ),
+                **completion_fields,
+            },
         )
 
     async def _agent_blocked(self, event: PipelineRunEvent) -> None:
+        started_at = self.runtime._agent_started_at(self.run_id, event.agent, event.product, event.scenario_id)
+        completion_fields = self.runtime._browser_use_completion_fields(self.run_id, event.agent, dict(event.data))
         self.runtime._upsert_agent(
             self.run_id,
             event.agent,
             "waiting",
             product=event.product,
             scenario_id=event.scenario_id,
-            metrics=self._metrics(event),
+            metrics={
+                **self._metrics(event),
+                **completion_fields,
+                **self.runtime._agent_progress_metrics(
+                    self.run_id,
+                    agent=event.agent,
+                    stage_started_at=started_at,
+                    completed_at=event.created_at,
+                    status="waiting",
+                ),
+            },
         )
+        stage_label = self.runtime._stage_label(event.agent, self.run_id)
+        progress = self.runtime._progress_with_runtime_context(
+            self.run_id,
+            stage_key=self.runtime._stage_key(event.agent),
+            stage_label=stage_label,
+            stage_started_at=started_at or event.created_at,
+            event_time=event.created_at,
+            status="waiting",
+        )
+        self.runtime._update_run(self.run_id, progress=progress)
+        message = event.message or f"{event.agent or 'Agent'} is waiting"
+        if event.agent == "BrowserWalker" and completion_fields:
+            message = f"Browser-use walkthrough needs attention: {event.product or 'product'} / {event.scenario_id or 'scenario'}"
         await self.runtime.append_event(
             self.run_id,
             "agent.status_changed",
-            event.message or f"{event.agent or 'Agent'} is waiting",
+            message,
             level="warn",
             agent_id=self.runtime._agent_id(event.agent, event.product, event.scenario_id),
             agent_type=self.runtime._agent_type(event.agent),
             product=event.product,
             scenario_id=event.scenario_id,
             status="waiting",
-            payload=dict(event.data),
+            payload={
+                **dict(event.data),
+                **self.runtime._event_progress_fields(
+                    self.run_id,
+                    agent=event.agent,
+                    base_progress=progress,
+                    stage_label=stage_label,
+                    stage_started_at=started_at or event.created_at,
+                    event_time=event.created_at,
+                    status="waiting",
+                ),
+                **completion_fields,
+            },
         )
 
     async def _artifact_written(self, event: PipelineRunEvent) -> None:
+        artifacts = self.runtime._refresh_artifacts(self.run_id)
+        progress = self.runtime._progress_with_runtime_context(
+            self.run_id,
+            base_progress=self.runtime._progress_from_evidence(self.run_dir / "evidence.json"),
+            stage_key="finalizing",
+            stage_label="Finalizing artifacts",
+            stage_started_at=event.created_at,
+            event_time=event.created_at,
+            status="finalizing",
+        )
         if not self.finalizing_emitted:
-            progress = self.runtime._progress_from_evidence(self.run_dir / "evidence.json")
             self.runtime._update_run(self.run_id, status="finalizing", progress=progress)
             await self.runtime.append_event(
                 self.run_id,
@@ -365,11 +616,19 @@ class PipelineEventAdapter:
                 agent_id="agent_director",
                 agent_type="director",
                 status="finalizing",
-                payload={"progress": progress},
+                payload=self.runtime._event_progress_fields(
+                    self.run_id,
+                    agent="ResearchDirector",
+                    stage_key="finalizing",
+                    base_progress=progress,
+                    stage_label="Finalizing artifacts",
+                    stage_started_at=event.created_at,
+                    event_time=event.created_at,
+                    status="finalizing",
+                ),
             )
             self.finalizing_emitted = True
 
-        artifacts = self.runtime._refresh_artifacts(self.run_id)
         artifact_id = PIPELINE_ARTIFACT_IDS.get(event.artifact_type or "")
         known_artifact_ids = {artifact["id"] for artifact in artifacts}
         artifact_ids = [artifact_id] if artifact_id in known_artifact_ids else []
@@ -378,6 +637,18 @@ class PipelineEventAdapter:
             payload["artifact_type"] = event.artifact_type
         if event.artifact_path:
             payload["artifact_path"] = self.runtime._relative_path(Path(event.artifact_path))
+        payload.update(
+            self.runtime._event_progress_fields(
+                self.run_id,
+                agent=event.agent,
+                stage_key="finalizing",
+                base_progress=progress,
+                stage_label="Finalizing artifacts",
+                stage_started_at=event.created_at,
+                event_time=event.created_at,
+                status="finalizing",
+            )
+        )
         await self.runtime.append_event(
             self.run_id,
             "artifact.created",
@@ -396,6 +667,15 @@ class PipelineEventAdapter:
                 agent_id="agent_report_writer",
                 agent_type="report_writer",
                 status="finalizing",
+                payload=self.runtime._event_progress_fields(
+                    self.run_id,
+                    agent="MarkdownReportWriter",
+                    base_progress=progress,
+                    stage_label="Report generated",
+                    stage_started_at=event.created_at,
+                    event_time=event.created_at,
+                    status="finalizing",
+                ),
                 artifact_ids=[artifact_id],
             )
         elif artifact_id == "art_evaluation_json":
@@ -406,6 +686,15 @@ class PipelineEventAdapter:
                 agent_id="agent_evaluator",
                 agent_type="evaluator",
                 status="finalizing",
+                payload=self.runtime._event_progress_fields(
+                    self.run_id,
+                    agent="Evaluator",
+                    base_progress=progress,
+                    stage_label="Evaluation generated",
+                    stage_started_at=event.created_at,
+                    event_time=event.created_at,
+                    status="finalizing",
+                ),
                 artifact_ids=[artifact_id],
             )
 
@@ -419,8 +708,19 @@ class PipelineEventAdapter:
     def _metrics(self, event: PipelineRunEvent) -> dict[str, Any]:
         metrics = event.data.get("metrics")
         if isinstance(metrics, dict):
-            return dict(metrics)
-        return {key: value for key, value in event.data.items() if key.endswith("_count") or key == "step_count"}
+            merged = dict(metrics)
+        else:
+            merged = {}
+        for key, value in event.data.items():
+            if key.endswith("_count") or key in {
+                "step_count",
+                "result_status",
+                "scenario_title",
+                "overall_score",
+                "language",
+            }:
+                merged[key] = value
+        return merged
 
 
 class RunRuntime:
@@ -517,6 +817,20 @@ class RunRuntime:
                 "total_scenarios": total_scenarios,
                 "completed_scenarios": 0,
                 "failed_scenarios": 0,
+                "current_stage": "queued",
+                "current_stage_label": "Queued",
+                "current_stage_status": "queued",
+                "stage_started_at": None,
+                "elapsed_ms": 0,
+                "elapsed_sec": 0.0,
+                "stage_elapsed_ms": 0,
+                "stage_elapsed_sec": 0.0,
+                "completed_stage_count": 0,
+                "total_stage_count": total_scenarios + PIPELINE_FIXED_STAGE_COUNT,
+                "evidence_count": 0,
+                "artifact_count": 0,
+                "screenshot_count": 0,
+                "browser_history_count": 0,
             },
             "params": params,
             "artifact_ids": [],
@@ -1519,6 +1833,15 @@ class RunRuntime:
                 completed_at = utc_now()
                 if final_status == "awaiting_verification":
                     progress = self._progress_for_awaiting_verification(progress)
+                progress = self._progress_with_runtime_context(
+                    run_id,
+                    base_progress=progress,
+                    stage_key=final_status,
+                    stage_label=self._terminal_message(final_status),
+                    stage_started_at=completed_at,
+                    event_time=completed_at,
+                    status=final_status,
+                )
                 run_completed_at = None if final_status == "awaiting_verification" else completed_at
                 self._update_run(
                     run_id,
@@ -1534,6 +1857,13 @@ class RunRuntime:
                     "waiting" if final_status == "awaiting_verification" else "succeeded",
                     started_at=adapter.started_at,
                     completed_at=None if final_status == "awaiting_verification" else completed_at,
+                    metrics=self._agent_progress_metrics(
+                        run_id,
+                        agent="ResearchDirector",
+                        stage_started_at=adapter.started_at,
+                        completed_at=completed_at,
+                        status=final_status,
+                    ),
                     error=final_error if final_status == "awaiting_verification" else None,
                 )
                 await self.append_event(
@@ -1542,22 +1872,68 @@ class RunRuntime:
                     self._terminal_message(final_status),
                     level="info" if final_status == "succeeded" else ("error" if final_status == "failed" else "warn"),
                     status=final_status,
-                    payload={"final_status": final_status, "error": final_error},
+                    payload={
+                        "final_status": final_status,
+                        "error": final_error,
+                        **self._event_progress_fields(
+                            run_id,
+                            agent="ResearchDirector",
+                            stage_key=final_status,
+                            base_progress=progress,
+                            stage_label=self._terminal_message(final_status),
+                            stage_started_at=completed_at,
+                            event_time=completed_at,
+                            status=final_status,
+                        ),
+                    },
                     artifact_ids=artifact_ids,
                 )
         except Exception as exc:  # noqa: BLE001 - surfaced through run status and events.
             if not adapter.terminal_emitted:
                 completed_at = utc_now()
                 error = {"message": str(exc), "type": type(exc).__name__}
-                self._update_run(run_id, status="failed", completed_at=completed_at, error=error)
-                self._upsert_agent(run_id, "ResearchDirector", "failed", completed_at=completed_at, error=error)
+                progress = self._progress_with_runtime_context(
+                    run_id,
+                    stage_key="failed",
+                    stage_label="Run failed",
+                    stage_started_at=completed_at,
+                    event_time=completed_at,
+                    status="failed",
+                )
+                self._update_run(run_id, status="failed", completed_at=completed_at, progress=progress, error=error)
+                self._upsert_agent(
+                    run_id,
+                    "ResearchDirector",
+                    "failed",
+                    completed_at=completed_at,
+                    metrics=self._agent_progress_metrics(
+                        run_id,
+                        agent="ResearchDirector",
+                        stage_started_at=adapter.started_at,
+                        completed_at=completed_at,
+                        status="failed",
+                    ),
+                    error=error,
+                )
                 await self.append_event(
                     run_id,
                     "run.failed",
                     f"Run failed: {exc}",
                     level="error",
                     status="failed",
-                    payload=error,
+                    payload={
+                        **error,
+                        **self._event_progress_fields(
+                            run_id,
+                            agent="ResearchDirector",
+                            stage_key="failed",
+                            base_progress=progress,
+                            stage_label="Run failed",
+                            stage_started_at=completed_at,
+                            event_time=completed_at,
+                            status="failed",
+                        ),
+                    },
                 )
         finally:
             if self._active_browser_run_id == run_id:
@@ -2558,7 +2934,7 @@ class RunRuntime:
                     "status": agent_status,
                     "updated_at": now,
                     "completed_at": completed_at if agent_status in AGENT_TERMINAL_STATUSES else item.get("completed_at"),
-                    "metrics": metrics or item.get("metrics", {}),
+                    "metrics": self._merge_metrics(item.get("metrics"), metrics),
                     "error": error,
                 }
             )
@@ -2585,6 +2961,12 @@ class RunRuntime:
             }
         )
         self._write_json(path, existing)
+
+    def _merge_metrics(self, current: Any, updates: dict[str, Any] | None) -> dict[str, Any]:
+        merged = dict(current) if isinstance(current, dict) else {}
+        if updates:
+            merged.update(updates)
+        return merged
 
     def _agent_status(self, status: str) -> str:
         if status == "blocked":
@@ -2620,6 +3002,269 @@ class RunRuntime:
             return f"{label}: {product or 'unknown product'} / {scenario_id or 'unknown scenario'}"
         return label
 
+    def _stage_label(self, agent: str | None, run_id: str | None = None) -> str:
+        if agent == "BrowserWalker" and run_id and self._is_browser_use_run(run_id):
+            return "Browser-use walkthrough"
+        return PIPELINE_STAGE_LABELS.get(agent or "", agent or "Run")
+
+    def _stage_key(self, agent: str | None) -> str:
+        return self._agent_type(agent) or "run"
+
+    def _is_browser_use_run(self, run_id: str) -> bool:
+        try:
+            record = self._record_for_run(run_id)
+        except ApiError:
+            return False
+        mode = str(record.get("mode") or record.get("params", {}).get("mode") or "")
+        return mode in BROWSER_USE_MODES
+
+    def _progress_with_runtime_context(
+        self,
+        run_id: str,
+        *,
+        base_progress: dict[str, Any] | None = None,
+        stage_key: str | None = None,
+        stage_label: str | None = None,
+        stage_started_at: str | None = None,
+        event_time: str | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            record = self._record_for_run(run_id)
+        except ApiError:
+            record = {}
+        progress = dict(record.get("progress")) if isinstance(record.get("progress"), dict) else {}
+        if base_progress:
+            progress.update(base_progress)
+
+        run_started_at = record.get("started_at") if isinstance(record.get("started_at"), str) else None
+        run_created_at = record.get("created_at") if isinstance(record.get("created_at"), str) else None
+        event_time = event_time or utc_now()
+        stage_started_at = (
+            stage_started_at
+            or (progress.get("stage_started_at") if isinstance(progress.get("stage_started_at"), str) else None)
+            or run_started_at
+            or run_created_at
+        )
+
+        completed_stage_count = self._completed_stage_count(run_id)
+        scenario_count = max(0, int(progress.get("total_scenarios") or 0))
+        total_stage_count = max(
+            int(progress.get("total_stage_count") or 0),
+            scenario_count + PIPELINE_FIXED_STAGE_COUNT,
+            completed_stage_count,
+        )
+        artifact_counts = self._artifact_count_fields(run_id)
+        evidence_counts = self._evidence_count_fields(run_id)
+        elapsed_ms = self._elapsed_ms(run_started_at or run_created_at, event_time)
+        stage_elapsed_ms = self._elapsed_ms(stage_started_at, event_time)
+
+        progress.update(
+            {
+                "current_stage": stage_key or progress.get("current_stage"),
+                "current_stage_label": stage_label or progress.get("current_stage_label"),
+                "current_stage_status": status or progress.get("current_stage_status"),
+                "stage_started_at": stage_started_at,
+                "elapsed_ms": elapsed_ms,
+                "elapsed_sec": round(elapsed_ms / 1000, 3),
+                "stage_elapsed_ms": stage_elapsed_ms,
+                "stage_elapsed_sec": round(stage_elapsed_ms / 1000, 3),
+                "completed_stage_count": completed_stage_count,
+                "total_stage_count": total_stage_count,
+                **evidence_counts,
+                **artifact_counts,
+            }
+        )
+        return progress
+
+    def _event_progress_fields(
+        self,
+        run_id: str,
+        *,
+        agent: str | None = None,
+        stage_key: str | None = None,
+        base_progress: dict[str, Any] | None = None,
+        stage_label: str | None = None,
+        stage_started_at: str | None = None,
+        event_time: str | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        progress = self._progress_with_runtime_context(
+            run_id,
+            base_progress=base_progress,
+            stage_key=stage_key if stage_key is not None else self._stage_key(agent),
+            stage_label=stage_label or self._stage_label(agent, run_id),
+            stage_started_at=stage_started_at,
+            event_time=event_time,
+            status=status,
+        )
+        return {
+            "stage": progress.get("current_stage"),
+            "stage_label": progress.get("current_stage_label"),
+            "started_at": progress.get("stage_started_at"),
+            "stage_started_at": progress.get("stage_started_at"),
+            "elapsed_ms": progress.get("elapsed_ms", 0),
+            "elapsed_sec": progress.get("elapsed_sec", 0.0),
+            "stage_elapsed_ms": progress.get("stage_elapsed_ms", 0),
+            "stage_elapsed_sec": progress.get("stage_elapsed_sec", 0.0),
+            "completed_stage_count": progress.get("completed_stage_count", 0),
+            "total_stage_count": progress.get("total_stage_count", 0),
+            "evidence_count": progress.get("evidence_count", 0),
+            "artifact_count": progress.get("artifact_count", 0),
+            "screenshot_count": progress.get("screenshot_count", 0),
+            "browser_history_count": progress.get("browser_history_count", 0),
+            "progress": progress,
+        }
+
+    def _agent_progress_metrics(
+        self,
+        run_id: str,
+        *,
+        agent: str | None = None,
+        stage_started_at: str | None = None,
+        completed_at: str | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        fields = self._event_progress_fields(
+            run_id,
+            agent=agent,
+            stage_started_at=stage_started_at,
+            event_time=completed_at,
+            status=status,
+        )
+        metrics = {key: value for key, value in fields.items() if key != "progress"}
+        if stage_started_at and completed_at:
+            metrics["agent_elapsed_ms"] = self._elapsed_ms(stage_started_at, completed_at)
+            metrics["agent_elapsed_sec"] = round(metrics["agent_elapsed_ms"] / 1000, 3)
+        return metrics
+
+    def _browser_use_start_fields(self, run_id: str, agent: str | None) -> dict[str, Any]:
+        if agent != "BrowserWalker" or not self._is_browser_use_run(run_id):
+            return {}
+        try:
+            record = self._record_for_run(run_id)
+        except ApiError:
+            record = {}
+        params = record.get("params") if isinstance(record.get("params"), dict) else {}
+        return {
+            "stage_label": "Browser-use walkthrough",
+            "action": "Starting browser-use walker",
+            "max_steps": int(params.get("browser_max_steps") or 0),
+            "timeout_sec": float(params.get("browser_timeout_sec") or 0),
+        }
+
+    def _browser_use_completion_fields(
+        self,
+        run_id: str,
+        agent: str | None,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        if agent != "BrowserWalker" or not self._is_browser_use_run(run_id):
+            return {}
+        metrics = data.get("metrics") if isinstance(data.get("metrics"), dict) else {}
+        browser_steps = metrics.get("browser_steps", data.get("browser_steps"))
+        if browser_steps is None:
+            browser_steps = metrics.get("step_count", data.get("step_count"))
+        timed_out = metrics.get("timed_out", data.get("timed_out"))
+        fields: dict[str, Any] = {
+            "action": "Browser-use walker finished",
+            "browser_steps": int(browser_steps or 0),
+            "timed_out": bool(timed_out),
+            "result_status": data.get("result_status"),
+            "error_count": len(data.get("errors") or []) if isinstance(data.get("errors"), list) else 0,
+        }
+        fields.update(self._artifact_count_fields(run_id))
+        if "evidence_count" in data:
+            fields["evidence_count"] = data["evidence_count"]
+        return fields
+
+    def _agent_started_at(
+        self,
+        run_id: str,
+        agent: str | None,
+        product: str | None = None,
+        scenario_id: str | None = None,
+    ) -> str | None:
+        agent_id = self._agent_id(agent, product, scenario_id)
+        run_dir = self._run_dir_for_id(run_id)
+        path = run_dir / "agents.json"
+        if not path.exists():
+            return None
+        try:
+            payload = self._read_json(path)
+        except Exception:
+            return None
+        if not isinstance(payload, list):
+            return None
+        for item in payload:
+            if isinstance(item, dict) and item.get("id") == agent_id and isinstance(item.get("started_at"), str):
+                return item["started_at"]
+        return None
+
+    def _completed_stage_count(self, run_id: str) -> int:
+        run_dir = self._run_dir_for_id(run_id)
+        path = run_dir / "agents.json"
+        if not path.exists():
+            return 0
+        try:
+            payload = self._read_json(path)
+        except Exception:
+            return 0
+        if not isinstance(payload, list):
+            return 0
+        return sum(
+            1
+            for item in payload
+            if isinstance(item, dict)
+            and item.get("type") != "director"
+            and str(item.get("status") or "") in AGENT_TERMINAL_STATUSES
+        )
+
+    def _artifact_count_fields(self, run_id: str, artifacts: list[dict[str, Any]] | None = None) -> dict[str, int]:
+        if artifacts is None:
+            try:
+                artifacts = self._build_artifacts(run_id, self._run_dir_for_id(run_id))
+            except ApiError:
+                artifacts = []
+        return {
+            "artifact_count": len(artifacts),
+            "screenshot_count": sum(1 for artifact in artifacts if artifact.get("type") == "screenshot"),
+            "browser_history_count": sum(1 for artifact in artifacts if artifact.get("type") == "browser_history"),
+        }
+
+    def _evidence_count_fields(self, run_id: str) -> dict[str, int]:
+        try:
+            path = self._run_dir_for_id(run_id) / "evidence.json"
+        except ApiError:
+            return {"evidence_count": 0, "result_count": 0}
+        if not path.exists():
+            return {"evidence_count": 0, "result_count": 0}
+        try:
+            payload = self._read_json(path)
+        except Exception:
+            return {"evidence_count": 0, "result_count": 0}
+        evidence = payload.get("evidence") if isinstance(payload.get("evidence"), list) else []
+        results = payload.get("results") if isinstance(payload.get("results"), list) else []
+        return {"evidence_count": len(evidence), "result_count": len(results)}
+
+    def _elapsed_ms(self, started_at: str | None, ended_at: str | None = None) -> int:
+        start = self._parse_iso_datetime(started_at)
+        if start is None:
+            return 0
+        end = self._parse_iso_datetime(ended_at) or datetime.now(timezone.utc)
+        return max(0, int((end - start).total_seconds() * 1000))
+
+    def _parse_iso_datetime(self, value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
     def _slug(self, value: str) -> str:
         slug = re.sub(r"[^a-zA-Z0-9]+", "_", value.strip().lower()).strip("_")
         return slug or "item"
@@ -2642,17 +3287,21 @@ class RunRuntime:
             ),
         }
 
-    def _progress_for_awaiting_verification(self, progress: dict[str, int]) -> dict[str, int]:
+    def _progress_for_awaiting_verification(self, progress: dict[str, Any]) -> dict[str, Any]:
         total = max(0, int(progress.get("total_scenarios") or 0))
         completed = max(0, int(progress.get("completed_scenarios") or 0))
         failed = max(0, int(progress.get("failed_scenarios") or 0))
         if total > 0 and completed >= total:
             completed = max(0, total - 1)
-        return {
-            "total_scenarios": total,
-            "completed_scenarios": completed,
-            "failed_scenarios": failed,
-        }
+        adjusted = dict(progress)
+        adjusted.update(
+            {
+                "total_scenarios": total,
+                "completed_scenarios": completed,
+                "failed_scenarios": failed,
+            }
+        )
+        return adjusted
 
     def _postprocess_run_outputs(self, run_id: str, run_dir: Path) -> None:
         try:

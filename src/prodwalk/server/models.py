@@ -106,6 +106,20 @@ class Progress(BaseModel):
     total_scenarios: int = 0
     completed_scenarios: int = 0
     failed_scenarios: int = 0
+    current_stage: str | None = None
+    current_stage_label: str | None = None
+    current_stage_status: str | None = None
+    stage_started_at: str | None = None
+    elapsed_ms: int = 0
+    elapsed_sec: float = 0.0
+    stage_elapsed_ms: int = 0
+    stage_elapsed_sec: float = 0.0
+    completed_stage_count: int = 0
+    total_stage_count: int = 0
+    evidence_count: int = 0
+    artifact_count: int = 0
+    screenshot_count: int = 0
+    browser_history_count: int = 0
 
 
 class RunSummary(BaseModel):
