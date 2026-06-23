@@ -5,6 +5,7 @@ import { EmptyState } from "../common/EmptyState";
 import { ErrorState } from "../common/ErrorState";
 import { StatusBadge } from "../StatusBadge";
 import { EVIDENCE_FOCUS_EVENT, type EventLevel, type EvidenceFocusRequest, type RunEvent } from "../../types/contracts";
+import { labelAgentType, labelEventType, labelStatus } from "../../i18n/zh";
 
 const levels: Array<EventLevel | "all"> = ["all", "debug", "info", "warn", "error"];
 
@@ -46,7 +47,7 @@ function ArtifactToken({ event, artifactId }: { event: RunEvent; artifactId: str
       className="artifact-link"
       style={tokenButtonStyle}
       onClick={() => focusEvidence({ runId: event.run_id, artifactId, sourceEventId: event.id })}
-      title="Locate evidence that references this artifact"
+      title="定位引用该产物的证据"
     >
       {artifactId}
     </button>
@@ -60,7 +61,7 @@ function EvidenceToken({ event, evidenceId }: { event: RunEvent; evidenceId: str
       className="artifact-link"
       style={tokenButtonStyle}
       onClick={() => focusEvidence({ runId: event.run_id, evidenceId, sourceEventId: event.id })}
-      title="Locate this evidence item"
+      title="定位这条证据"
     >
       {evidenceId}
     </button>
@@ -107,21 +108,25 @@ function PayloadSummary({ event }: { event: RunEvent }) {
 
 function getConnectionCopy(state: RunEventConnectionState | undefined, source: "api" | "mock" | undefined): string {
   if (source === "mock") {
-    return "mock fallback";
+    return "模拟数据";
   }
 
   switch (state) {
     case "connecting":
-      return "SSE connecting";
+      return "事件流连接中";
     case "open":
-      return "SSE open";
+      return "事件流已连接";
     case "error":
-      return "SSE disconnected";
+      return "事件流已断开";
     case "closed":
-      return "SSE closed";
+      return "事件流已关闭";
     default:
-      return "SSE idle";
+      return "事件流待连接";
   }
+}
+
+function labelAgentFilter(value: string): string {
+  return labelAgentType(value) || value;
 }
 
 export function EventLog({
@@ -154,46 +159,46 @@ export function EventLog({
     <section className="panel event-panel" aria-labelledby="event-log-title">
       <div className="panel-header">
         <div>
-          <h2 id="event-log-title">Live Event Log</h2>
+          <h2 id="event-log-title">实时事件日志</h2>
           <p>
-            {filteredEvents.length} of {events.length} events shown. {getConnectionCopy(connectionState, source)}.
+            显示 {filteredEvents.length}/{events.length} 条事件，{getConnectionCopy(connectionState, source)}。
           </p>
         </div>
         <div className="event-header-actions">
           <span className={`connection-pill connection-${connectionState}`}>{getConnectionCopy(connectionState, source)}</span>
           <button type="button" className={autoScroll ? "selected" : ""} onClick={() => setAutoScroll((value) => !value)}>
-            Auto-scroll {autoScroll ? "on" : "off"}
+            自动滚动{autoScroll ? "开" : "关"}
           </button>
         </div>
       </div>
 
       {connectionState === "error" ? (
         <ErrorState
-          title="Event stream disconnected"
-          message="The console keeps the events it already received. Reconnect is handled by EventSource when the API becomes reachable."
+          title="事件流已断开"
+          message="控制台会保留已收到的事件；API 恢复后 EventSource 会自动重连。"
           compact
         />
       ) : null}
-      {error ? <ErrorState title="Events unavailable" message={error} compact /> : null}
+      {error ? <ErrorState title="事件不可用" message={error} compact /> : null}
 
-      <div className="filter-row" aria-label="Event level filters">
+      <div className="filter-row" aria-label="事件筛选">
         <label className="field">
-          <span>Level</span>
+          <span>级别</span>
           <select value={level} onChange={(event) => setLevel(event.target.value as EventLevel | "all")}>
             {levels.map((item) => (
               <option key={item} value={item}>
-                {item}
+                {item === "all" ? "全部" : labelStatus(item)}
               </option>
             ))}
           </select>
         </label>
         <label className="field">
-          <span>Event type</span>
+          <span>事件类型</span>
           <select value={eventType} onChange={(event) => setEventType(event.target.value)}>
-            <option value="all">all</option>
+            <option value="all">全部</option>
             {eventTypes.map((item) => (
               <option key={item} value={item}>
-                {item}
+                {labelEventType(item)}
               </option>
             ))}
           </select>
@@ -201,21 +206,21 @@ export function EventLog({
         <label className="field">
           <span>Agent</span>
           <select value={agent} onChange={(event) => setAgent(event.target.value)}>
-            <option value="all">all</option>
+            <option value="all">全部</option>
             {agents.map((item) => (
               <option key={item} value={item}>
-                {item}
+                {labelAgentFilter(item)}
               </option>
             ))}
           </select>
         </label>
         <label className="field">
-          <span>Status</span>
+          <span>状态</span>
           <select value={status} onChange={(event) => setStatus(event.target.value)}>
-            <option value="all">all</option>
+            <option value="all">全部</option>
             {statuses.map((item) => (
               <option key={item} value={item}>
-                {item}
+                {labelStatus(item)}
               </option>
             ))}
           </select>
@@ -225,12 +230,12 @@ export function EventLog({
       <div className="event-stream" role="log">
         {filteredEvents.length === 0 ? (
           loading ? (
-            <EmptyState title="Loading events" message="Reading persisted events before opening the live stream." compact />
+            <EmptyState title="正在读取事件" message="先读取已持久化事件，再打开实时事件流。" compact />
           ) : (
             <div className="active-summary">
-              <div className="section-title">No events</div>
+              <div className="section-title">暂无事件</div>
               <p className="empty-copy">
-                {activeRunId ? "No event matches the current filters." : "Start or select a run to open its event stream."}
+                {activeRunId ? "当前筛选下没有匹配事件。" : "启动或选择一个任务后，这里会显示事件流。"}
               </p>
             </div>
           )
@@ -243,17 +248,17 @@ export function EventLog({
               </div>
               <div>
                 <div className="event-title">
-                  <strong>{event.type}</strong>
+                  <strong title={event.type}>{labelEventType(event.type)}</strong>
                   <time dateTime={event.ts}>{new Date(event.ts).toLocaleTimeString()}</time>
                 </div>
                 <p>{event.message}</p>
                 <div className="event-foot">
-                  <span>agent: {getAgentFilterValue(event)}</span>
-                  <span>status: {event.status ?? "--"}</span>
-                  <span>product: {event.product ?? "all"}</span>
-                  <span>scenario: {event.scenario_id ?? "--"}</span>
+                  <span>Agent：{event.agent_type ? labelAgentType(event.agent_type) : getAgentFilterValue(event)}</span>
+                  <span>状态：{event.status ? labelStatus(event.status) : "--"}</span>
+                  <span>产品：{event.product ?? "全部"}</span>
+                  <span>场景：{event.scenario_id ?? "--"}</span>
                   <span style={{ display: "inline-flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
-                    artifacts:{" "}
+                    产物：{" "}
                     {event.artifact_ids?.length
                       ? event.artifact_ids.map((artifactId) => <ArtifactToken key={artifactId} event={event} artifactId={artifactId} />)
                       : "--"}

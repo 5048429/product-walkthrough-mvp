@@ -16,7 +16,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import type { ConsoleDataSource, ConsoleErrorState } from "../hooks/useProdwalkConsole";
 import { useProdwalkConsole } from "../hooks/useProdwalkConsole";
 import type { RunEventConnectionState } from "../api/sse";
-import { labelAgentType, labelMode, labelStatus } from "../i18n/zh";
+import { labelAgentType, labelEventType, labelMode, labelStatus } from "../i18n/zh";
 import type {
   AgentExecution,
   AuthReadinessStatus,
@@ -29,6 +29,7 @@ import type {
   PlanSummary,
   ReportResponse,
   RunDetail,
+  RunEvent,
 } from "../types/contracts";
 
 type ConsoleView = "dashboard" | "report" | "evidence" | "history" | "details";
@@ -39,6 +40,22 @@ const views: Array<{ id: ConsoleView; label: string }> = [
   { id: "evidence", label: "证据" },
   { id: "history", label: "历史" },
   { id: "details", label: "详情" },
+];
+
+interface ProgressStage {
+  label: string;
+  types: Array<AgentExecution["type"]>;
+}
+
+const progressStages: ProgressStage[] = [
+  { label: "总控", types: ["director"] },
+  { label: "规划", types: ["planner"] },
+  { label: "走查", types: ["walker", "auth_session"] },
+  { label: "证据", types: ["evidence_extractor"] },
+  { label: "分析", types: ["product_analyst", "competitive_analyst"] },
+  { label: "审阅", types: ["reviewer"] },
+  { label: "报告", types: ["report_writer"] },
+  { label: "评分", types: ["evaluator"] },
 ];
 
 function getCompletion(run: RunDetail | null): number {
@@ -103,7 +120,9 @@ function getCurrentPhase(agents: AgentExecution[], status: ConsoleStatus): strin
   }
 
   if (activeAgent) {
-    return labelAgentType(activeAgent.type);
+    return [labelAgentType(activeAgent.type), activeAgent.current_step ? `第 ${activeAgent.current_step} 步` : null]
+      .filter(Boolean)
+      .join(" · ");
   }
 
   if (status === "done") {
@@ -126,13 +145,173 @@ function getCurrentPhase(agents: AgentExecution[], status: ConsoleStatus): strin
 }
 
 function evidenceScreenshotCount(evidence: EvidenceResponse | null): number {
-  return (evidence?.evidence ?? []).filter((item) => item.screenshot_artifact_id || item.screenshot_artifact_ids?.length).length;
+  const screenshotIds = new Set<string>();
+
+  for (const item of evidence?.evidence ?? []) {
+    if (item.screenshot_artifact_id) {
+      screenshotIds.add(item.screenshot_artifact_id);
+    }
+
+    for (const screenshotId of item.screenshot_artifact_ids ?? []) {
+      screenshotIds.add(screenshotId);
+    }
+  }
+
+  return screenshotIds.size;
+}
+
+function formatClock(value: string | null | undefined): string {
+  return value ? new Date(value).toLocaleTimeString() : "--";
+}
+
+function getActiveAgent(agents: AgentExecution[]): AgentExecution | null {
+  const priority = new Map<AgentExecution["status"], number>([
+    ["running", 0],
+    ["waiting", 1],
+    ["failed", 2],
+    ["pending", 3],
+    ["succeeded", 4],
+    ["skipped", 5],
+    ["canceled", 6],
+  ]);
+
+  return (
+    [...agents].sort((a, b) => {
+      const statusDiff = (priority.get(a.status) ?? 10) - (priority.get(b.status) ?? 10);
+
+      if (statusDiff !== 0) {
+        return statusDiff;
+      }
+
+      return new Date(b.updated_at ?? b.started_at ?? 0).getTime() - new Date(a.updated_at ?? a.started_at ?? 0).getTime();
+    })[0] ?? null
+  );
+}
+
+function meaningfulEvents(events: RunEvent[]): RunEvent[] {
+  const sourceEvents = events.filter((event) => {
+    const eventType = event.type.toLowerCase();
+
+    return event.level !== "debug" && !eventType.includes("heartbeat") && (event.message.trim() || event.type);
+  });
+
+  return (sourceEvents.length ? sourceEvents : events).slice(-5).reverse();
+}
+
+function phaseCounts(agents: AgentExecution[]): { done: number; active: number; total: number; activeLabel: string } {
+  const done = progressStages.filter((stage) => {
+    const stageAgents = agents.filter((agent) => stage.types.includes(agent.type));
+
+    return stageAgents.length > 0 && stageAgents.every((agent) => agent.status === "succeeded" || agent.status === "skipped");
+  }).length;
+  const activeStage = progressStages.find((stage) =>
+    agents.some((agent) => stage.types.includes(agent.type) && (agent.status === "running" || agent.status === "waiting")),
+  );
+
+  return {
+    done,
+    active: agents.filter((agent) => ["running", "waiting"].includes(agent.status)).length,
+    total: progressStages.length,
+    activeLabel: activeStage?.label ?? (done === progressStages.length ? "全部完成" : "等待调度"),
+  };
+}
+
+function metricNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function getAgentProgress(agent: AgentExecution): number {
+  const completionScore = metricNumber(agent.metrics.completion_score);
+
+  if (completionScore !== null) {
+    return Math.max(0, Math.min(100, Math.round(completionScore * 100)));
+  }
+
+  const stepCount = metricNumber(agent.metrics.step_count);
+
+  if (typeof agent.current_step === "number" && stepCount && stepCount > 0) {
+    return Math.max(0, Math.min(100, Math.round((agent.current_step / stepCount) * 100)));
+  }
+
+  if (agent.status === "succeeded" || agent.status === "skipped") {
+    return 100;
+  }
+
+  if (agent.status === "running" || agent.status === "waiting") {
+    return 42;
+  }
+
+  return 0;
+}
+
+function agentStatusForDisplay(agent: AgentExecution, status: ConsoleStatus): AgentExecution["status"] | ConsoleStatus {
+  if (agent.status === "succeeded") {
+    return "done";
+  }
+
+  if (agent.status === "waiting" && (status === "awaiting_verification" || status === "blocked")) {
+    return status;
+  }
+
+  return agent.status;
+}
+
+function getAgentDetail(agent: AgentExecution | null, status: ConsoleStatus): string {
+  if (!agent) {
+    return "等待下一条事件";
+  }
+
+  if (agent.status === "waiting" && status === "awaiting_verification") {
+    return "暂停等待人工验证，完成登录、验证码或 MFA 后继续。";
+  }
+
+  if (agent.status === "failed") {
+    return "执行失败，错误和上下文已保留在详情与事件日志。";
+  }
+
+  const target = [agent.product, agent.scenario_id ? `场景 ${agent.scenario_id}` : null].filter(Boolean).join(" / ");
+  const actionByType: Record<AgentExecution["type"], string> = {
+    director: "正在调度走查流程",
+    planner: "正在拆解产品、场景和检查点",
+    walker: "正在走查页面并记录操作结果",
+    auth_session: "正在准备登录验证会话",
+    evidence_extractor: "正在整理证据、截图和浏览器结果",
+    product_analyst: "正在提炼产品发现",
+    competitive_analyst: "正在对比竞品表现",
+    reviewer: "正在复核发现和证据链",
+    report_writer: "正在汇总报告内容",
+    evaluator: "正在计算评分",
+  };
+  const stepCount = metricNumber(agent.metrics.step_count);
+  const step =
+    typeof agent.current_step === "number"
+      ? stepCount
+        ? `第 ${agent.current_step}/${stepCount} 步`
+        : `第 ${agent.current_step} 步`
+      : null;
+
+  return [actionByType[agent.type], step, target || "全局任务"].filter(Boolean).join(" · ");
+}
+
+function formatEventMeta(event: RunEvent): string {
+  const agent = event.agent_type ? labelAgentType(event.agent_type) : event.agent_id ?? "系统";
+  const parts = [
+    agent,
+    event.product,
+    event.scenario_id ? `场景 ${event.scenario_id}` : null,
+    event.status ? labelStatus(event.status) : null,
+  ];
+
+  return parts.filter(Boolean).join(" · ");
 }
 
 interface RunProgressPanelProps {
   run: RunDetail | null;
   status: ConsoleStatus;
   agents: AgentExecution[];
+  events: RunEvent[];
+  artifacts: Artifact[];
+  evidence: EvidenceResponse | null;
   authSession: AuthSessionDetail | null;
   retryRunId: string | null;
   error: string | null;
@@ -148,6 +327,9 @@ function RunProgressPanel({
   run,
   status,
   agents,
+  events,
+  artifacts,
+  evidence,
   authSession,
   retryRunId,
   error,
@@ -160,6 +342,16 @@ function RunProgressPanel({
 }: RunProgressPanelProps) {
   const completion = getCompletion(run);
   const awaitingVerification = run?.status === "awaiting_verification";
+  const activeAgent = getActiveAgent(agents);
+  const recentEvents = meaningfulEvents(events);
+  const phases = phaseCounts(agents);
+  const activeAgentProgress = activeAgent ? getAgentProgress(activeAgent) : 0;
+  const screenshotCount = Math.max(
+    run?.screenshot_count ?? 0,
+    evidenceScreenshotCount(evidence),
+    artifacts.filter((artifact) => artifact.type === "screenshot").length,
+  );
+  const evidenceCount = evidence?.evidence.length ?? null;
   const canStopRun = Boolean(
     run && ["queued", "starting", "running", "awaiting_verification", "finalizing", "canceling"].includes(run.status),
   );
@@ -213,6 +405,89 @@ function RunProgressPanel({
       )}
 
       {error && !awaitingVerification ? <ErrorState title="任务异常" message="当前任务返回了阻塞或错误信息。" details={error} compact /> : null}
+
+      {run ? (
+        <div className={`run-live-snapshot ${awaitingVerification ? "run-live-paused" : ""}`} aria-label="运行现场">
+          <div className="live-focus-card">
+            <div className="section-title">当前 Agent</div>
+            <div className="live-focus-heading">
+              <strong>{activeAgent ? labelAgentType(activeAgent.type) : status === "done" ? "报告已完成" : "等待事件"}</strong>
+              {activeAgent ? (
+                <StatusBadge
+                  status={agentStatusForDisplay(activeAgent, status)}
+                  label={labelStatus(agentStatusForDisplay(activeAgent, status))}
+                />
+              ) : null}
+            </div>
+            <span>
+              {activeAgent
+                ? getAgentDetail(activeAgent, status)
+                : status === "done"
+                  ? "报告、证据和评分都已生成。"
+                  : "启动后会显示正在执行的 Agent 和页面动作。"}
+            </span>
+            {activeAgent ? (
+              <div className="live-agent-meter" aria-label={`${labelAgentType(activeAgent.type)} 完成度 ${activeAgentProgress}%`}>
+                <span style={{ width: `${activeAgentProgress}%` }} />
+              </div>
+            ) : null}
+          </div>
+          <div className="live-metric-card">
+            <span>阶段</span>
+            <strong>
+              {phases.done}/{phases.total}
+            </strong>
+            <small>
+              {phases.active
+                ? `${phases.active} 个进行中 · ${phases.activeLabel}`
+                : status === "done"
+                  ? "必要阶段已收束"
+                  : phases.activeLabel}
+            </small>
+          </div>
+          <div className="live-metric-card">
+            <span>证据</span>
+            <strong>{evidenceCount === null ? "待同步" : `${evidenceCount} 条`}</strong>
+            <small>{screenshotCount} 张截图</small>
+          </div>
+          <div className="live-metric-card">
+            <span>最近更新</span>
+            <strong>{recentEvents[0] ? formatClock(recentEvents[0].ts) : "--"}</strong>
+            <small>{recentEvents[0]?.message ?? "暂无事件"}</small>
+          </div>
+        </div>
+      ) : null}
+
+      {run ? (
+        <details className="run-recent-events" open aria-label="最近运行动态">
+          <summary className="report-section-heading">
+            <div>
+              <div className="section-title">最近动态</div>
+              <strong>看得见的执行过程</strong>
+            </div>
+            <span>{recentEvents.length} 条</span>
+          </summary>
+          {recentEvents.length ? (
+            <ol>
+              {recentEvents.map((event) => (
+                <li key={event.id}>
+                  <time dateTime={event.ts}>{formatClock(event.ts)}</time>
+                  <div>
+                    <strong>{labelEventType(event.type)}</strong>
+                    <p>{event.message}</p>
+                    <span>
+                      {formatEventMeta(event)}
+                      {event.artifact_ids?.length ? ` · ${event.artifact_ids.length} 个产物` : ""}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="empty-copy">任务启动后，这里会显示最近的 Agent、证据和报告生成事件。</p>
+          )}
+        </details>
+      ) : null}
 
       {awaitingVerification ? (
         <div className="verification-panel">
@@ -644,6 +919,7 @@ export function ConsolePage() {
   const reportPreview = (
     <ReportPreview
       report={console.viewedRun ? console.viewedReport : null}
+      evidence={console.viewedRun ? console.viewedEvidence : null}
       artifacts={console.viewedArtifacts}
       status={console.viewedStatus}
       error={console.viewedReportError}
@@ -750,6 +1026,9 @@ export function ConsolePage() {
           run={console.activeRun}
           status={console.consoleStatus}
           agents={console.activeRun ? console.agents : []}
+          events={console.activeRun ? console.events : []}
+          artifacts={console.artifacts}
+          evidence={console.evidence}
           authSession={console.authSession}
           retryRunId={console.retryRunId}
           error={console.runError}

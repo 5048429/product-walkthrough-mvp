@@ -13,7 +13,7 @@ interface ReportToolbarProps {
 
 function formatGeneratedAt(value: string | null | undefined): string {
   if (!value) {
-    return "Not generated";
+    return "尚未生成";
   }
 
   return new Date(value).toLocaleString();
@@ -21,14 +21,14 @@ function formatGeneratedAt(value: string | null | undefined): string {
 
 function copyButtonLabel(copyState: ReportToolbarProps["copyState"]): string {
   if (copyState === "copied") {
-    return "Copied";
+    return "已复制";
   }
 
   if (copyState === "failed") {
-    return "Copy failed";
+    return "复制失败";
   }
 
-  return "Copy Markdown";
+  return "复制 Markdown";
 }
 
 export function ReportToolbar({
@@ -44,7 +44,7 @@ export function ReportToolbar({
   const canDownload = canCopy;
 
   return (
-    <div className="report-toolbar" aria-label="Report actions">
+    <div className="report-toolbar" aria-label="报告操作">
       <div className="toolbar-meta">
         <StatusBadge status={status} />
         <span>{formatGeneratedAt(report?.generated_at)}</span>
@@ -55,24 +55,24 @@ export function ReportToolbar({
           {copyButtonLabel(copyState)}
         </button>
         <details className="toolbar-details">
-          <summary>More</summary>
+          <summary>更多</summary>
           <div className="artifact-strip">
             <button type="button" onClick={onDownloadMarkdown} disabled={!canDownload}>
-              Download report.md
+              下载 report.md
             </button>
             <ArtifactLink
               artifactId={report?.markdown_artifact_id}
               artifacts={resolvedArtifacts}
               runId={report?.run_id}
-              label="Open report source"
-              disabledReason={report ? undefined : "Report artifact is not ready"}
+              label="打开报告源文件"
+              disabledReason={report ? undefined : "报告产物尚未就绪"}
             />
             <ArtifactLink
               artifactId={report?.evaluation_artifact_id}
               artifacts={resolvedArtifacts}
               runId={report?.run_id}
-              label="Open evaluation JSON"
-              disabledReason={report?.evaluation_artifact_id ? undefined : "Evaluation artifact is unavailable"}
+              label="打开评分 JSON"
+              disabledReason={report?.evaluation_artifact_id ? undefined : "评分产物不可用"}
             />
           </div>
         </details>
