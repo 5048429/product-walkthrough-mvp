@@ -1,15 +1,15 @@
 # Prodwalk 前端控制台中文说明
 
-本文档说明当前 `prodwalk` Web 控制台的能力、启动方式、简化后的使用流程、browser-use 支持状态、测试验收记录和常见问题。当前版本已经完成 Phase 6 集成验收：默认 Dashboard 更偏 PM 工作台，mock run 闭环可用，browser-use 请求可从前端提交，后端真实 browser-use smoke run 已验证可以启动并产出 artifact。
+本文档说明当前 `prodwalk` Web 控制台的能力、启动方式、简化后的使用流程、browser-use 支持状态、测试验收记录和常见问题。当前版本已经完成 Phase 7 Web 人工验证接管闭环：mock run 闭环可用，browser-use 请求可从前端提交，遇到 `awaiting_verification` 后可以打开可见浏览器让用户手动验证，并使用新登录态创建 retry run。
 
 ## 当前结论
 
-Phase 6 的重点已经从继续堆功能转为稳定化和交接：
+当前阶段重点已经从 Phase 6 的 browser-use 接入，推进到 Phase 7 的人工验证接管和 retry 闭环：
 
 1. 默认 UI 已简化，普通使用者优先看到 plan、run 状态、agent progress、report、evidence、evaluation 和 history。
 2. Debug 信息默认收起，API / Debug、完整 Agent Status 和 Live Event Log 保留在 Details tab 中。
 3. `mock` mode 是当前最稳定的 Web 控制台主路径。
-4. `browser-use` mode 已能从 Web 控制台提交请求，后端也已完成公开 smoke run 验证；但最终状态仍可能折算为 `awaiting_verification`，完整可恢复的人工验证 continuation 仍是后续工作。
+4. `browser-use` mode 已能从 Web 控制台提交请求；当最终状态为 `awaiting_verification` 时，前端可以创建 auth-session、打开可见浏览器、保存登录态，并发起新的 retry run。
 5. 旧 CLI 入口仍然可用，适合自动化脚本、真实 UAT 调试和回归验证。
 
 ## 当前能力
@@ -87,10 +87,10 @@ UI: Awaiting verification panel, Report Preview, Evidence summary, Evaluation 10
 
 当前限制：
 
-- `awaiting_verification` 在部分 badge 中仍可能显示为 `Blocked`，页面内已有 Awaiting verification 专用 panel。
-- 真实 browser-use run 的 Web confirm 当前主要是状态记录，完整可恢复的 visible-browser continuation 后续还需要继续打通。
+- `awaiting_verification` 已有专用人工验证面板；旧 `/verification/confirm` 仍只记录确认，不会恢复原 browser-use task。
+- 真实 browser-use run 的 Web 人工验证当前通过 auth-session 保存登录态后创建 retry run，不是同一个 browser-use task 原地续跑。
 - 当前仍建议一次只跑一个 browser-use run，避免多个本地浏览器/CDP 会话并发。
-- 真实 UAT 账号、Altcha、CAPTCHA、SSO、MFA 等流程仍优先使用 CLI 的 human-assisted login profile 流程。
+- 真实 UAT 账号、Altcha、CAPTCHA、SSO、MFA 等流程可优先使用 Web auth-session；需要更低层调试时仍可回到 CLI 的 human-assisted profile 流程。
 
 ## 目录结构
 
@@ -228,7 +228,7 @@ npm run build
 6. 切换到 `browser-use` mode。
 7. 设置较小的 max steps，例如 `12`。
 8. 点击 Start Browser-use Run。
-9. 如果进入 `awaiting_verification`，先查看 Report/Evidence/Screenshots 是否已生成，再根据 Details tab 判断是否需要人工确认或后续 CLI 调试。
+9. 如果进入 `awaiting_verification`，先查看 Report/Evidence/Screenshots 是否已生成；需要登录态时点击“开始人工验证”，完成浏览器验证后点击“我已完成，使用新登录态重新运行”。
 
 ## 原有 CLI 仍然可用
 
@@ -287,6 +287,10 @@ GET  /api/runs/{run_id}/evidence/{evidence_id}
 GET  /api/runs/{run_id}/evaluation
 POST /api/runs/{run_id}/cancel
 POST /api/runs/{run_id}/verification/confirm
+POST /api/auth-sessions
+GET  /api/auth-sessions/{session_id}
+POST /api/auth-sessions/{session_id}/confirm
+POST /api/runs/{run_id}/retry-after-verification
 ```
 
 ## 事件机制
@@ -393,7 +397,7 @@ BAD_REQUEST: Only mock mode is supported by the first backend API version.
 
 ### browser-use 一直 awaiting_verification
 
-这代表 browser-use 已启动但认为需要人工验证，或最终状态被保守折算为需要验证。当前可以先检查已生成的 report/evidence/screenshots；如果是真实 UAT 或登录流程，优先使用 CLI 的 human-assisted profile 流程继续排查。
+这代表 browser-use 已启动但认为需要人工验证，或最终状态被保守折算为需要验证。当前可以先检查已生成的 report/evidence/screenshots；如果是真实 UAT 或登录流程，在等待验证面板点击“开始人工验证”，完成可见浏览器里的登录/验证后再点击“我已完成，使用新登录态重新运行”。系统会创建新的 retry run，不会伪装成恢复原 task。
 
 ### 启动多个 browser-use run 是否安全
 
@@ -442,3 +446,34 @@ examples/clink_uat_full_continuous_plan.json
 src/prodwalk/agents/walker.py
 src/prodwalk/auth_session.py
 ```
+
+## Phase 7：Web 人工验证接管闭环
+
+Phase 7 后，Web 控制台可以把 `awaiting_verification` 的 browser-use run 接到一个可见浏览器人工验证流程：
+
+1. browser-use run 遇到登录、Altcha、CAPTCHA、MFA、SSO 等阻塞后，后端将原 run 标记为 `awaiting_verification`。
+2. 前端 Current Run Status 会显示“需要你手动完成登录/验证”面板，并明确说明当前版本会创建 retry run，而不是恢复原 browser-use task。
+3. 点击“开始人工验证”后，后端创建 `auth-session`，打开一个可见 Chrome/Edge 浏览器窗口。
+4. 用户在浏览器中手动完成登录或验证。
+5. 回到 Web 控制台点击“我已完成，使用新登录态重新运行”。
+6. 后端保存 profile/storage state，关闭可见浏览器，并用同一个 plan 创建新的 browser-use retry run。
+7. 原 run 的 metadata 会记录 `verification_session_id` 和 `retry_run_id`；retry run 的 metadata 会记录 `parent_run_id`、`retry_of_run_id` 和 `verification_session_id`。
+8. History 面板会显示原 run、auth-session 和 retry run 的关系，retry run 完成后仍可打开 report、evidence、evaluation、screenshots。
+
+新增 API：
+
+```text
+POST /api/auth-sessions
+GET  /api/auth-sessions/{session_id}
+POST /api/auth-sessions/{session_id}/confirm
+POST /api/runs/{run_id}/retry-after-verification
+```
+
+旧接口 `POST /api/runs/{run_id}/verification/confirm` 现在只记录确认，不会暗示原 browser-use task 会继续。如果 run 已经没有 active browser task，它会返回明确说明：需要通过 auth-session 后创建 retry run。
+
+安全注意：
+
+- 不要把账号、密码、token、API key 写入 plan、代码、日志或报告。
+- profile/storage state 路径会被限制在当前 workspace 下；未传路径时默认写入 `.prodwalk/browser-profiles/<ref-or-host>/`。
+- `.prodwalk/` 和 `runs/` 是本地产物，不应提交。
+- 截图和浏览器历史可能包含邮箱、租户名或页面内敏感信息；Phase 7 会隐藏本地 profile/storage path 和常见 secret/token 文本，但登录页截图仍需要人工判断后再分享。

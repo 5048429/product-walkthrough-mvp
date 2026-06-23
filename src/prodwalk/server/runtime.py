@@ -13,22 +13,34 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, AsyncIterator
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, urlunparse
 
+from prodwalk.auth_session import (
+    AuthSessionRequest as ManualAuthSessionRequest,
+    ManualAuthSession,
+    close_manual_auth_session,
+    complete_manual_auth_session,
+    open_manual_auth_session,
+)
 from prodwalk.agents.director import ResearchDirector
 from prodwalk.agents.planner import ScenarioPlanner
 from prodwalk.agents.walker import BrowserUseLocalWalker, BrowserWalker, MockBrowserWalker
 from prodwalk.config_loader import ConfigError, parse_research_plan
+from prodwalk.credentials import normalize_ref
 from prodwalk.events import RunEvent as PipelineRunEvent
-from prodwalk.models import ResearchPlan, normalize_report_language, to_jsonable, utc_now
+from prodwalk.models import ResearchPlan, normalize_report_language, slugify, to_jsonable, utc_now
 
 from .models import (
     AgentExecution,
     Artifact,
+    AuthSessionCreateRequest,
+    AuthSessionDetail,
     PlanDetailResponse,
     PlanListResponse,
     PlanSummary,
     Progress,
+    RetryAfterVerificationRequest,
+    RetryAfterVerificationResponse,
     RunActionResponse,
     RunDetail,
     RunListResponse,
@@ -76,6 +88,7 @@ PIPELINE_AGENT_TYPES = {
     "ResearchDirector": "director",
     "ScenarioPlanner": "planner",
     "BrowserWalker": "walker",
+    "AuthSession": "auth_session",
     "EvidenceExtractor": "evidence_extractor",
     "ProductAnalyst": "product_analyst",
     "CompetitiveAnalyst": "competitive_analyst",
@@ -412,6 +425,9 @@ class RunRuntime:
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._subscribers: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
         self._active_browser_run_id: str | None = None
+        self._auth_sessions: dict[str, dict[str, Any]] = {}
+        self._auth_session_handles: dict[str, ManualAuthSession] = {}
+        self._auth_session_timeout_tasks: dict[str, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
 
     def list_plans(self) -> PlanListResponse:
@@ -591,10 +607,10 @@ class RunRuntime:
     ) -> RunActionResponse:
         state = self._state_for_run(run_id)
         status = str(state["run"].get("status") or "running")
-        if confirmed and status == "awaiting_verification":
-            task = self._tasks.get(run_id)
-            status = "running" if task is not None and not task.done() else "blocked"
-            self._update_run(run_id, status=status)
+        message = (
+            "Manual verification was recorded, but this endpoint does not resume a finished browser-use task. "
+            "Create an auth session and start a retry run to continue with the refreshed login state."
+        )
         await self.append_event(
             run_id,
             "agent.status_changed",
@@ -602,9 +618,352 @@ class RunRuntime:
             agent_id="agent_auth_session",
             agent_type="auth_session",
             status=status,
-            payload={"confirmed": confirmed, "note": note},
+            payload={"confirmed": confirmed, "note": note, "resume_supported": False, "message": message},
         )
-        return RunActionResponse(run_id=run_id, status=status, accepted=True)
+        return RunActionResponse(run_id=run_id, status=status, accepted=True, message=message)
+
+    async def create_auth_session(self, request: AuthSessionCreateRequest) -> AuthSessionDetail:
+        state = self._state_for_run(request.run_id)
+        status = str(state["run"].get("status") or "")
+        if status != "awaiting_verification":
+            raise ApiError(
+                400,
+                "RUN_NOT_AWAITING_VERIFICATION",
+                "Auth sessions can only be created for runs awaiting manual verification.",
+                {"run_id": request.run_id, "status": status},
+            )
+        self._ensure_no_active_auth_session()
+
+        url = self._auth_session_url(request, state["run_dir"])
+        credentials_ref = request.credentials_ref or self._auth_session_credentials_ref(state["run_dir"])
+        user_data_dir = self._resolve_auth_user_data_dir(request.browser_user_data_dir, credentials_ref, url)
+        storage_state = self._resolve_auth_storage_state(request.browser_storage_state, user_data_dir)
+        session_id = self._new_auth_session_id()
+        now = utc_now()
+        record = {
+            "id": session_id,
+            "session_id": session_id,
+            "run_id": request.run_id,
+            "status": "created",
+            "url": url,
+            "credentials_ref": credentials_ref,
+            "browser_user_data_dir": str(user_data_dir),
+            "browser_storage_state": str(storage_state),
+            "browser_user_data_dir_configured": True,
+            "browser_storage_state_configured": True,
+            "storage_state_saved": False,
+            "success_url_contains": [marker for marker in request.success_url_contains if marker.strip()],
+            "login_url_contains": request.login_url_contains or "/auth/login",
+            "timeout_sec": request.timeout_sec,
+            "created_at": now,
+            "updated_at": now,
+            "completed_at": None,
+            "retry_run_id": None,
+            "error": None,
+            "message": "Visible browser auth session created.",
+        }
+        self._auth_sessions[session_id] = record
+        self._write_auth_session_record(record)
+        self._merge_run_metadata(
+            request.run_id,
+            {
+                "verification_session_id": session_id,
+                "verification_status": "created",
+            },
+        )
+        self._upsert_agent(request.run_id, "AuthSession", "running", started_at=now)
+        await self.append_event(
+            request.run_id,
+            "auth_session.started",
+            "Visible browser auth session started",
+            agent_id="agent_auth_session",
+            agent_type="auth_session",
+            status="running",
+            payload={
+                "session_id": session_id,
+                "url": self._safe_url_for_logs(url),
+                "credentials_ref": credentials_ref,
+                "storage_state_configured": True,
+            },
+        )
+
+        self._set_auth_session_status(session_id, "running", message="Opening a visible browser window.")
+        try:
+            manual_request = ManualAuthSessionRequest(
+                url=url,
+                credentials_ref=credentials_ref,
+                user_data_dir=user_data_dir,
+                storage_state=storage_state,
+                success_url_contains=list(record["success_url_contains"]),
+                login_url_contains=str(record["login_url_contains"]),
+                timeout_sec=float(record["timeout_sec"]),
+                manual_confirm=True,
+            )
+            handle = await open_manual_auth_session(manual_request)
+        except RuntimeError as exc:
+            error_text = self._safe_error_text(str(exc))
+            self._set_auth_session_failed(session_id, exc, status="failed")
+            self._upsert_agent(request.run_id, "AuthSession", "failed", completed_at=utc_now(), error=self._error_payload(exc))
+            await self.append_event(
+                request.run_id,
+                "auth_session.failed",
+                "Visible browser auth session failed to start",
+                level="error",
+                agent_id="agent_auth_session",
+                agent_type="auth_session",
+                status="failed",
+                payload={"session_id": session_id, "error": error_text},
+            )
+            raise ApiError(
+                503,
+                "AUTH_SESSION_UNAVAILABLE",
+                "Visible browser auth session could not be started.",
+                {"session_id": session_id, "error": error_text},
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            error_text = self._safe_error_text(str(exc))
+            self._set_auth_session_failed(session_id, exc, status="failed")
+            self._upsert_agent(request.run_id, "AuthSession", "failed", completed_at=utc_now(), error=self._error_payload(exc))
+            await self.append_event(
+                request.run_id,
+                "auth_session.failed",
+                "Visible browser auth session failed to start",
+                level="error",
+                agent_id="agent_auth_session",
+                agent_type="auth_session",
+                status="failed",
+                payload={"session_id": session_id, "error": error_text},
+            )
+            raise ApiError(
+                500,
+                "AUTH_SESSION_FAILED",
+                "Visible browser auth session failed to start.",
+                {"session_id": session_id, "error": error_text},
+            ) from exc
+
+        self._auth_session_handles[session_id] = handle
+        self._set_auth_session_status(session_id, "awaiting_user", message="Waiting for the user to complete login or verification.")
+        self._merge_run_metadata(
+            request.run_id,
+            {
+                "verification_session_id": session_id,
+                "verification_status": "awaiting_user",
+            },
+        )
+        await self.append_event(
+            request.run_id,
+            "auth_session.awaiting_user",
+            "Visible browser is waiting for manual login or verification",
+            agent_id="agent_auth_session",
+            agent_type="auth_session",
+            status="waiting",
+            payload={"session_id": session_id, "timeout_sec": request.timeout_sec},
+        )
+        self._auth_session_timeout_tasks[session_id] = asyncio.create_task(
+            self._auth_session_timeout(session_id, float(request.timeout_sec))
+        )
+        self._persist_auth_session_artifact(request.run_id, session_id)
+        return self._auth_session_detail(session_id)
+
+    def get_auth_session(self, session_id: str) -> AuthSessionDetail:
+        return self._auth_session_detail(session_id)
+
+    async def confirm_auth_session(
+        self,
+        session_id: str,
+        *,
+        confirmed: bool = True,
+        note: str | None = None,
+    ) -> AuthSessionDetail:
+        record = self._auth_session_record(session_id)
+        run_id = str(record["run_id"])
+        if not confirmed:
+            await self._close_auth_session(session_id)
+            self._set_auth_session_status(session_id, "canceled", completed_at=utc_now(), message="Auth session canceled.")
+            self._upsert_agent(run_id, "AuthSession", "canceled", completed_at=utc_now())
+            await self.append_event(
+                run_id,
+                "auth_session.failed",
+                "Visible browser auth session canceled",
+                level="warn",
+                agent_id="agent_auth_session",
+                agent_type="auth_session",
+                status="canceled",
+                payload={"session_id": session_id, "note": note},
+            )
+            self._persist_auth_session_artifact(run_id, session_id)
+            return self._auth_session_detail(session_id)
+
+        if record.get("status") not in {"running", "awaiting_user"}:
+            return self._auth_session_detail(session_id)
+
+        handle = self._auth_session_handles.get(session_id)
+        if handle is None:
+            raise ApiError(
+                409,
+                "AUTH_SESSION_NOT_ACTIVE",
+                "The visible browser session is no longer active. Create a new auth session.",
+                {"session_id": session_id, "status": record.get("status")},
+            )
+
+        try:
+            current_url = await complete_manual_auth_session(handle)
+        except Exception as exc:  # noqa: BLE001
+            error_text = self._safe_error_text(str(exc))
+            await self._close_auth_session(session_id)
+            self._set_auth_session_failed(session_id, exc, status="failed")
+            self._upsert_agent(run_id, "AuthSession", "failed", completed_at=utc_now(), error=self._error_payload(exc))
+            await self.append_event(
+                run_id,
+                "auth_session.failed",
+                "Manual auth session could not be confirmed",
+                level="error",
+                agent_id="agent_auth_session",
+                agent_type="auth_session",
+                status="failed",
+                payload={"session_id": session_id, "error": error_text, "note": note},
+            )
+            self._persist_auth_session_artifact(run_id, session_id)
+            raise ApiError(
+                400,
+                "AUTH_SESSION_CONFIRM_FAILED",
+                "Manual verification was not confirmed. Complete login or verification in the visible browser first.",
+                {"session_id": session_id, "error": error_text},
+            ) from exc
+        finally:
+            self._auth_session_handles.pop(session_id, None)
+            self._cancel_auth_session_timeout(session_id)
+
+        storage_state = Path(str(record["browser_storage_state"]))
+        completed_at = utc_now()
+        record.update(
+            {
+                "status": "succeeded",
+                "updated_at": completed_at,
+                "completed_at": completed_at,
+                "storage_state_saved": storage_state.is_file(),
+                "error": None,
+                "message": "Manual verification completed. Create a retry run to continue with the refreshed login state.",
+            }
+        )
+        self._write_auth_session_record(record)
+        self._merge_run_metadata(
+            run_id,
+            {
+                "verification_session_id": session_id,
+                "verification_status": "succeeded",
+            },
+        )
+        self._upsert_agent(run_id, "AuthSession", "succeeded", completed_at=completed_at)
+        await self.append_event(
+            run_id,
+            "auth_session.completed",
+            "Manual auth session completed and storage state was saved",
+            agent_id="agent_auth_session",
+            agent_type="auth_session",
+            status="succeeded",
+            payload={
+                "session_id": session_id,
+                "storage_state_saved": record["storage_state_saved"],
+                "current_url": self._safe_url_for_logs(current_url),
+                "note": note,
+            },
+        )
+        self._persist_auth_session_artifact(run_id, session_id)
+        return self._auth_session_detail(session_id)
+
+    async def retry_after_verification(
+        self,
+        run_id: str,
+        request: RetryAfterVerificationRequest,
+    ) -> RetryAfterVerificationResponse:
+        original = self._state_for_run(run_id)
+        session_id = request.session_id or self._latest_succeeded_auth_session_id(run_id)
+        if not session_id:
+            raise ApiError(
+                400,
+                "AUTH_SESSION_REQUIRED",
+                "A succeeded auth session is required before starting a verification retry run.",
+                {"run_id": run_id},
+            )
+        session = self._auth_session_record(session_id)
+        if session.get("run_id") != run_id:
+            raise ApiError(
+                400,
+                "AUTH_SESSION_RUN_MISMATCH",
+                "Auth session does not belong to this run.",
+                {"run_id": run_id, "session_id": session_id},
+            )
+        if session.get("status") != "succeeded":
+            raise ApiError(
+                400,
+                "AUTH_SESSION_NOT_COMPLETE",
+                "Complete the visible browser auth session before starting a retry run.",
+                {"session_id": session_id, "status": session.get("status")},
+            )
+        if session.get("retry_run_id"):
+            retry_id = str(session["retry_run_id"])
+            retry_record = self._record_for_run(retry_id)
+            return RetryAfterVerificationResponse(
+                run_id=run_id,
+                retry_run_id=retry_id,
+                status=str(retry_record.get("status") or "queued"),
+                accepted=True,
+                session=self._auth_session_detail(session_id),
+                message="Retry run was already started for this auth session.",
+            )
+
+        retry_request = self._retry_request_from_run(original["run"], original["run_dir"], session)
+        response = await self.start_run(retry_request)
+        retry_run_id = response.run_id
+        now = utc_now()
+        session["retry_run_id"] = retry_run_id
+        session["updated_at"] = now
+        self._write_auth_session_record(session)
+        self._merge_run_metadata(
+            run_id,
+            {
+                "verification_session_id": session_id,
+                "verification_status": "retry_started",
+                "retry_run_id": retry_run_id,
+            },
+        )
+        self._merge_run_metadata(
+            retry_run_id,
+            {
+                "parent_run_id": run_id,
+                "retry_of_run_id": run_id,
+                "verification_session_id": session_id,
+                "retry_reason": "manual_verification_completed",
+            },
+        )
+        await self.append_event(
+            run_id,
+            "run.retry_started",
+            "Verification retry run started with refreshed login state",
+            agent_id="agent_auth_session",
+            agent_type="auth_session",
+            status=str(original["run"].get("status") or "awaiting_verification"),
+            payload={"session_id": session_id, "retry_run_id": retry_run_id, "note": request.note},
+        )
+        await self.append_event(
+            retry_run_id,
+            "run.retry_started",
+            "Retry run created after manual verification",
+            agent_id="agent_auth_session",
+            agent_type="auth_session",
+            status="queued",
+            payload={"retry_of_run_id": run_id, "verification_session_id": session_id},
+        )
+        self._persist_auth_session_artifact(run_id, session_id)
+        return RetryAfterVerificationResponse(
+            run_id=run_id,
+            retry_run_id=retry_run_id,
+            status=response.status,
+            accepted=True,
+            session=self._auth_session_detail(session_id),
+            message="Retry run started. This is a new browser-use run using the refreshed login state.",
+        )
 
     def list_agents(self, run_id: str) -> list[AgentExecution]:
         run_dir = self._run_dir_for_id(run_id)
@@ -1329,6 +1688,379 @@ class RunRuntime:
             return f"Unsupported BROWSER_USE_LLM_PROVIDER: {provider}."
         return None
 
+    def _ensure_no_active_auth_session(self) -> None:
+        for session_id, handle in list(self._auth_session_handles.items()):
+            record = self._auth_sessions.get(session_id) or self._read_auth_session_record(session_id)
+            if record and record.get("status") in {"running", "awaiting_user"} and handle is not None:
+                raise ApiError(
+                    409,
+                    "AUTH_SESSION_ACTIVE",
+                    "Another visible auth session is already active.",
+                    {"session_id": session_id, "run_id": record.get("run_id")},
+                )
+
+    def _auth_session_url(self, request: AuthSessionCreateRequest, run_dir: Path) -> str:
+        url = (request.url or "").strip()
+        if not url:
+            plan = self._read_run_plan(run_dir)
+            products = plan.get("products") if isinstance(plan.get("products"), list) else []
+            for product in products:
+                if isinstance(product, dict) and isinstance(product.get("url"), str) and product["url"].strip():
+                    url = product["url"].strip()
+                    break
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ApiError(
+                400,
+                "BAD_REQUEST",
+                "auth session url must be an http or https URL, or the run plan must contain one.",
+                {"url": request.url},
+            )
+        return url
+
+    def _auth_session_credentials_ref(self, run_dir: Path) -> str | None:
+        plan = self._read_run_plan(run_dir)
+        products = plan.get("products") if isinstance(plan.get("products"), list) else []
+        for product in products:
+            if isinstance(product, dict) and isinstance(product.get("credentials_ref"), str):
+                value = product["credentials_ref"].strip()
+                if value:
+                    return value
+        return None
+
+    def _read_run_plan(self, run_dir: Path) -> dict[str, Any]:
+        path = run_dir / "plan.json"
+        if not path.exists():
+            return {}
+        try:
+            payload = self._read_json(path)
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _resolve_auth_user_data_dir(self, value: str | None, credentials_ref: str | None, url: str) -> Path:
+        if value:
+            resolved = self._resolve_browser_runtime_path(
+                value,
+                label="browser_user_data_dir",
+                expect_file=False,
+            )
+            assert resolved is not None
+            return Path(resolved)
+
+        name = normalize_ref(credentials_ref) if credentials_ref else slugify(urlparse(url).netloc or url)
+        path = (self.workspace_root / ".prodwalk" / "browser-profiles" / name).resolve()
+        self._ensure_workspace_path(path, "browser_user_data_dir")
+        return path
+
+    def _resolve_auth_storage_state(self, value: str | None, user_data_dir: Path) -> Path:
+        if value:
+            resolved = self._resolve_browser_runtime_path(
+                value,
+                label="browser_storage_state",
+                expect_file=True,
+            )
+            assert resolved is not None
+            return Path(resolved)
+
+        path = (user_data_dir / "prodwalk_storage_state.json").resolve()
+        self._ensure_workspace_path(path, "browser_storage_state")
+        if path.exists() and not path.is_file():
+            raise ApiError(
+                400,
+                "BAD_REQUEST",
+                "browser_storage_state must be a JSON file path.",
+                {"browser_storage_state": str(path)},
+            )
+        return path
+
+    def _ensure_workspace_path(self, path: Path, label: str) -> None:
+        workspace = self.workspace_root.resolve()
+        if not path.resolve().is_relative_to(workspace):
+            raise ApiError(
+                400,
+                "BAD_REQUEST",
+                f"{label} must stay inside the prodwalk workspace.",
+                {label: str(path)},
+            )
+
+    def _new_auth_session_id(self) -> str:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return f"auth-{timestamp}-{uuid.uuid4().hex[:6]}"
+
+    def _validate_auth_session_id(self, session_id: str) -> None:
+        if not re.fullmatch(r"auth-[A-Za-z0-9_.-]+", session_id or ""):
+            raise ApiError(
+                404,
+                "AUTH_SESSION_NOT_FOUND",
+                f"Auth session not found: {session_id}",
+                {"session_id": session_id},
+            )
+
+    def _auth_sessions_dir(self) -> Path:
+        path = self.workspace_root / ".prodwalk" / "auth-sessions"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _auth_session_path(self, session_id: str) -> Path:
+        self._validate_auth_session_id(session_id)
+        return self._auth_sessions_dir() / f"{session_id}.json"
+
+    def _write_auth_session_record(self, record: dict[str, Any]) -> None:
+        self._auth_sessions[str(record["id"])] = record
+        self._write_json(self._auth_session_path(str(record["id"])), record)
+
+    def _read_auth_session_record(self, session_id: str) -> dict[str, Any] | None:
+        path = self._auth_session_path(session_id)
+        if not path.exists():
+            return None
+        try:
+            payload = self._read_json(path)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        self._auth_sessions[session_id] = dict(payload)
+        return dict(payload)
+
+    def _auth_session_record(self, session_id: str) -> dict[str, Any]:
+        self._validate_auth_session_id(session_id)
+        record = self._auth_sessions.get(session_id) or self._read_auth_session_record(session_id)
+        if not record:
+            raise ApiError(
+                404,
+                "AUTH_SESSION_NOT_FOUND",
+                f"Auth session not found: {session_id}",
+                {"session_id": session_id},
+            )
+        return record
+
+    def _set_auth_session_status(
+        self,
+        session_id: str,
+        status: str,
+        *,
+        completed_at: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        record = self._auth_session_record(session_id)
+        record["status"] = status
+        record["updated_at"] = utc_now()
+        if completed_at:
+            record["completed_at"] = completed_at
+        if message:
+            record["message"] = message
+        self._write_auth_session_record(record)
+
+    def _set_auth_session_failed(self, session_id: str, exc: Exception, *, status: str) -> None:
+        record = self._auth_session_record(session_id)
+        now = utc_now()
+        record.update(
+            {
+                "status": status,
+                "updated_at": now,
+                "completed_at": now,
+                "error": self._error_payload(exc),
+                "message": self._safe_error_text(str(exc)),
+            }
+        )
+        self._write_auth_session_record(record)
+
+    def _error_payload(self, exc: Exception) -> dict[str, Any]:
+        return {"message": self._safe_error_text(str(exc)), "type": type(exc).__name__}
+
+    def _safe_error_text(self, text: str) -> str:
+        redacted = re.sub(
+            r"https?://[^\s'\"<>]+",
+            lambda match: self._safe_url_for_logs(match.group(0)),
+            text,
+        )
+        patterns = [
+            r"\b(?:sk|pk)_(?:live|test|prod|uat)?_?[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b",
+            r"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b",
+            r"(?i)\bBearer\s+[A-Za-z0-9._\-]{20,}",
+        ]
+        for pattern in patterns:
+            redacted = re.sub(pattern, "<redacted>", redacted)
+        return redacted
+
+    def _auth_session_detail(self, session_id: str) -> AuthSessionDetail:
+        record = self._auth_session_record(session_id)
+        return AuthSessionDetail(
+            id=str(record["id"]),
+            session_id=str(record["session_id"]),
+            run_id=str(record["run_id"]),
+            status=record.get("status", "failed"),
+            url=self._safe_url_for_logs(str(record.get("url") or "")),
+            credentials_ref=record.get("credentials_ref") if isinstance(record.get("credentials_ref"), str) else None,
+            browser_user_data_dir_configured=bool(record.get("browser_user_data_dir_configured")),
+            browser_storage_state_configured=bool(record.get("browser_storage_state_configured")),
+            storage_state_saved=bool(record.get("storage_state_saved")),
+            success_url_contains=[
+                str(marker) for marker in record.get("success_url_contains", []) if str(marker).strip()
+            ],
+            login_url_contains=str(record.get("login_url_contains") or "/auth/login"),
+            timeout_sec=float(record.get("timeout_sec") or 300),
+            created_at=str(record.get("created_at") or ""),
+            updated_at=str(record.get("updated_at") or ""),
+            completed_at=record.get("completed_at") if isinstance(record.get("completed_at"), str) else None,
+            retry_run_id=record.get("retry_run_id") if isinstance(record.get("retry_run_id"), str) else None,
+            error=record.get("error") if isinstance(record.get("error"), dict) else None,
+            message=record.get("message") if isinstance(record.get("message"), str) else None,
+        )
+
+    async def _close_auth_session(self, session_id: str, *, cancel_timeout: bool = True) -> None:
+        handle = self._auth_session_handles.pop(session_id, None)
+        if handle is not None:
+            try:
+                await close_manual_auth_session(handle)
+            except Exception:
+                pass
+        if cancel_timeout:
+            self._cancel_auth_session_timeout(session_id)
+
+    def _cancel_auth_session_timeout(self, session_id: str) -> None:
+        task = self._auth_session_timeout_tasks.pop(session_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _auth_session_timeout(self, session_id: str, timeout_sec: float) -> None:
+        try:
+            await asyncio.sleep(timeout_sec)
+            record = self._auth_session_record(session_id)
+            if record.get("status") not in {"running", "awaiting_user"}:
+                return
+            run_id = str(record["run_id"])
+            await self._close_auth_session(session_id, cancel_timeout=False)
+            self._set_auth_session_status(
+                session_id,
+                "timeout",
+                completed_at=utc_now(),
+                message="Auth session timed out while waiting for manual verification.",
+            )
+            self._upsert_agent(run_id, "AuthSession", "failed", completed_at=utc_now())
+            await self.append_event(
+                run_id,
+                "auth_session.failed",
+                "Manual auth session timed out",
+                level="warn",
+                agent_id="agent_auth_session",
+                agent_type="auth_session",
+                status="timeout",
+                payload={"session_id": session_id, "timeout_sec": timeout_sec},
+            )
+            self._persist_auth_session_artifact(run_id, session_id)
+        except asyncio.CancelledError:
+            return
+
+    def _latest_succeeded_auth_session_id(self, run_id: str) -> str | None:
+        candidates: list[dict[str, Any]] = []
+        candidates.extend(record for record in self._auth_sessions.values() if record.get("run_id") == run_id)
+        for path in self._auth_sessions_dir().glob("auth-*.json"):
+            record = self._read_auth_session_record(path.stem)
+            if record and record.get("run_id") == run_id:
+                candidates.append(record)
+        succeeded = [record for record in candidates if record.get("status") == "succeeded"]
+        if not succeeded:
+            return None
+        succeeded.sort(key=lambda record: str(record.get("updated_at") or record.get("created_at") or ""), reverse=True)
+        return str(succeeded[0].get("id") or succeeded[0].get("session_id"))
+
+    def _retry_request_from_run(
+        self,
+        record: dict[str, Any],
+        run_dir: Path,
+        session: dict[str, Any],
+    ) -> RunStartRequest:
+        params = record.get("params") if isinstance(record.get("params"), dict) else {}
+        plan = self._read_run_plan(run_dir)
+        mode = str(record.get("mode") or params.get("mode") or "browser-use")
+        if mode not in BROWSER_USE_MODES:
+            mode = "browser-use"
+        out = self._relative_path(run_dir.parent)
+        report_language = str(params.get("report_language") or plan.get("report_language") or "en")
+        verification_mode = str(params.get("verification_mode") or "auto")
+        return RunStartRequest(
+            plan=plan,
+            mode=mode,
+            out=out,
+            concurrency=1,
+            report_language=report_language,
+            browser_model=params.get("browser_model") if isinstance(params.get("browser_model"), str) else None,
+            browser_max_steps=int(params.get("browser_max_steps") or 25),
+            browser_timeout_sec=float(params.get("browser_timeout_sec") or 600),
+            browser_user_data_dir=str(session["browser_user_data_dir"]),
+            browser_storage_state=str(session["browser_storage_state"]),
+            verification_mode=verification_mode if verification_mode in {"auto", "off", "manual"} else "auto",
+            verification_timeout_sec=float(params.get("verification_timeout_sec") or session.get("timeout_sec") or 300),
+            verification_success_url_contains=[
+                str(marker)
+                for marker in params.get("verification_success_url_contains", session.get("success_url_contains", []))
+                if str(marker).strip()
+            ],
+            verification_login_url_contains=str(
+                params.get("verification_login_url_contains") or session.get("login_url_contains") or "/auth/login"
+            ),
+        )
+
+    def _merge_run_metadata(self, run_id: str, metadata: dict[str, Any]) -> None:
+        state = self._state_for_run(run_id)
+        current = state["run"].get("metadata")
+        merged = dict(current) if isinstance(current, dict) else {}
+        merged.update({key: value for key, value in metadata.items() if value is not None})
+        self._update_run(run_id, metadata=merged)
+
+    def _persist_auth_session_artifact(self, run_id: str, session_id: str) -> None:
+        run_dir = self._run_dir_for_id(run_id)
+        session_dir = run_dir / "auth-sessions"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        rel_path = f"auth-sessions/{session_id}.json"
+        detail = self._auth_session_detail(session_id)
+        payload = detail.model_dump() if hasattr(detail, "model_dump") else detail.dict()
+        payload["security_note"] = (
+            "This auth-session artifact intentionally omits credentials and local profile paths. "
+            "Login-page screenshots may still contain account identifiers; avoid sharing them externally."
+        )
+        self._write_json(session_dir / f"{session_id}.json", payload)
+        artifact = {
+            "id": self._artifact_id_for_path("art_auth_session", rel_path),
+            "run_id": run_id,
+            "type": "log_text",
+            "title": f"{session_id}.json",
+            "path": rel_path,
+            "media_type": "application/json",
+            "size_bytes": (session_dir / f"{session_id}.json").stat().st_size,
+            "created_at": self._mtime_iso(session_dir / f"{session_id}.json"),
+            "metadata": {
+                "content_url": f"/api/runs/{run_id}/artifacts/{self._artifact_id_for_path('art_auth_session', rel_path)}/content",
+                "path_url": f"/api/runs/{run_id}/artifacts/{quote(rel_path, safe='/')}",
+            },
+        }
+        artifacts_path = run_dir / "artifacts.json"
+        existing: list[dict[str, Any]] = []
+        if artifacts_path.exists():
+            try:
+                payload_existing = self._read_json(artifacts_path)
+                if isinstance(payload_existing, list):
+                    existing = [item for item in payload_existing if isinstance(item, dict)]
+            except Exception:
+                existing = []
+        merged = [item for item in existing if item.get("id") != artifact["id"]]
+        merged.append(artifact)
+        self._write_json(artifacts_path, merged)
+        state = self._state_for_run(run_id)
+        known_ids = [str(item.get("id")) for item in merged if item.get("id")]
+        state["run"]["artifact_ids"] = known_ids
+        self._write_json(run_dir / "run.json", state["run"])
+
+    def _safe_url_for_logs(self, url: str) -> str:
+        if not url:
+            return ""
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            return url
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+
     def _resolve_request_plan(self, request: RunStartRequest) -> PlanBundle:
         inline = request.plan or (request.config if isinstance(request.config, dict) else None)
         identifiers = [
@@ -1522,6 +2254,7 @@ class RunRuntime:
             evidence_exists=availability["evidence_exists"],
             evaluation_exists=availability["evaluation_exists"],
             screenshot_count=availability["screenshot_count"],
+            metadata=record.get("metadata", {}) if isinstance(record.get("metadata"), dict) else {},
         )
 
     def _detail_from_record(self, record: dict[str, Any]) -> RunDetail:
@@ -1935,11 +2668,12 @@ class RunRuntime:
         return None
 
     def _manual_verification_text_signal(self, lower_text: str) -> dict[str, Any] | None:
-        true_pattern = r"manual[_\s-]?verification[_\s-]?required\s*[:=]\s*(?:true|yes|1|required)\b"
+        key_pattern = r"['\"]?manual[_\s-]?verification[_\s-]?required['\"]?"
+        true_pattern = rf"{key_pattern}\s*[:=]\s*(?:true|yes|1|required)\b"
         if re.search(true_pattern, lower_text):
             return {"signal": "manual_verification_required"}
 
-        false_pattern = r"manual[_\s-]?verification[_\s-]?required\s*[:=]\s*(?:false|no|0)\b"
+        false_pattern = rf"{key_pattern}\s*[:=]\s*(?:false|no|0)\b"
         if re.search(false_pattern, lower_text):
             return None
 

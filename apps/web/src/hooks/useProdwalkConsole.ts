@@ -6,6 +6,7 @@ import { mockArtifacts } from "../mock/artifacts";
 import type {
   AgentExecution,
   AgentStatus,
+  AuthSessionDetail,
   Artifact,
   ConsoleStatus,
   EvaluationResponse,
@@ -444,6 +445,9 @@ export function useProdwalkConsole() {
   const [report, setReport] = useState<ReportResponse | null>(null);
   const [evidence, setEvidence] = useState<EvidenceResponse | null>(null);
   const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(null);
+  const [authSession, setAuthSession] = useState<AuthSessionDetail | null>(null);
+  const [verificationSourceRunId, setVerificationSourceRunId] = useState<string | null>(null);
+  const [retryRunId, setRetryRunId] = useState<string | null>(null);
   const [historyArtifacts, setHistoryArtifacts] = useState<Artifact[]>([]);
   const [historyReport, setHistoryReport] = useState<ReportResponse | null>(null);
   const [historyEvidence, setHistoryEvidence] = useState<EvidenceResponse | null>(null);
@@ -528,6 +532,9 @@ export function useProdwalkConsole() {
       setReport(mockConsoleData.report);
       setEvidence(mockConsoleData.evidence);
       setEvaluation(mockConsoleData.report.evaluation ? { ...mockConsoleData.report.evaluation, run_id: mockConsoleData.report.run_id, artifact_id: "art_evaluation_json" } : null);
+      setAuthSession(null);
+      setVerificationSourceRunId(null);
+      setRetryRunId(null);
       setHistoryArtifacts([]);
       setHistoryReport(null);
       setHistoryEvidence(null);
@@ -823,11 +830,29 @@ export function useProdwalkConsole() {
       setReport(null);
       setEvidence(null);
       setEvaluation(null);
+      setAuthSession(null);
+      setVerificationSourceRunId(null);
+      setRetryRunId(null);
 
       const run = await loadRun(runId);
 
       if (!run) {
         return;
+      }
+
+      const metadataSessionId =
+        typeof run.metadata.verification_session_id === "string" ? run.metadata.verification_session_id : null;
+      if (metadataSessionId) {
+        prodwalkApi
+          .getAuthSession(metadataSessionId)
+          .then((response) => {
+            setAuthSession(response.session);
+            setVerificationSourceRunId(response.session.run_id);
+            setRetryRunId(response.session.retry_run_id);
+          })
+          .catch(() => {
+            setAuthSession(null);
+          });
       }
 
       const [eventResult, artifactResult] = await Promise.allSettled([
@@ -1040,6 +1065,9 @@ export function useProdwalkConsole() {
         setReport(null);
         setEvidence(null);
         setEvaluation(null);
+        setAuthSession(null);
+        setVerificationSourceRunId(null);
+        setRetryRunId(null);
         setConnectionState("connecting");
         void refreshRunHistory();
       } catch (error) {
@@ -1127,6 +1155,121 @@ export function useProdwalkConsole() {
     handleFreshEvents,
     loadRun,
     refreshRunHistory,
+    source,
+    updateErrors,
+    updateLoading,
+  ]);
+
+  const startAuthSession = useCallback(async () => {
+    updateErrors({ verification: null });
+
+    if (source === "mock") {
+      updateErrors({ verification: "Mock preview cannot open a visible browser auth session." });
+      return;
+    }
+
+    if (!activeRun || activeRun.status !== "awaiting_verification") {
+      updateErrors({ verification: "当前 run 不在等待人工验证状态，不能创建 auth-session。" });
+      return;
+    }
+
+    updateLoading({ verification: true });
+
+    try {
+      const response = await prodwalkApi.createAuthSession({
+        run_id: activeRun.id,
+        url: null,
+        credentials_ref: null,
+        browser_user_data_dir: activeRun.params.browser_user_data_dir ?? null,
+        browser_storage_state: activeRun.params.browser_storage_state ?? null,
+        success_url_contains: activeRun.params.verification_success_url_contains ?? [],
+        login_url_contains: activeRun.params.verification_login_url_contains ?? "/auth/login",
+        timeout_sec: activeRun.params.verification_timeout_sec ?? 300,
+      });
+      setAuthSession(response.session);
+      setVerificationSourceRunId(response.session.run_id);
+      setRetryRunId(response.session.retry_run_id);
+
+      const eventResult = await prodwalkApi.getEvents(activeRun.id, lastSeqRef.current, 100);
+      const fresh = appendEvents(eventResult.items);
+      handleFreshEvents(fresh);
+      void loadRun(activeRun.id);
+      void loadArtifacts(activeRun.id);
+      void refreshRunHistory();
+    } catch (error) {
+      updateErrors({ verification: errorMessage(error) });
+    } finally {
+      updateLoading({ verification: false });
+    }
+  }, [
+    activeRun,
+    appendEvents,
+    handleFreshEvents,
+    loadArtifacts,
+    loadRun,
+    refreshRunHistory,
+    source,
+    updateErrors,
+    updateLoading,
+  ]);
+
+  const completeAuthSessionAndRetry = useCallback(async () => {
+    updateErrors({ verification: null });
+
+    if (source === "mock") {
+      setMockStatus("running");
+      setActiveRun((current) => (current ? { ...current, status: "running", error: null } : current));
+      setEvents(mockConsoleData.getEventsForStatus("running"));
+      return;
+    }
+
+    if (!authSession) {
+      updateErrors({ verification: "请先开始人工验证会话。" });
+      return;
+    }
+
+    updateLoading({ verification: true });
+
+    try {
+      const confirmed =
+        authSession.status === "succeeded"
+          ? authSession
+          : (
+              await prodwalkApi.confirmAuthSession(authSession.session_id, {
+                confirmed: true,
+                note: "Confirmed from the web console.",
+              })
+            ).session;
+      setAuthSession(confirmed);
+      setVerificationSourceRunId(confirmed.run_id);
+
+      const retryResponse = await prodwalkApi.retryRunAfterVerification(confirmed.run_id, {
+        session_id: confirmed.session_id,
+        note: "Retry after manual verification from the web console.",
+      });
+      const nextRetryRunId = retryResponse.retry_run_id;
+      setRetryRunId(nextRetryRunId);
+      setAuthSession(retryResponse.session ?? confirmed);
+
+      clearHistorySelection();
+      setActiveRunIdAndStore(nextRetryRunId);
+      setEvents([]);
+      setArtifacts([]);
+      setReport(null);
+      setEvidence(null);
+      setEvaluation(null);
+      setConnectionState("connecting");
+      void refreshRunHistory();
+    } catch (error) {
+      updateErrors({ verification: errorMessage(error) });
+    } finally {
+      updateLoading({ verification: false });
+    }
+  }, [
+    authSession,
+    clearHistorySelection,
+    refreshRunHistory,
+    setActiveRunIdAndStore,
     source,
     updateErrors,
     updateLoading,
@@ -1236,6 +1379,9 @@ export function useProdwalkConsole() {
     report,
     evidence,
     evaluation,
+    authSession,
+    verificationSourceRunId,
+    retryRunId,
     viewedArtifacts,
     viewedReport,
     viewedEvidence,
@@ -1247,6 +1393,8 @@ export function useProdwalkConsole() {
     mockStatus,
     startRun,
     confirmVerification,
+    startAuthSession,
+    completeAuthSessionAndRetry,
     selectRun,
     clearHistorySelection,
     refreshRunHistory,

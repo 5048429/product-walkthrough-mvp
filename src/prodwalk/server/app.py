@@ -17,8 +17,13 @@ from .models import (
     AgentListResponse,
     ArtifactListResponse,
     ArtifactResponse,
+    AuthSessionConfirmRequest,
+    AuthSessionCreateRequest,
+    AuthSessionDetailResponse,
     EventListResponse,
     HealthResponse,
+    RetryAfterVerificationRequest,
+    RetryAfterVerificationResponse,
     RunActionResponse,
     RunCancelRequest,
     RunDetailResponse,
@@ -97,6 +102,37 @@ def create_app(workspace_root: str | Path | None = None) -> FastAPI:
             run_id,
             confirmed=request.confirmed,
             note=request.note,
+        )
+
+    @app.post("/api/auth-sessions", response_model=AuthSessionDetailResponse)
+    async def create_auth_session(request: AuthSessionCreateRequest) -> AuthSessionDetailResponse:
+        return AuthSessionDetailResponse(session=await app.state.runtime.create_auth_session(request))
+
+    @app.get("/api/auth-sessions/{session_id}", response_model=AuthSessionDetailResponse)
+    async def get_auth_session(session_id: str) -> AuthSessionDetailResponse:
+        return AuthSessionDetailResponse(session=app.state.runtime.get_auth_session(session_id))
+
+    @app.post("/api/auth-sessions/{session_id}/confirm", response_model=AuthSessionDetailResponse)
+    async def confirm_auth_session(
+        session_id: str,
+        request: AuthSessionConfirmRequest,
+    ) -> AuthSessionDetailResponse:
+        return AuthSessionDetailResponse(
+            session=await app.state.runtime.confirm_auth_session(
+                session_id,
+                confirmed=request.confirmed,
+                note=request.note,
+            )
+        )
+
+    @app.post("/api/runs/{run_id}/retry-after-verification", response_model=RetryAfterVerificationResponse)
+    async def retry_after_verification(
+        run_id: str,
+        request: RetryAfterVerificationRequest | None = None,
+    ) -> RetryAfterVerificationResponse:
+        return await app.state.runtime.retry_after_verification(
+            run_id,
+            request or RetryAfterVerificationRequest(),
         )
 
     @app.get("/api/runs/{run_id}/agents", response_model=AgentListResponse)

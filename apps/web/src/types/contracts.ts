@@ -67,6 +67,11 @@ export type RunEventType =
   | "artifact.created"
   | "report.generated"
   | "evaluation.generated"
+  | "auth_session.started"
+  | "auth_session.awaiting_user"
+  | "auth_session.completed"
+  | "auth_session.failed"
+  | "run.retry_started"
   | "run.awaiting_verification"
   | "run.blocked"
   | "run.finalizing"
@@ -87,6 +92,15 @@ export type ConsoleStatus =
 export type RunMode = "mock" | "browser-use" | "unknown";
 
 export type VerificationMode = "off" | "auto";
+
+export type AuthSessionStatus =
+  | "created"
+  | "running"
+  | "awaiting_user"
+  | "succeeded"
+  | "failed"
+  | "timeout"
+  | "canceled";
 
 export interface RunProgress {
   total_scenarios: number;
@@ -124,6 +138,7 @@ export interface RunSummary {
   evidence_exists: boolean;
   evaluation_exists: boolean;
   screenshot_count: number;
+  metadata: Record<string, unknown>;
 }
 
 export interface RunDetail extends RunSummary {
@@ -378,11 +393,68 @@ export interface RunActionResponse {
   run_id: string;
   status: RunStatus;
   accepted: boolean;
+  message?: string | null;
+  retry_run_id?: string | null;
 }
 
 export interface VerificationConfirmRequest {
   confirmed: boolean;
   note?: string | null;
+}
+
+export interface AuthSessionCreateRequest {
+  run_id: string;
+  url?: string | null;
+  credentials_ref?: string | null;
+  browser_user_data_dir?: string | null;
+  browser_storage_state?: string | null;
+  success_url_contains?: string[];
+  login_url_contains?: string;
+  timeout_sec?: number;
+}
+
+export interface AuthSessionConfirmRequest {
+  confirmed: boolean;
+  note?: string | null;
+}
+
+export interface AuthSessionDetail {
+  id: string;
+  session_id: string;
+  run_id: string;
+  status: AuthSessionStatus;
+  url: string;
+  credentials_ref: string | null;
+  browser_user_data_dir_configured: boolean;
+  browser_storage_state_configured: boolean;
+  storage_state_saved: boolean;
+  success_url_contains: string[];
+  login_url_contains: string;
+  timeout_sec: number;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  retry_run_id: string | null;
+  error: ApiErrorLike | null;
+  message: string | null;
+}
+
+export interface AuthSessionDetailResponse {
+  session: AuthSessionDetail;
+}
+
+export interface RetryAfterVerificationRequest {
+  session_id?: string | null;
+  note?: string | null;
+}
+
+export interface RetryAfterVerificationResponse {
+  run_id: string;
+  retry_run_id: string;
+  status: RunStatus | string;
+  accepted: boolean;
+  session: AuthSessionDetail | null;
+  message: string | null;
 }
 
 export function toConsoleStatus(status?: RunStatus | null): ConsoleStatus {

@@ -20,10 +20,21 @@ function formatElapsed(run: RunDetail | null): string {
   const started = Date.parse(run.started_at);
   const end = run.completed_at ? Date.parse(run.completed_at) : Date.now();
   const seconds = Math.max(0, Math.floor((end - started) / 1000));
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
   const minutes = Math.floor(seconds / 60);
-  const remainder = seconds % 60;
+  const minuteRemainder = Math.floor((seconds % 3600) / 60);
+  const secondRemainder = seconds % 60;
 
-  return `${minutes}分 ${remainder}秒`;
+  if (days > 0) {
+    return `${days}天 ${hours}小时`;
+  }
+
+  if (hours > 0) {
+    return `${hours}小时 ${minuteRemainder}分`;
+  }
+
+  return `${minutes}分 ${secondRemainder}秒`;
 }
 
 function formatProgress(run: RunDetail | null): string {
@@ -77,12 +88,9 @@ export function TopRunContextBar({
         </div>
       </div>
 
-      <div className="top-actions" aria-label="Run actions">
+      <div className="top-actions" aria-label="任务操作">
         <button type="button" className="primary-action" onClick={onStartMock} disabled={startDisabled}>
           启动模拟走查
-        </button>
-        <button type="button" disabled title="停止功能尚未完整接入。">
-          停止
         </button>
         <button type="button" onClick={onOpenReport} disabled={!canOpenReport}>
           打开报告

@@ -6,12 +6,9 @@ import type {
   HealthResponse,
   PlanDetailResponse,
   PlanSummary,
-  RunDetail,
   RunMode,
   VerificationMode,
 } from "../../types/contracts";
-import { formatApiError } from "../../types/contracts";
-import { labelMode } from "../../i18n/zh";
 import { PlanSelector } from "./PlanSelector";
 import { RunModeSelector } from "./RunModeSelector";
 
@@ -31,7 +28,6 @@ interface RunStartPanelProps {
   plans: PlanSummary[];
   selectedPlanId: string;
   selectedPlanDetail: PlanDetailResponse | null;
-  activeRun: RunDetail | null;
   consoleStatus: ConsoleStatus;
   loading: ConsoleLoadingState;
   errors: ConsoleErrorState;
@@ -66,21 +62,12 @@ function getStateCopy(status: ConsoleStatus, source: ConsoleDataSource): string 
   }
 }
 
-function getCompletion(run: RunDetail | null): number {
-  if (!run || run.progress.total_scenarios === 0) {
-    return 0;
-  }
-
-  return Math.round((run.progress.completed_scenarios / run.progress.total_scenarios) * 100);
-}
-
 export function RunStartPanel({
   source,
   health,
   plans,
   selectedPlanId,
   selectedPlanDetail,
-  activeRun,
   consoleStatus,
   loading,
   errors,
@@ -102,8 +89,6 @@ export function RunStartPanel({
   const [verificationSuccessUrlContains, setVerificationSuccessUrlContains] = useState("");
   const [verificationLoginUrlContains, setVerificationLoginUrlContains] = useState("/auth/login");
 
-  const completion = getCompletion(activeRun);
-  const activeRunError = formatApiError(activeRun?.error);
   const isBrowserUse = mode === "browser-use";
   const resolvedConcurrency = isBrowserUse ? 1 : concurrency;
   const successUrlContains = useMemo(
@@ -203,37 +188,43 @@ export function RunStartPanel({
       {errors.initial && source === "api" ? <p className="inline-warning">{errors.initial}</p> : null}
       {errors.start ? <p className="inline-warning">{errors.start}</p> : null}
 
-      <PlanSelector plans={plans} selectedPlanId={selectedPlanId} onPlanChange={onPlanChange} />
-      {loading.planDetail ? <p className="loading-line">正在读取计划详情...</p> : null}
-      {errors.planDetail ? <p className="inline-warning">{errors.planDetail}</p> : null}
-      {selectedPlanDetail ? (
-        <div className="plan-detail-line">
-          已读取计划：<strong>{selectedPlanDetail.path}</strong>
+      <div className="launcher-config-grid">
+        <div className="launcher-plan-group">
+          <PlanSelector plans={plans} selectedPlanId={selectedPlanId} onPlanChange={onPlanChange} />
+          {loading.planDetail ? <p className="loading-line">正在读取计划详情...</p> : null}
+          {errors.planDetail ? <p className="inline-warning">{errors.planDetail}</p> : null}
+          {selectedPlanDetail ? (
+            <div className="plan-detail-line">
+              已读取计划：<strong>{selectedPlanDetail.path}</strong>
+            </div>
+          ) : null}
         </div>
-      ) : null}
 
-      <RunModeSelector
-        mode={mode}
-        browserMaxSteps={browserMaxSteps}
-        browserTimeoutSec={browserTimeoutSec}
-        browserUserDataDir={browserUserDataDir}
-        browserStorageState={browserStorageState}
-        verificationMode={verificationMode}
-        verificationTimeoutSec={verificationTimeoutSec}
-        verificationSuccessUrlContains={verificationSuccessUrlContains}
-        verificationLoginUrlContains={verificationLoginUrlContains}
-        onModeChange={handleModeSelect}
-        onBrowserMaxStepsChange={setBrowserMaxSteps}
-        onBrowserTimeoutSecChange={setBrowserTimeoutSec}
-        onBrowserUserDataDirChange={setBrowserUserDataDir}
-        onBrowserStorageStateChange={setBrowserStorageState}
-        onVerificationModeChange={setVerificationMode}
-        onVerificationTimeoutSecChange={setVerificationTimeoutSec}
-        onVerificationSuccessUrlContainsChange={setVerificationSuccessUrlContains}
-        onVerificationLoginUrlContainsChange={setVerificationLoginUrlContains}
-      />
+        <div className="launcher-mode-group">
+          <RunModeSelector
+            mode={mode}
+            browserMaxSteps={browserMaxSteps}
+            browserTimeoutSec={browserTimeoutSec}
+            browserUserDataDir={browserUserDataDir}
+            browserStorageState={browserStorageState}
+            verificationMode={verificationMode}
+            verificationTimeoutSec={verificationTimeoutSec}
+            verificationSuccessUrlContains={verificationSuccessUrlContains}
+            verificationLoginUrlContains={verificationLoginUrlContains}
+            onModeChange={handleModeSelect}
+            onBrowserMaxStepsChange={setBrowserMaxSteps}
+            onBrowserTimeoutSecChange={setBrowserTimeoutSec}
+            onBrowserUserDataDirChange={setBrowserUserDataDir}
+            onBrowserStorageStateChange={setBrowserStorageState}
+            onVerificationModeChange={setVerificationMode}
+            onVerificationTimeoutSecChange={setVerificationTimeoutSec}
+            onVerificationSuccessUrlContainsChange={setVerificationSuccessUrlContains}
+            onVerificationLoginUrlContainsChange={setVerificationLoginUrlContains}
+          />
+        </div>
+      </div>
 
-      <div className="button-row">
+      <div className="button-row launcher-action-row">
         <button
           type="button"
           className="primary-action"
@@ -247,35 +238,6 @@ export function RunStartPanel({
         <button type="button" disabled title="停止功能尚未完整接入。">
           停止
         </button>
-      </div>
-
-      <div className="active-summary">
-        <div className="section-title">当前任务</div>
-        {loading.activeRun && !activeRun ? (
-          <p className="empty-copy">正在加载当前任务...</p>
-        ) : activeRun ? (
-          <>
-            <div className="run-id">{activeRun.id}</div>
-            <p>{activeRun.research_goal}</p>
-            <div className="progress-track" aria-label={`${completion}% complete`}>
-              <div style={{ width: `${completion}%` }} />
-            </div>
-            <div className="metric-row">
-              <span>{activeRun.progress.completed_scenarios}/{activeRun.progress.total_scenarios} 已完成</span>
-              <span>{activeRun.progress.failed_scenarios} 个失败</span>
-              <span>{labelMode(activeRun.mode)}</span>
-            </div>
-            {activeRun.status === "awaiting_verification" ? (
-              <div className="verification-inline">
-                <strong>等待人工验证</strong>
-                <span>请在可见浏览器窗口完成登录、验证码或 MFA，然后回到当前任务区域记录验证结果。</span>
-              </div>
-            ) : null}
-            {activeRunError ? <p className="inline-warning">{activeRunError}</p> : null}
-          </>
-        ) : (
-          <p className="empty-copy">暂无运行中的任务。</p>
-        )}
       </div>
 
       <details className="debug-details">

@@ -1,6 +1,11 @@
 import type {
   AgentExecution,
   AgentStatus,
+  AuthSessionConfirmRequest,
+  AuthSessionCreateRequest,
+  AuthSessionDetail,
+  AuthSessionDetailResponse,
+  AuthSessionStatus,
   Artifact,
   ArtifactResponse,
   ArtifactType,
@@ -14,6 +19,8 @@ import type {
   PlanDetailResponse,
   PlanSummary,
   ReportResponse,
+  RetryAfterVerificationRequest,
+  RetryAfterVerificationResponse,
   RunMode,
   RunActionResponse,
   RunCreateRequest,
@@ -67,6 +74,16 @@ const artifactTypes = new Set<ArtifactType>([
 ]);
 
 const eventLevels = new Set<EventLevel>(["debug", "info", "warn", "error"]);
+
+const authSessionStatuses = new Set<AuthSessionStatus>([
+  "created",
+  "running",
+  "awaiting_user",
+  "succeeded",
+  "failed",
+  "timeout",
+  "canceled",
+]);
 
 export class ProdwalkApiError extends Error {
   status: number;
@@ -168,6 +185,10 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+function asNullableRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
 function normalizeRunStatus(value: unknown): RunStatus {
   return typeof value === "string" && runStatuses.has(value as RunStatus) ? (value as RunStatus) : "failed";
 }
@@ -216,6 +237,7 @@ function normalizeRunSummary(value: unknown): RunSummary {
     evidence_exists: asBoolean(raw.evidence_exists),
     evaluation_exists: asBoolean(raw.evaluation_exists),
     screenshot_count: asNumber(raw.screenshot_count),
+    metadata: asRecord(raw.metadata),
   };
 }
 
@@ -266,6 +288,54 @@ function normalizeRunCreateResponse(value: unknown): RunCreateResponse {
     report_url: asNullableString(raw.report_url) ?? undefined,
     evidence_url: asNullableString(raw.evidence_url) ?? undefined,
     evaluation_url: asNullableString(raw.evaluation_url) ?? undefined,
+  };
+}
+
+function normalizeAuthSessionStatus(value: unknown): AuthSessionStatus {
+  return typeof value === "string" && authSessionStatuses.has(value as AuthSessionStatus)
+    ? (value as AuthSessionStatus)
+    : "failed";
+}
+
+function normalizeAuthSession(value: unknown): AuthSessionDetail {
+  const raw = asRecord(value);
+
+  return {
+    id: asString(raw.id, asString(raw.session_id)),
+    session_id: asString(raw.session_id, asString(raw.id)),
+    run_id: asString(raw.run_id),
+    status: normalizeAuthSessionStatus(raw.status),
+    url: asString(raw.url),
+    credentials_ref: asNullableString(raw.credentials_ref),
+    browser_user_data_dir_configured: asBoolean(raw.browser_user_data_dir_configured),
+    browser_storage_state_configured: asBoolean(raw.browser_storage_state_configured),
+    storage_state_saved: asBoolean(raw.storage_state_saved),
+    success_url_contains: asStringArray(raw.success_url_contains),
+    login_url_contains: asString(raw.login_url_contains, "/auth/login"),
+    timeout_sec: asNumber(raw.timeout_sec, 300),
+    created_at: asString(raw.created_at),
+    updated_at: asString(raw.updated_at),
+    completed_at: asNullableString(raw.completed_at),
+    retry_run_id: asNullableString(raw.retry_run_id),
+    error: typeof raw.error === "string" ? raw.error : asNullableRecord(raw.error),
+    message: asNullableString(raw.message),
+  };
+}
+
+function normalizeAuthSessionResponse(value: unknown): AuthSessionDetailResponse {
+  const raw = asRecord(value);
+  return { session: normalizeAuthSession(raw.session) };
+}
+
+function normalizeRetryAfterVerificationResponse(value: unknown): RetryAfterVerificationResponse {
+  const raw = asRecord(value);
+  return {
+    run_id: asString(raw.run_id),
+    retry_run_id: asString(raw.retry_run_id),
+    status: typeof raw.status === "string" ? raw.status : "queued",
+    accepted: asBoolean(raw.accepted),
+    session: raw.session ? normalizeAuthSession(raw.session) : null,
+    message: asNullableString(raw.message),
   };
 }
 
@@ -483,6 +553,27 @@ export const prodwalkApi = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  createAuthSession: async (body: AuthSessionCreateRequest) =>
+    normalizeAuthSessionResponse(await requestJson<unknown>(apiPath("/auth-sessions"), {
+      method: "POST",
+      body: JSON.stringify(body),
+    })),
+
+  getAuthSession: async (sessionId: string) =>
+    normalizeAuthSessionResponse(await requestJson<unknown>(apiPath(`/auth-sessions/${encodeURIComponent(sessionId)}`))),
+
+  confirmAuthSession: async (sessionId: string, body: AuthSessionConfirmRequest) =>
+    normalizeAuthSessionResponse(await requestJson<unknown>(apiPath(`/auth-sessions/${encodeURIComponent(sessionId)}/confirm`), {
+      method: "POST",
+      body: JSON.stringify(body),
+    })),
+
+  retryRunAfterVerification: async (runId: string, body: RetryAfterVerificationRequest) =>
+    normalizeRetryAfterVerificationResponse(await requestJson<unknown>(runApiPath(runId, "/retry-after-verification"), {
+      method: "POST",
+      body: JSON.stringify(body),
+    })),
 
   getAgents: async (runId: string) => {
     const response = await requestJson<ListResponse<unknown>>(runApiPath(runId, "/agents"));

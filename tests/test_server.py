@@ -161,6 +161,31 @@ class _FakeBrowserUseWalker:
         )
 
 
+class _FakeManualAuthSession:
+    def __init__(self, request) -> None:
+        self.request = request
+        self.closed = False
+        self.storage_state = Path(request.storage_state) if request.storage_state else None
+
+
+async def _fake_open_manual_auth_session(request) -> _FakeManualAuthSession:
+    Path(request.user_data_dir).mkdir(parents=True, exist_ok=True)
+    if request.storage_state:
+        Path(request.storage_state).parent.mkdir(parents=True, exist_ok=True)
+    return _FakeManualAuthSession(request)
+
+
+async def _fake_complete_manual_auth_session(session: _FakeManualAuthSession) -> str:
+    if session.storage_state:
+        session.storage_state.write_text('{"cookies":[],"origins":[]}', encoding="utf-8")
+    session.closed = True
+    return "https://example.test/dashboard?step=manual"
+
+
+async def _fake_close_manual_auth_session(session: _FakeManualAuthSession) -> None:
+    session.closed = True
+
+
 def test_health_succeeds(tmp_path: Path) -> None:
     _write_plan(tmp_path)
     with _client(tmp_path) as client:
@@ -470,6 +495,41 @@ def test_browser_use_auto_verification_ignores_incidental_login_copy(tmp_path: P
     assert "run.awaiting_verification" not in [event["type"] for event in events.json()["items"]]
 
 
+def test_browser_use_auto_verification_honors_explicit_false_flag(tmp_path: Path, monkeypatch) -> None:
+    _write_plan(tmp_path)
+    monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
+    monkeypatch.setattr(
+        runtime_module.RunRuntime,
+        "_browser_use_readiness_errors",
+        lambda self, request, *, user_data_dir, storage_state: [],
+    )
+    _FakeBrowserUseWalker.result_status = "completed"
+    _FakeBrowserUseWalker.final_output = '{"completed": true, "manual_verification_required": false}'
+    _FakeBrowserUseWalker.errors = []
+    _FakeBrowserUseWalker.timed_out = False
+    _FakeBrowserUseWalker.screenshot_path = None
+    _FakeBrowserUseWalker.history_path = None
+
+    with _client(tmp_path) as client:
+        response = client.post(
+            "/api/runs",
+            json={
+                "plan_name": "smoke_plan.json",
+                "mode": "browser-use",
+                "out": "runs",
+                "verification_mode": "auto",
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+        detail = _wait_for_terminal(client, run_id)
+        events = client.get(f"/api/runs/{run_id}/events")
+
+    assert detail["status"] == "succeeded"
+    assert "run.completed" in [event["type"] for event in events.json()["items"]]
+    assert "run.awaiting_verification" not in [event["type"] for event in events.json()["items"]]
+
+
 def test_browser_use_run_status_reflects_blocked_timeout_failed_and_verification(tmp_path: Path, monkeypatch) -> None:
     _write_plan(tmp_path)
     monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
@@ -518,6 +578,211 @@ def test_browser_use_run_status_reflects_blocked_timeout_failed_and_verification
 
             assert detail["status"] == expected_status
             assert event_type in [event["type"] for event in events.json()["items"]]
+
+
+def test_auth_session_create_validates_request_and_path_safety(tmp_path: Path, monkeypatch) -> None:
+    _write_plan(tmp_path)
+    monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
+    monkeypatch.setattr(
+        runtime_module.RunRuntime,
+        "_browser_use_readiness_errors",
+        lambda self, request, *, user_data_dir, storage_state: [],
+    )
+    monkeypatch.setattr(runtime_module, "open_manual_auth_session", _fake_open_manual_auth_session)
+
+    _FakeBrowserUseWalker.result_status = "blocked"
+    _FakeBrowserUseWalker.final_output = "manual_verification_required: true"
+    _FakeBrowserUseWalker.errors = ["manual_verification_required"]
+    _FakeBrowserUseWalker.timed_out = False
+    _FakeBrowserUseWalker.screenshot_path = None
+    _FakeBrowserUseWalker.history_path = None
+
+    with _client(tmp_path) as client:
+        run_response = client.post(
+            "/api/runs",
+            json={
+                "plan_name": "smoke_plan.json",
+                "mode": "browser-use",
+                "out": "runs",
+                "verification_mode": "auto",
+            },
+        )
+        run_id = run_response.json()["run_id"]
+        assert _wait_for_terminal(client, run_id)["status"] == "awaiting_verification"
+
+        bad_timeout = client.post(
+            "/api/auth-sessions",
+            json={"run_id": run_id, "url": "https://example.test/login", "timeout_sec": 0},
+        )
+        outside_profile = client.post(
+            "/api/auth-sessions",
+            json={
+                "run_id": run_id,
+                "url": "https://example.test/login",
+                "browser_user_data_dir": str(tmp_path.parent / "outside-profile"),
+            },
+        )
+
+    assert bad_timeout.status_code == 400
+    assert outside_profile.status_code == 400
+    assert "browser_user_data_dir" in outside_profile.json()["error"]["message"]
+
+
+def test_auth_session_requires_awaiting_verification_run(tmp_path: Path, monkeypatch) -> None:
+    _write_plan(tmp_path)
+    monkeypatch.setattr(runtime_module, "open_manual_auth_session", _fake_open_manual_auth_session)
+
+    with _client(tmp_path) as client:
+        run_response = client.post(
+            "/api/runs",
+            json={"plan_name": "smoke_plan.json", "mode": "mock", "out": "runs", "concurrency": 1},
+        )
+        run_id = run_response.json()["run_id"]
+        assert _wait_for_terminal(client, run_id)["status"] == "succeeded"
+
+        response = client.post(
+            "/api/auth-sessions",
+            json={"run_id": run_id, "url": "https://example.test/login"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "RUN_NOT_AWAITING_VERIFICATION"
+
+
+def test_auth_session_confirm_then_retry_starts_new_browser_use_run(tmp_path: Path, monkeypatch) -> None:
+    _write_plan(tmp_path)
+    monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
+    monkeypatch.setattr(
+        runtime_module.RunRuntime,
+        "_browser_use_readiness_errors",
+        lambda self, request, *, user_data_dir, storage_state: [],
+    )
+    monkeypatch.setattr(runtime_module, "open_manual_auth_session", _fake_open_manual_auth_session)
+    monkeypatch.setattr(runtime_module, "complete_manual_auth_session", _fake_complete_manual_auth_session)
+    monkeypatch.setattr(runtime_module, "close_manual_auth_session", _fake_close_manual_auth_session)
+
+    _FakeBrowserUseWalker.result_status = "blocked"
+    _FakeBrowserUseWalker.final_output = "manual_verification_required: true"
+    _FakeBrowserUseWalker.errors = ["manual_verification_required"]
+    _FakeBrowserUseWalker.timed_out = False
+    _FakeBrowserUseWalker.screenshot_path = None
+    _FakeBrowserUseWalker.history_path = None
+
+    with _client(tmp_path) as client:
+        run_response = client.post(
+            "/api/runs",
+            json={
+                "plan_name": "smoke_plan.json",
+                "mode": "browser-use",
+                "out": "runs",
+                "verification_mode": "auto",
+                "verification_success_url_contains": ["/dashboard"],
+                "verification_login_url_contains": "/login",
+            },
+        )
+        run_id = run_response.json()["run_id"]
+        detail = _wait_for_terminal(client, run_id)
+        assert detail["status"] == "awaiting_verification"
+
+        create_response = client.post(
+            "/api/auth-sessions",
+            json={
+                "run_id": run_id,
+                "url": "https://example.test/login",
+                "browser_user_data_dir": ".prodwalk/browser-profiles/web-auth-test",
+                "browser_storage_state": ".prodwalk/browser-profiles/web-auth-test/state.json",
+                "success_url_contains": ["/dashboard"],
+                "login_url_contains": "/login",
+                "timeout_sec": 120,
+            },
+        )
+        assert create_response.status_code == 200
+        session = create_response.json()["session"]
+        session_id = session["session_id"]
+        assert session["status"] == "awaiting_user"
+
+        confirm_response = client.post(
+            f"/api/auth-sessions/{session_id}/confirm",
+            json={"confirmed": True, "note": "done in visible browser"},
+        )
+        assert confirm_response.status_code == 200
+        confirmed_session = confirm_response.json()["session"]
+        assert confirmed_session["status"] == "succeeded"
+        assert confirmed_session["storage_state_saved"] is True
+
+        _FakeBrowserUseWalker.result_status = "completed"
+        _FakeBrowserUseWalker.final_output = '{"completed": true, "urls_seen": ["https://example.test/dashboard"]}'
+        _FakeBrowserUseWalker.errors = []
+        retry_response = client.post(
+            f"/api/runs/{run_id}/retry-after-verification",
+            json={"session_id": session_id, "note": "retry after manual auth"},
+        )
+        assert retry_response.status_code == 200
+        retry_payload = retry_response.json()
+        retry_run_id = retry_payload["retry_run_id"]
+        retry_detail = _wait_for_terminal(client, retry_run_id)
+        original_detail = client.get(f"/api/runs/{run_id}").json()["run"]
+        events = client.get(f"/api/runs/{run_id}/events").json()["items"]
+        auth_artifacts = client.get(f"/api/runs/{run_id}/artifacts").json()["items"]
+
+    assert retry_detail["status"] == "succeeded"
+    assert retry_detail["metadata"]["retry_of_run_id"] == run_id
+    assert retry_detail["metadata"]["verification_session_id"] == session_id
+    assert original_detail["metadata"]["retry_run_id"] == retry_run_id
+    assert original_detail["metadata"]["verification_session_id"] == session_id
+    assert _FakeBrowserUseWalker.init_args["user_data_dir"] == str(
+        (tmp_path / ".prodwalk/browser-profiles/web-auth-test").resolve()
+    )
+    assert _FakeBrowserUseWalker.init_args["storage_state"] == str(
+        (tmp_path / ".prodwalk/browser-profiles/web-auth-test/state.json").resolve()
+    )
+    event_types = [event["type"] for event in events]
+    assert "auth_session.started" in event_types
+    assert "auth_session.awaiting_user" in event_types
+    assert "auth_session.completed" in event_types
+    assert "run.retry_started" in event_types
+    assert any(item["path"] == f"auth-sessions/{session_id}.json" for item in auth_artifacts)
+
+
+def test_verification_confirm_records_without_faking_resume(tmp_path: Path, monkeypatch) -> None:
+    _write_plan(tmp_path)
+    monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
+    monkeypatch.setattr(
+        runtime_module.RunRuntime,
+        "_browser_use_readiness_errors",
+        lambda self, request, *, user_data_dir, storage_state: [],
+    )
+    _FakeBrowserUseWalker.result_status = "blocked"
+    _FakeBrowserUseWalker.final_output = "manual_verification_required: true"
+    _FakeBrowserUseWalker.errors = ["manual_verification_required"]
+    _FakeBrowserUseWalker.timed_out = False
+    _FakeBrowserUseWalker.screenshot_path = None
+    _FakeBrowserUseWalker.history_path = None
+
+    with _client(tmp_path) as client:
+        run_response = client.post(
+            "/api/runs",
+            json={
+                "plan_name": "smoke_plan.json",
+                "mode": "browser-use",
+                "out": "runs",
+                "verification_mode": "auto",
+            },
+        )
+        run_id = run_response.json()["run_id"]
+        assert _wait_for_terminal(client, run_id)["status"] == "awaiting_verification"
+
+        response = client.post(
+            f"/api/runs/{run_id}/verification/confirm",
+            json={"confirmed": True, "note": "legacy confirm"},
+        )
+        detail = client.get(f"/api/runs/{run_id}").json()["run"]
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "awaiting_verification"
+    assert response.json()["retry_run_id"] is None
+    assert "does not resume" in response.json()["message"]
+    assert detail["status"] == "awaiting_verification"
 
 
 def test_plan_name_path_traversal_is_rejected(tmp_path: Path) -> None:

@@ -19,6 +19,16 @@ RunStatus = Literal[
     "canceled",
 ]
 
+AuthSessionStatus = Literal[
+    "created",
+    "running",
+    "awaiting_user",
+    "succeeded",
+    "failed",
+    "timeout",
+    "canceled",
+]
+
 AgentStatus = Literal["pending", "running", "waiting", "succeeded", "failed", "skipped", "canceled"]
 AgentType = Literal[
     "director",
@@ -107,6 +117,7 @@ class RunSummary(BaseModel):
     evidence_exists: bool = False
     evaluation_exists: bool = False
     screenshot_count: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunDetail(RunSummary):
@@ -168,6 +179,63 @@ class RunActionResponse(BaseModel):
     run_id: str
     status: str
     accepted: bool
+    message: str | None = None
+    retry_run_id: str | None = None
+
+
+class AuthSessionCreateRequest(BaseModel):
+    run_id: str
+    url: str | None = None
+    credentials_ref: str | None = None
+    browser_user_data_dir: str | None = None
+    browser_storage_state: str | None = None
+    success_url_contains: list[str] = Field(default_factory=list)
+    login_url_contains: str = "/auth/login"
+    timeout_sec: float = Field(default=300.0, gt=0, le=3600)
+
+
+class AuthSessionConfirmRequest(BaseModel):
+    confirmed: bool = True
+    note: str | None = None
+
+
+class RetryAfterVerificationRequest(BaseModel):
+    session_id: str | None = None
+    note: str | None = None
+
+
+class AuthSessionDetail(BaseModel):
+    id: str
+    session_id: str
+    run_id: str
+    status: AuthSessionStatus
+    url: str
+    credentials_ref: str | None = None
+    browser_user_data_dir_configured: bool = False
+    browser_storage_state_configured: bool = False
+    storage_state_saved: bool = False
+    success_url_contains: list[str] = Field(default_factory=list)
+    login_url_contains: str = "/auth/login"
+    timeout_sec: float = 300.0
+    created_at: str
+    updated_at: str
+    completed_at: str | None = None
+    retry_run_id: str | None = None
+    error: dict[str, Any] | None = None
+    message: str | None = None
+
+
+class AuthSessionDetailResponse(BaseModel):
+    session: AuthSessionDetail
+
+
+class RetryAfterVerificationResponse(BaseModel):
+    run_id: str
+    retry_run_id: str
+    status: str
+    accepted: bool
+    session: AuthSessionDetail | None = None
+    message: str | None = None
 
 
 class AgentExecution(BaseModel):

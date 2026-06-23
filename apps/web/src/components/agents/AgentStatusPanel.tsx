@@ -34,24 +34,24 @@ function inferConsoleStatus(agents: AgentExecution[]): ConsoleStatus {
 
 function getPanelSummary(status: ConsoleStatus, agents: AgentExecution[]): string {
   if (status === "idle") {
-    return "No active agents.";
+    return "暂无运行中的 Agent。";
   }
 
   const activeCount = agents.filter((agent) => agent.status === "running" || agent.status === "waiting").length;
 
   switch (status) {
     case "running":
-      return `${activeCount} active or waiting agent stages.`;
+      return `${activeCount} 个 Agent 正在运行或等待。`;
     case "awaiting_verification":
-      return "A browser-use stage is waiting for manual verification acknowledgement.";
+      return "browser-use 阶段正在等待人工验证。";
     case "done":
-      return "All required agent stages completed or were skipped.";
+      return "所有必要 Agent 阶段已完成或跳过。";
     case "blocked":
-      return "A waiting agent needs operator or environment action.";
+      return "有 Agent 正在等待人工操作或环境恢复。";
     case "failed":
-      return "A failed agent preserved its error and related events.";
+      return "失败 Agent 已保留错误和相关事件。";
     default:
-      return "Agent status unavailable.";
+      return "Agent 状态不可用。";
   }
 }
 
@@ -77,7 +77,7 @@ export function AgentStatusPanel({ agents, consoleStatus }: AgentStatusPanelProp
     <section className="panel agent-panel" aria-labelledby="agent-status-title">
       <div className="panel-header">
         <div>
-          <h2 id="agent-status-title">Agent Status</h2>
+          <h2 id="agent-status-title">Agent 状态</h2>
           <p>{getPanelSummary(displayStatus, agents)}</p>
         </div>
         <StatusBadge status={displayStatus} />
@@ -87,8 +87,8 @@ export function AgentStatusPanel({ agents, consoleStatus }: AgentStatusPanelProp
 
       {agents.length === 0 ? (
         <div className="active-summary">
-          <div className="section-title">Idle</div>
-          <p className="empty-copy">Start or select a run to inspect agent execution.</p>
+          <div className="section-title">等待启动</div>
+          <p className="empty-copy">启动或选择一个任务后，可以在这里查看 Agent 执行过程。</p>
         </div>
       ) : (
         <div className="agent-grid">

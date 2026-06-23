@@ -40,7 +40,6 @@ export function RunLauncher({
       plans={plans}
       selectedPlanId={selectedPlanId}
       selectedPlanDetail={selectedPlanDetail}
-      activeRun={activeRun}
       consoleStatus={consoleStatus}
       loading={loading}
       errors={errors}

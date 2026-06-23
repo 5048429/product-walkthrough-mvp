@@ -16,8 +16,10 @@ import { StatusBadge } from "../components/StatusBadge";
 import type { ConsoleDataSource, ConsoleErrorState } from "../hooks/useProdwalkConsole";
 import { useProdwalkConsole } from "../hooks/useProdwalkConsole";
 import type { RunEventConnectionState } from "../api/sse";
+import { labelAgentType, labelMode, labelStatus } from "../i18n/zh";
 import type {
   AgentExecution,
+  AuthSessionDetail,
   Artifact,
   ConsoleStatus,
   EvaluationResponse,
@@ -26,17 +28,16 @@ import type {
   PlanSummary,
   ReportResponse,
   RunDetail,
-  RunEvent,
 } from "../types/contracts";
 
 type ConsoleView = "dashboard" | "report" | "evidence" | "history" | "details";
 
 const views: Array<{ id: ConsoleView; label: string }> = [
-  { id: "dashboard", label: "Dashboard" },
-  { id: "report", label: "Report" },
-  { id: "evidence", label: "Evidence" },
-  { id: "history", label: "History" },
-  { id: "details", label: "Details" },
+  { id: "dashboard", label: "工作台" },
+  { id: "report", label: "报告" },
+  { id: "evidence", label: "证据" },
+  { id: "history", label: "历史" },
+  { id: "details", label: "详情" },
 ];
 
 function getCompletion(run: RunDetail | null): number {
@@ -49,27 +50,32 @@ function getCompletion(run: RunDetail | null): number {
 
 function formatScore(value: number | null | undefined): string {
   if (typeof value !== "number") {
-    return "Pending";
+    return "待生成";
   }
 
   return value <= 1 ? `${Math.round(value * 100)}%` : String(value);
 }
 
+function metadataString(run: RunDetail | null, key: string): string | null {
+  const value = run?.metadata?.[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
 function getRunMessage(status: ConsoleStatus, run: RunDetail | null): string {
   if (!run) {
-    return "请选择计划并启动一次走查。";
+    return "选择计划后即可启动一次产品走查。";
   }
 
   if (run.status === "awaiting_verification") {
-    return "真实浏览器走查正在等待人工验证确认；已有产物仍可查看。";
+    return "需要手动操作：真实浏览器正在等待登录或验证。";
   }
 
   if (status === "running") {
-    return "Agent 正在收集证据并准备报告。";
+    return "Agent 正在走查页面、收集证据并准备报告。";
   }
 
   if (status === "done") {
-    return "走查已完成，可查看报告、证据、评分和截图。";
+    return "走查已完成，可以查看报告、证据、评分和截图。";
   }
 
   if (status === "blocked") {
@@ -77,7 +83,7 @@ function getRunMessage(status: ConsoleStatus, run: RunDetail | null): string {
   }
 
   if (status === "failed") {
-    return "走查失败，部分产物和调试详情仍可查看。";
+    return "走查失败，部分产物和诊断详情仍可查看。";
   }
 
   if (status === "timeout") {
@@ -92,30 +98,30 @@ function getCurrentPhase(agents: AgentExecution[], status: ConsoleStatus): strin
   const failedAgent = agents.find((agent) => agent.status === "failed");
 
   if (failedAgent) {
-    return `Needs review: ${failedAgent.label}`;
+    return `需要复核：${labelAgentType(failedAgent.type)}`;
   }
 
   if (activeAgent) {
-    return activeAgent.label;
+    return labelAgentType(activeAgent.type);
   }
 
   if (status === "done") {
-    return "Report and evaluation ready";
+    return "报告和评分已生成";
   }
 
   if (status === "awaiting_verification") {
-    return "Waiting for manual verification acknowledgement";
+    return "等待人工验证完成后重试";
   }
 
   if (status === "timeout") {
-    return "Timed out before completion";
+    return "任务超时，未完成全部走查";
   }
 
   if (status === "idle") {
-    return "Waiting to start";
+    return "等待启动";
   }
 
-  return "Preparing next stage";
+  return "准备进入下一阶段";
 }
 
 function evidenceScreenshotCount(evidence: EvidenceResponse | null): number {
@@ -126,134 +132,230 @@ interface RunProgressPanelProps {
   run: RunDetail | null;
   status: ConsoleStatus;
   agents: AgentExecution[];
-  events: RunEvent[];
+  authSession: AuthSessionDetail | null;
+  retryRunId: string | null;
   error: string | null;
   verificationError: string | null;
-  confirmingVerification: boolean;
-  onConfirmVerification: () => void;
+  verificationBusy: boolean;
+  onStartAuthSession: () => void;
+  onCompleteAuthSessionAndRetry: () => void;
 }
 
 function RunProgressPanel({
   run,
   status,
   agents,
-  events,
+  authSession,
+  retryRunId,
   error,
   verificationError,
-  confirmingVerification,
-  onConfirmVerification,
+  verificationBusy,
+  onStartAuthSession,
+  onCompleteAuthSessionAndRetry,
 }: RunProgressPanelProps) {
   const completion = getCompletion(run);
-  const recentEvents = events.slice(-4).reverse();
   const awaitingVerification = run?.status === "awaiting_verification";
+  const panelSession = authSession?.run_id === run?.id ? authSession : null;
+  const sessionStatus = panelSession?.status ?? "not_started";
+  const canStartAuthSession =
+    awaitingVerification &&
+    (!panelSession || ["failed", "timeout", "canceled"].includes(panelSession.status));
+  const canCompleteAuthSession =
+    awaitingVerification &&
+    Boolean(panelSession) &&
+    ["running", "awaiting_user", "succeeded"].includes(panelSession?.status ?? "");
+  const activeRetryRunId = retryRunId ?? panelSession?.retry_run_id ?? metadataString(run, "retry_run_id");
+  const retryOfRunId = metadataString(run, "retry_of_run_id");
 
   return (
     <section className="panel run-progress-panel" aria-labelledby="run-progress-title">
       <div className="panel-header">
         <div>
-          <h2 id="run-progress-title">Current Run Status</h2>
+          <h2 id="run-progress-title">当前任务</h2>
           <p>{getRunMessage(status, run)}</p>
         </div>
         <StatusBadge status={status} />
       </div>
 
       {run ? (
-        <div className="active-summary">
-          <div className="section-title">Run</div>
-          <strong className="run-id">{run.id}</strong>
-          <p>{run.research_goal}</p>
-          <div className="progress-track" aria-label={`${completion}% complete`}>
-            <div style={{ width: `${completion}%` }} />
+        <div className="active-summary run-overview-strip">
+          <div className="run-overview-main">
+            <div className="section-title">任务概览</div>
+            <strong className="run-id">{run.id}</strong>
+            <p>{run.research_goal}</p>
           </div>
-          <div className="metric-row">
-            <span>{run.progress.completed_scenarios}/{run.progress.total_scenarios} scenarios</span>
-            <span>{run.progress.failed_scenarios} failed</span>
-            <span>{run.mode}</span>
+          <div className="run-overview-progress">
+            <div className="progress-track" aria-label={`已完成 ${completion}%`}>
+              <div style={{ width: `${completion}%` }} />
+            </div>
+            <div className="metric-row">
+              <span>{run.progress.completed_scenarios}/{run.progress.total_scenarios} 个场景</span>
+              <span>{run.progress.failed_scenarios} 个失败</span>
+              <span>{labelMode(run.mode)}</span>
+            </div>
           </div>
         </div>
       ) : (
-        <EmptyState title="No active run" message="Start a mock run to see progress here." compact />
+        <EmptyState title="暂无当前任务" message="启动走查后，这里会显示任务目标和场景进度。" compact />
       )}
 
-      {error ? <ErrorState title="Run issue" message="The run reported a blocker or error." details={error} compact /> : null}
+      {error ? <ErrorState title="任务异常" message="当前任务返回了阻塞或错误信息。" details={error} compact /> : null}
 
       {awaitingVerification ? (
         <div className="verification-panel">
           <div>
-            <strong>等待人工验证</strong>
-            <span>请在本地可见浏览器里完成登录、验证码、MFA 或 SSO 检查点。完成后在这里记录结果；如果后端没有可继续的浏览器任务，它会明确标记为受阻。</span>
+            <strong>需要手动操作</strong>
+            <span>1. 点击“开始人工验证”，系统会打开可见浏览器。</span>
+            <span>2. 在浏览器里完成登录、验证码、MFA 或 SSO。</span>
+            <span>3. 回到这里点击“完成并重试”，用新的登录态继续走查。</span>
+            <span>
+              验证会话：{labelStatus(sessionStatus)}
+              {panelSession?.storage_state_saved ? "，storage state 已保存" : ""}
+              {activeRetryRunId ? `，重试任务：${activeRetryRunId}` : ""}
+            </span>
           </div>
-          <button type="button" className="primary-action" disabled={confirmingVerification} onClick={onConfirmVerification}>
-            {confirmingVerification ? "记录中..." : "记录已完成验证"}
-          </button>
+          <div className="verification-actions">
+            <button type="button" disabled={!canStartAuthSession || verificationBusy} onClick={onStartAuthSession}>
+              {verificationBusy && canStartAuthSession ? "正在打开可见浏览器..." : "开始人工验证"}
+            </button>
+            <button
+              type="button"
+              className="primary-action"
+              disabled={!canCompleteAuthSession || verificationBusy}
+              onClick={onCompleteAuthSessionAndRetry}
+            >
+              {verificationBusy && canCompleteAuthSession ? "正在保存并重试..." : "完成并重试"}
+            </button>
+          </div>
           {verificationError ? <p className="inline-warning">{verificationError}</p> : null}
         </div>
       ) : null}
 
+      {retryOfRunId ? (
+        <div className="verification-inline">
+          <strong>人工验证后的重试任务</strong>
+          <span>来源任务：{retryOfRunId}；验证会话：{metadataString(run, "verification_session_id") ?? "未记录"}。</span>
+        </div>
+      ) : null}
+
       <div className="stage-summary">
-        <div className="section-title">Agent Progress</div>
+        <div className="section-title">Agent 进度</div>
         <p>{getCurrentPhase(agents, status)}</p>
         <AgentTimeline agents={agents} consoleStatus={status} />
-      </div>
-
-      <div className="activity-summary">
-        <div className="section-title">Recent Activity</div>
-        {recentEvents.length === 0 ? (
-          <p className="empty-copy">Activity will appear after the run starts.</p>
-        ) : (
-          <ol>
-            {recentEvents.map((event) => (
-              <li key={event.id}>
-                <strong>{event.type.replaceAll(".", " ")}</strong>
-                <span>{event.message}</span>
-              </li>
-            ))}
-          </ol>
-        )}
       </div>
     </section>
   );
 }
 
-interface ResultShortcutsProps {
-  report: ReportResponse | null;
-  evidence: EvidenceResponse | null;
-  evaluation: EvaluationResponse | null;
-  status: ConsoleStatus;
-  onViewChange: (view: ConsoleView) => void;
+interface QuickStartPanelProps {
+  selectedPlan: PlanSummary | undefined;
+  source: ConsoleDataSource;
+  loading: boolean;
+  onStartMock: () => void;
 }
 
-function ResultShortcuts({ report, evidence, evaluation, status, onViewChange }: ResultShortcutsProps) {
-  const hasReport = Boolean(report?.markdown.trim());
-  const evidenceCount = evidence?.evidence.length ?? 0;
-  const screenshotCount = evidenceScreenshotCount(evidence);
+function QuickStartPanel({ selectedPlan, source, loading, onStartMock }: QuickStartPanelProps) {
+  const needsPlan = source === "api" && !selectedPlan;
+  const reportLanguage = selectedPlan?.report_language === "en" ? "英文" : "中文";
 
   return (
-    <section className="panel results-panel" aria-labelledby="results-title">
+    <section className="panel compact-panel" aria-labelledby="quick-start-title">
       <div className="panel-header">
         <div>
-          <h2 id="results-title">Results</h2>
-          <p>Review the generated product walk artifacts.</p>
+          <h2 id="quick-start-title">启动走查</h2>
+          <p>{selectedPlan ? "使用当前计划快速启动一次模拟走查。" : "先选择走查计划，或使用离线预览数据。"}</p>
+        </div>
+      </div>
+
+      <div className="active-summary">
+        <div className="section-title">当前计划</div>
+        <strong>{selectedPlan?.title ?? "未选择计划"}</strong>
+        <div className="metric-row">
+          <span>{selectedPlan ? `${selectedPlan.product_count} 个产品` : "等待选择"}</span>
+          <span>{selectedPlan ? `${selectedPlan.scenario_count} 个场景` : "暂无场景"}</span>
+          <span>{selectedPlan ? `报告语言：${reportLanguage}` : "中文报告"}</span>
+        </div>
+      </div>
+
+      <div className="button-row">
+        <button type="button" className="primary-action" onClick={onStartMock} disabled={loading || needsPlan}>
+          {loading ? "启动中..." : "启动模拟走查"}
+        </button>
+      </div>
+      <p className="empty-copy">需要真实浏览器、browser-use 或验证参数时，展开下方“高级启动设置”。</p>
+    </section>
+  );
+}
+
+function getReportPreviewLines(markdown: string | null | undefined): string[] {
+  if (!markdown?.trim()) {
+    return [];
+  }
+
+  return markdown
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^#{1,6}\s*/, "").replace(/^[-*]\s*/, "").trim())
+    .filter((line) => line && !line.startsWith("```") && !line.startsWith("|"))
+    .slice(0, 4);
+}
+
+interface DashboardReportPreviewProps {
+  report: ReportResponse | null;
+  evaluation: EvaluationResponse | null;
+  status: ConsoleStatus;
+  loading: boolean;
+  error: string | null;
+  onOpenReport: () => void;
+}
+
+function DashboardReportPreview({
+  report,
+  evaluation,
+  status,
+  loading,
+  error,
+  onOpenReport,
+}: DashboardReportPreviewProps) {
+  const hasReport = Boolean(report?.markdown.trim());
+  const previewLines = getReportPreviewLines(report?.markdown);
+  const score = evaluation?.overall_score ?? report?.evaluation?.overall_score;
+
+  return (
+    <section className="panel report-panel" aria-labelledby="dashboard-report-title">
+      <div className="panel-header">
+        <div>
+          <h2 id="dashboard-report-title">报告预览</h2>
+          <p>首屏只显示摘要和关键入口，完整报告在报告页查看。</p>
         </div>
         <StatusBadge status={status} />
       </div>
 
+      {loading ? <EmptyState title="正在读取报告" message="正在从 API 读取 Markdown 报告和评分。" /> : null}
+      {!loading && error ? <ErrorState title="报告暂不可用" message="当前报告请求返回错误。" details={error} compact /> : null}
+
+      {!loading && !error && !hasReport ? (
+        <EmptyState title="暂无报告" message="走查开始后，这里会显示报告摘要、评分和完整报告入口。" />
+      ) : null}
+
+      {!loading && hasReport ? (
+        <div className="active-summary">
+          <div className="section-title">摘要</div>
+          {previewLines.length > 0 ? (
+            previewLines.map((line) => <p key={line}>{line}</p>)
+          ) : (
+            <p className="empty-copy">报告已生成，可以打开完整内容查看。</p>
+          )}
+        </div>
+      ) : null}
+
       <div className="result-card-grid">
-        <button type="button" className="result-card" onClick={() => onViewChange("report")} disabled={!hasReport}>
-          <strong>Report</strong>
-          <span>{hasReport ? "Ready to review" : "Waiting for report"}</span>
+        <button type="button" className="result-card" onClick={onOpenReport} disabled={!hasReport}>
+          <strong>完整报告</strong>
+          <span>{hasReport ? "可打开查看" : "等待生成"}</span>
         </button>
-        <button type="button" className="result-card" onClick={() => onViewChange("evidence")} disabled={evidenceCount === 0}>
-          <strong>Evidence</strong>
-          <span>{evidenceCount} items, {screenshotCount} with screenshots</span>
-        </button>
-        <button type="button" className="result-card" onClick={() => onViewChange("report")} disabled={!evaluation}>
-          <strong>Evaluation</strong>
-          <span>{formatScore(evaluation?.overall_score)}</span>
-        </button>
-        <button type="button" className="result-card" onClick={() => onViewChange("evidence")} disabled={screenshotCount === 0}>
-          <strong>Screenshots</strong>
-          <span>{screenshotCount} archived screenshots</span>
+        <button type="button" className="result-card" onClick={onOpenReport} disabled={!hasReport}>
+          <strong>评分摘要</strong>
+          <span>{formatScore(score)}</span>
         </button>
       </div>
     </section>
@@ -285,55 +387,55 @@ function DebugInfoPanel({
     <section className="panel debug-panel" aria-labelledby="debug-title">
       <div className="panel-header">
         <div>
-          <h2 id="debug-title">API / Debug</h2>
-          <p>Engineering details for diagnosing the current console state.</p>
+          <h2 id="debug-title">诊断 / Debug</h2>
+          <p>用于排查 API、SSE 和当前任务状态。</p>
         </div>
         <button type="button" onClick={onRetryApi}>
-          Retry API
+          重试 API
         </button>
       </div>
 
       <dl className="detail-list">
         <div>
-          <dt>Source</dt>
+          <dt>数据源</dt>
           <dd>{source}</dd>
         </div>
         <div>
           <dt>API</dt>
-          <dd>{health ? `${health.service} ${health.version}` : "unavailable"}</dd>
+          <dd>{health ? `${health.service} ${health.version}` : "不可用"}</dd>
         </div>
         <div>
           <dt>SSE</dt>
           <dd>{connectionState}</dd>
         </div>
         <div>
-          <dt>Plan</dt>
+          <dt>计划</dt>
           <dd>{selectedPlan?.path ?? "--"}</dd>
         </div>
         <div>
-          <dt>Run dir</dt>
+          <dt>运行目录</dt>
           <dd>{activeRun?.run_dir ?? "--"}</dd>
         </div>
       </dl>
 
       {errors.initial || errors.start || errors.activeRun ? (
         <ErrorState
-          title="Debug messages"
-          message="The console captured API or run errors."
+          title="诊断消息"
+          message="控制台捕获了 API 或任务错误。"
           details={[errors.initial, errors.start, errors.activeRun].filter(Boolean).join("\n")}
           compact
         />
       ) : null}
 
       <details className="debug-details">
-        <summary>Run params</summary>
+        <summary>运行参数</summary>
         <pre>{JSON.stringify(activeRun?.params ?? {}, null, 2)}</pre>
       </details>
 
       <details className="debug-details">
-        <summary>Artifacts ({artifacts.length})</summary>
+        <summary>产物 ({artifacts.length})</summary>
         <div className="linked-list">
-          {artifacts.length === 0 ? <span>No artifacts loaded.</span> : null}
+          {artifacts.length === 0 ? <span>尚未读取到产物。</span> : null}
           {artifacts.map((artifact) => (
             <ArtifactLink
               key={artifact.id}
@@ -480,39 +582,57 @@ export function ConsolePage() {
   } else {
     content = (
       <div className="dashboard-layout">
-        <div className="dashboard-primary">
-          {launcher}
-          <RunProgressPanel
-            run={console.activeRun}
-            status={console.consoleStatus}
-            agents={console.activeRun ? console.agents : []}
-            events={console.activeRun ? console.events : []}
-            error={console.runError}
-            verificationError={console.errors.verification}
-            confirmingVerification={console.loading.verification}
-            onConfirmVerification={() => void console.confirmVerification()}
+        <div className="dashboard-command-row">
+          <QuickStartPanel
+            selectedPlan={console.selectedPlan}
+            source={console.source}
+            loading={console.loading.start}
+            onStartMock={startTopMockRun}
           />
-          <ResultShortcuts
-            report={console.viewedReport}
-            evidence={console.viewedEvidence}
+          <details className="workbench-foldout launcher-foldout">
+            <summary>
+              <strong>高级启动设置</strong>
+              <span>计划选择、browser-use 和人工验证参数</span>
+            </summary>
+            {launcher}
+          </details>
+        </div>
+        <RunProgressPanel
+          run={console.activeRun}
+          status={console.consoleStatus}
+          agents={console.activeRun ? console.agents : []}
+          authSession={console.authSession}
+          retryRunId={console.retryRunId}
+          error={console.runError}
+          verificationError={console.errors.verification}
+          verificationBusy={console.loading.verification}
+          onStartAuthSession={() => void console.startAuthSession()}
+          onCompleteAuthSessionAndRetry={() => void console.completeAuthSessionAndRetry()}
+        />
+        <div className="dashboard-report">
+          <DashboardReportPreview
+            report={console.viewedRun ? console.viewedReport : null}
             evaluation={console.viewedEvaluation}
             status={console.viewedStatus}
-            onViewChange={setActiveView}
+            loading={console.viewedReportLoading}
+            error={console.viewedReportError}
+            onOpenReport={() => setActiveView("report")}
           />
         </div>
-        <div className="dashboard-report">{reportPreview}</div>
         <div className="dashboard-foldouts">
           <details className="workbench-foldout">
             <summary>
-              <strong>Evidence / Screenshots</strong>
-              <span>{console.viewedEvidence?.evidence.length ?? 0} evidence items</span>
+              <strong>证据和截图</strong>
+              <span>
+                {console.viewedEvidence?.evidence.length ?? 0} 条证据，{evidenceScreenshotCount(console.viewedEvidence)} 张截图
+              </span>
             </summary>
             {evidenceSnapshot}
           </details>
           <details className="workbench-foldout">
             <summary>
-              <strong>Run History</strong>
-              <span>{console.recentRuns.length} local runs</span>
+              <strong>历史任务</strong>
+              <span>{console.recentRuns.length} 条本地记录</span>
             </summary>
             {runHistory}
           </details>

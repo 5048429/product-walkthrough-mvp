@@ -58,6 +58,11 @@ const eventTypeLabels: Record<string, string> = {
   "artifact.created": "产物已生成",
   "report.generated": "报告已生成",
   "evaluation.generated": "评分已生成",
+  "auth_session.started": "验证浏览器已启动",
+  "auth_session.awaiting_user": "等待用户手动验证",
+  "auth_session.completed": "人工验证已完成",
+  "auth_session.failed": "人工验证失败",
+  "run.retry_started": "Retry 任务已启动",
   "run.awaiting_verification": "等待人工验证",
   "run.blocked": "任务受阻",
   "run.finalizing": "整理产物",
@@ -138,4 +143,3 @@ export function labelMode(mode: RunMode | string | null | undefined): string {
 export function formatCount(value: number, unit: string): string {
   return `${value} ${unit}`;
 }
-

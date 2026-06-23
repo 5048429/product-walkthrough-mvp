@@ -19,6 +19,7 @@ export const mockActiveRun: RunDetail = {
   evidence_exists: true,
   evaluation_exists: true,
   screenshot_count: 0,
+  metadata: {},
   params: {
     mode: "mock",
     concurrency: 3,
@@ -53,6 +54,7 @@ export const mockRecentRuns: RunSummary[] = [
     evidence_exists: true,
     evaluation_exists: true,
     screenshot_count: 0,
+    metadata: {},
   },
   {
     id: "run-20260616-145200-blocked",
@@ -73,6 +75,11 @@ export const mockRecentRuns: RunSummary[] = [
     evidence_exists: true,
     evaluation_exists: false,
     screenshot_count: 2,
+    metadata: {
+      verification_session_id: "auth-20260616-145245-demo",
+      verification_status: "awaiting_user",
+      retry_run_id: "run-20260616-150100-retry",
+    },
   },
   {
     id: "run-20260616-142030-blocked",
@@ -93,6 +100,7 @@ export const mockRecentRuns: RunSummary[] = [
     evidence_exists: true,
     evaluation_exists: false,
     screenshot_count: 1,
+    metadata: {},
   },
   {
     id: "run-20260616-141100-failed",
@@ -113,5 +121,6 @@ export const mockRecentRuns: RunSummary[] = [
     evidence_exists: false,
     evaluation_exists: false,
     screenshot_count: 0,
+    metadata: {},
   },
 ];

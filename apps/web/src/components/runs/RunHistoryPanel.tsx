@@ -32,6 +32,11 @@ function formatProgress(run: RunSummary): string {
   return `${run.progress.completed_scenarios}/${run.progress.total_scenarios}`;
 }
 
+function metadataString(run: RunSummary, key: string): string | null {
+  const value = run.metadata?.[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
 export function RunHistoryPanel({
   runs,
   activeRunId,
@@ -129,6 +134,9 @@ export function RunHistoryPanel({
         {filteredRuns.map((run) => {
           const isActive = run.id === activeRunId;
           const isSelected = run.id === selectedRunId;
+          const retryOfRunId = metadataString(run, "retry_of_run_id");
+          const retryRunId = metadataString(run, "retry_run_id");
+          const verificationSessionId = metadataString(run, "verification_session_id");
           return (
             <article key={run.id} className={`run-row run-row-card ${isSelected ? "selected" : ""}`.trim()}>
               <div>
@@ -140,6 +148,9 @@ export function RunHistoryPanel({
                   <span>{formatProgress(run)} complete</span>
                   {run.report_exists ? <span className="status-badge status-done">Report ready</span> : null}
                   {run.evidence_exists ? <span className="status-badge status-done">Evidence ready</span> : null}
+                  {retryOfRunId ? <span className="status-badge status-running">Retry of {retryOfRunId}</span> : null}
+                  {retryRunId ? <span className="status-badge status-running">Retry started {retryRunId}</span> : null}
+                  {verificationSessionId ? <span className="status-badge status-awaiting_verification">Auth {verificationSessionId}</span> : null}
                 </div>
                 <details className="debug-details run-debug-details">
                   <summary>Run details</summary>

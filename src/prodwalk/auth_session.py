@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from .credentials import CredentialStore, normalize_ref
@@ -22,6 +24,17 @@ class AuthSessionRequest:
     timeout_sec: float = 300.0
     browser_path: str | None = None
     manual_confirm: bool = True
+
+
+@dataclass(slots=True)
+class ManualAuthSession:
+    request: AuthSessionRequest
+    playwright: Any
+    context: Any
+    page: Any
+    user_data_dir: Path
+    storage_state: Path | None
+    credentials_filled: bool = False
 
 
 def add_auth_session_subcommand(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -113,6 +126,41 @@ async def ensure_auth_session(request: AuthSessionRequest) -> bool:
 
 async def run_manual_auth_session(request: AuthSessionRequest) -> str:
     user_data_dir = resolve_user_data_dir(str_or_none(request.user_data_dir), request.credentials_ref, request.url)
+    print(f"Opening browser for manual login: {request.url}")
+    print(f"Persistent profile: {user_data_dir}")
+    print("Complete Altcha/captcha/login in the browser window, then return here and press Enter.")
+
+    session = await open_manual_auth_session(request)
+    try:
+        if session.credentials_filled:
+            print("Credentials were filled. Please complete verification and click Login.")
+        elif request.credentials_ref:
+            print(f"Credential ref not found or incomplete: {request.credentials_ref}. Please fill login manually.")
+
+        if request.manual_confirm:
+            success_url = await wait_for_manual_confirmation(session.page)
+        else:
+            success_url = await wait_for_login_success(
+                page=session.page,
+                start_url=request.url,
+                login_url_contains=request.login_url_contains,
+                success_url_contains=request.success_url_contains,
+                timeout_sec=request.timeout_sec,
+            )
+        if session.storage_state:
+            await session.context.storage_state(path=str(session.storage_state))
+        print("Auth session ready.")
+        print(f"Current URL: {success_url}")
+        print(f"Use with: --browser-user-data-dir {session.user_data_dir}")
+        if session.storage_state:
+            print(f"Storage state saved: {session.storage_state}")
+        return success_url
+    finally:
+        await close_manual_auth_session(session)
+
+
+async def open_manual_auth_session(request: AuthSessionRequest) -> ManualAuthSession:
+    user_data_dir = resolve_user_data_dir(str_or_none(request.user_data_dir), request.credentials_ref, request.url)
     storage_state = resolve_optional_path(str_or_none(request.storage_state), create_parent=True)
     browser_path = request.browser_path or os.getenv("BROWSER_USE_CHROME_PATH") or find_local_browser()
 
@@ -120,46 +168,64 @@ async def run_manual_auth_session(request: AuthSessionRequest) -> str:
     async_playwright = load_async_playwright()
 
     user_data_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Opening browser for manual login: {request.url}")
-    print(f"Persistent profile: {user_data_dir}")
-    print("Complete Altcha/captcha/login in the browser window, then return here and press Enter.")
-
-    async with async_playwright() as playwright:
+    playwright = await async_playwright().start()
+    context = None
+    try:
         context = await playwright.chromium.launch_persistent_context(
             user_data_dir=str(user_data_dir),
             headless=False,
             executable_path=browser_path,
             viewport={"width": 1440, "height": 1000},
         )
-        try:
-            page = context.pages[0] if context.pages else await context.new_page()
-            await page.goto(request.url, wait_until="domcontentloaded", timeout=60000)
-            if username and password:
-                await autofill_login(page, username, password)
-                print("Credentials were filled. Please complete verification and click Login.")
-            elif request.credentials_ref:
-                print(f"Credential ref not found or incomplete: {request.credentials_ref}. Please fill login manually.")
-
-            if request.manual_confirm:
-                success_url = await wait_for_manual_confirmation(page)
-            else:
-                success_url = await wait_for_login_success(
-                    page=page,
-                    start_url=request.url,
-                    login_url_contains=request.login_url_contains,
-                    success_url_contains=request.success_url_contains,
-                    timeout_sec=request.timeout_sec,
-                )
-            if storage_state:
-                await context.storage_state(path=str(storage_state))
-            print("Auth session ready.")
-            print(f"Current URL: {success_url}")
-            print(f"Use with: --browser-user-data-dir {user_data_dir}")
-            if storage_state:
-                print(f"Storage state saved: {storage_state}")
-            return success_url
-        finally:
+        page = context.pages[0] if context.pages else await context.new_page()
+        await page.goto(request.url, wait_until="domcontentloaded", timeout=60000)
+        credentials_filled = False
+        if username and password:
+            credentials_filled = await autofill_login(page, username, password)
+        return ManualAuthSession(
+            request=request,
+            playwright=playwright,
+            context=context,
+            page=page,
+            user_data_dir=user_data_dir,
+            storage_state=storage_state,
+            credentials_filled=credentials_filled,
+        )
+    except Exception:
+        if context is not None:
             await context.close()
+        await _stop_playwright(playwright)
+        raise
+
+
+async def complete_manual_auth_session(session: ManualAuthSession) -> str:
+    if await page_has_login_form(session.page):
+        raise RuntimeError(
+            "The page still appears to show a login form or verification challenge. "
+            "Complete login first, then confirm again."
+        )
+    await wait_for_stable_auth_page(session.page)
+    current_url = str(getattr(session.page, "url", ""))
+    if session.storage_state:
+        await session.context.storage_state(path=str(session.storage_state))
+    await close_manual_auth_session(session)
+    return current_url
+
+
+async def close_manual_auth_session(session: ManualAuthSession) -> None:
+    try:
+        await session.context.close()
+    finally:
+        await _stop_playwright(session.playwright)
+
+
+async def _stop_playwright(playwright: Any) -> None:
+    stop = getattr(playwright, "stop", None)
+    if not callable(stop):
+        return
+    result = stop()
+    if inspect.isawaitable(result):
+        await result
 
 
 def load_async_playwright() -> object:
