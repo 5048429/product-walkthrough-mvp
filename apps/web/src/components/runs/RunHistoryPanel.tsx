@@ -12,6 +12,8 @@ interface RunHistoryPanelProps {
   error?: string | null;
   onRefresh?: () => void;
   onSelectRun?: (runId: string) => void;
+  onDeleteRun?: (runId: string) => void;
+  onClearRuns?: () => void;
   onClearSelection?: () => void;
 }
 
@@ -45,6 +47,8 @@ export function RunHistoryPanel({
   error,
   onRefresh,
   onSelectRun,
+  onDeleteRun,
+  onClearRuns,
   onClearSelection,
 }: RunHistoryPanelProps) {
   const [query, setQuery] = useState("");
@@ -75,46 +79,53 @@ export function RunHistoryPanel({
     <section className="panel compact-panel" aria-labelledby="run-history-title">
       <div className="panel-header">
         <div>
-          <h2 id="run-history-title">Run History</h2>
-          <p>{loading && runs.length === 0 ? "Loading run history..." : `${filteredRuns.length} of ${runs.length} runs shown.`}</p>
+          <h2 id="run-history-title">历史任务</h2>
+          <p>{loading && runs.length === 0 ? "正在读取历史任务..." : `显示 ${filteredRuns.length} / ${runs.length} 条记录。`}</p>
         </div>
-        {onRefresh ? (
-          <button type="button" onClick={onRefresh} disabled={loading}>
-            {loading ? "Refreshing..." : "Refresh"}
-          </button>
-        ) : null}
+        <div className="button-row history-actions">
+          {onRefresh ? (
+            <button type="button" onClick={onRefresh} disabled={loading}>
+              {loading ? "刷新中..." : "刷新"}
+            </button>
+          ) : null}
+          {onClearRuns ? (
+            <button type="button" onClick={onClearRuns} disabled={loading || runs.length === 0}>
+              清空历史记录
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {isViewingHistoricalRun ? (
         <div className="source-banner source-banner-mock">
-          <strong>Historical run selected</strong>
-          <span>{selectedRunId} is open for report, evidence, and evaluation review. The active run remains separate.</span>
+          <strong>正在查看历史任务</strong>
+          <span>{selectedRunId} 已打开用于查看报告、证据和评分；当前运行任务仍保持独立。</span>
           {onClearSelection ? (
             <button type="button" onClick={onClearSelection}>
-              Back to Active
+              返回当前任务
             </button>
           ) : null}
         </div>
       ) : activeRunId ? (
         <div className="source-banner source-banner-api">
-          <strong>Active run context</strong>
-          <span>{activeRunId} is driving live agents, events, report, evidence, and evaluation.</span>
+          <strong>当前任务上下文</strong>
+          <span>{activeRunId} 正在驱动实时 Agent、事件、报告、证据和评分。</span>
           <span />
         </div>
       ) : null}
 
-      {error ? <ErrorState title="Run history unavailable" message={error} compact /> : null}
-      {loading && runs.length > 0 ? <p className="loading-line">Refreshing run list...</p> : null}
+      {error ? <ErrorState title="历史任务暂不可用" message={error} compact /> : null}
+      {loading && runs.length > 0 ? <p className="loading-line">正在刷新任务列表...</p> : null}
 
       <div className="filter-row history-filters" aria-label="Run history filters">
         <label className="field" style={{ flex: "1 1 260px", marginBottom: 0 }}>
-          <span>Search</span>
-          <input value={query} placeholder="run id or research goal" onChange={(event) => setQuery(event.target.value)} />
+          <span>搜索</span>
+          <input value={query} placeholder="run id 或走查目标" onChange={(event) => setQuery(event.target.value)} />
         </label>
         <label className="field" style={{ flex: "0 1 180px", marginBottom: 0 }}>
-          <span>Status</span>
+          <span>状态</span>
           <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-            <option value="all">all</option>
+            <option value="all">全部</option>
             {statuses.map((status) => (
               <option key={status} value={status}>
                 {status}
@@ -126,10 +137,10 @@ export function RunHistoryPanel({
 
       <div className="run-list">
         {runs.length === 0 && !loading ? (
-          <EmptyState title="No runs yet" message="Start a mock run to create the first run directory." compact />
+          <EmptyState title="暂无任务记录" message="启动走查后，这里会显示本地任务记录。" compact />
         ) : null}
         {runs.length > 0 && filteredRuns.length === 0 ? (
-          <EmptyState title="No matching runs" message="Try a different search or status filter." compact />
+          <EmptyState title="没有匹配记录" message="换一个搜索词或状态筛选试试。" compact />
         ) : null}
         {filteredRuns.map((run) => {
           const isActive = run.id === activeRunId;
@@ -145,34 +156,34 @@ export function RunHistoryPanel({
                 <span>{run.research_goal}</span>
                 <div className="metric-row">
                   <span>{run.mode}</span>
-                  <span>{formatProgress(run)} complete</span>
-                  {run.report_exists ? <span className="status-badge status-done">Report ready</span> : null}
-                  {run.evidence_exists ? <span className="status-badge status-done">Evidence ready</span> : null}
-                  {retryOfRunId ? <span className="status-badge status-running">Retry of {retryOfRunId}</span> : null}
-                  {retryRunId ? <span className="status-badge status-running">Retry started {retryRunId}</span> : null}
+                  <span>{formatProgress(run)} 完成</span>
+                  {run.report_exists ? <span className="status-badge status-done">报告可用</span> : null}
+                  {run.evidence_exists ? <span className="status-badge status-done">证据可用</span> : null}
+                  {retryOfRunId ? <span className="status-badge status-running">续跑自 {retryOfRunId}</span> : null}
+                  {retryRunId ? <span className="status-badge status-running">已续跑 {retryRunId}</span> : null}
                   {verificationSessionId ? <span className="status-badge status-awaiting_verification">Auth {verificationSessionId}</span> : null}
                 </div>
                 <details className="debug-details run-debug-details">
                   <summary>Run details</summary>
                   <dl className="detail-list">
                     <div>
-                      <dt>Run dir</dt>
+                      <dt>运行目录</dt>
                       <dd>{run.run_dir}</dd>
                     </div>
                     <div>
-                      <dt>Report</dt>
-                      <dd>{run.report_exists ? "available" : "not available"}</dd>
+                      <dt>报告</dt>
+                      <dd>{run.report_exists ? "可用" : "不可用"}</dd>
                     </div>
                     <div>
-                      <dt>Evidence</dt>
-                      <dd>{run.evidence_exists ? "available" : "not available"}</dd>
+                      <dt>证据</dt>
+                      <dd>{run.evidence_exists ? "可用" : "不可用"}</dd>
                     </div>
                     <div>
-                      <dt>Evaluation</dt>
-                      <dd>{run.evaluation_exists ? "available" : "not available"}</dd>
+                      <dt>评分</dt>
+                      <dd>{run.evaluation_exists ? "可用" : "不可用"}</dd>
                     </div>
                     <div>
-                      <dt>Screenshots</dt>
+                      <dt>截图</dt>
                       <dd>{run.screenshot_count}</dd>
                     </div>
                   </dl>
@@ -180,11 +191,16 @@ export function RunHistoryPanel({
               </div>
               <div className="artifact-strip">
                 <StatusBadge status={run.status} />
-                {isActive ? <span className="status-badge status-running">Active</span> : null}
-                {isSelected && !isActive ? <span className="status-badge status-done">Viewing</span> : null}
+                {isActive ? <span className="status-badge status-running">当前</span> : null}
+                {isSelected && !isActive ? <span className="status-badge status-done">查看中</span> : null}
                 {onSelectRun ? (
                   <button type="button" onClick={() => onSelectRun(run.id)}>
-                    Open
+                    打开
+                  </button>
+                ) : null}
+                {onDeleteRun ? (
+                  <button type="button" onClick={() => onDeleteRun(run.id)} disabled={loading || isActive}>
+                    删除
                   </button>
                 ) : null}
               </div>

@@ -34,6 +34,14 @@ const terminalRunStatuses = new Set<RunStatus>([
   "failed",
   "canceled",
 ]);
+const stopAllowedRunStatuses = new Set<RunStatus>([
+  "queued",
+  "starting",
+  "running",
+  "awaiting_verification",
+  "finalizing",
+  "canceling",
+]);
 const terminalEventTypes = new Set([
   "run.completed",
   "run.awaiting_verification",
@@ -1253,8 +1261,8 @@ export function useProdwalkConsole() {
       mode: "browser-use",
       concurrency: 1,
       reportLanguage: selectedPlan?.report_language ?? "zh",
-      browserMaxSteps: 25,
-      browserTimeoutSec: 600,
+      browserMaxSteps: 60,
+      browserTimeoutSec: 1200,
       authSessionId: loginSession.session_id,
       verificationMode: "auto",
       verificationTimeoutSec: loginSession.timeout_sec || 300,
@@ -1262,6 +1270,143 @@ export function useProdwalkConsole() {
       verificationLoginUrlContains: loginSession.login_url_contains || "/auth/login",
     });
   }, [loginSession, selectedPlan?.report_language, startRun, updateErrors]);
+
+  const stopActiveRun = useCallback(async () => {
+    updateErrors({ activeRun: null });
+
+    if (source === "mock") {
+      setMockStatus("blocked");
+      setActiveRun((current) => (current ? { ...current, status: "canceled", completed_at: new Date().toISOString() } : current));
+      setConnectionState("closed");
+      return;
+    }
+
+    if (!activeRunId) {
+      updateErrors({ activeRun: "当前没有正在运行的任务。" });
+      return;
+    }
+
+    if (activeRun && !stopAllowedRunStatuses.has(activeRun.status)) {
+      updateErrors({ activeRun: "当前任务已经结束，不需要停止。" });
+      return;
+    }
+
+    updateLoading({ activeRun: true });
+
+    try {
+      const response = await prodwalkApi.cancelRun(activeRunId, "User stopped the run from the web console.");
+      setActiveRun((current) =>
+        current
+          ? {
+              ...current,
+              status: response.status === "canceled" ? "canceled" : current.status,
+              completed_at: new Date().toISOString(),
+            }
+          : current,
+      );
+      setConnectionState("closed");
+      await loadRun(activeRunId);
+      void refreshRunHistory();
+    } catch (error) {
+      updateErrors({ activeRun: errorMessage(error) });
+    } finally {
+      updateLoading({ activeRun: false });
+    }
+  }, [activeRun, activeRunId, loadRun, refreshRunHistory, source, updateErrors, updateLoading]);
+
+  const deleteRunRecord = useCallback(
+    async (runId: string) => {
+      updateErrors({ runHistory: null });
+
+      if (source === "mock") {
+        setRecentRuns((current) => current.filter((run) => run.id !== runId));
+        if (selectedHistoryRunId === runId) {
+          clearHistorySelection();
+        }
+        return;
+      }
+
+      updateLoading({ runHistory: true });
+
+      try {
+        await prodwalkApi.deleteRun(runId);
+        if (activeRunId === runId) {
+          setActiveRunIdAndStore(null);
+          setActiveRun(null);
+          setEvents([]);
+          setArtifacts([]);
+          setReport(null);
+          setEvidence(null);
+          setEvaluation(null);
+          setConnectionState("idle");
+        }
+        if (selectedHistoryRunId === runId) {
+          clearHistorySelection();
+        }
+        await refreshRunHistory();
+      } catch (error) {
+        updateErrors({ runHistory: errorMessage(error) });
+      } finally {
+        updateLoading({ runHistory: false });
+      }
+    },
+    [
+      activeRunId,
+      clearHistorySelection,
+      refreshRunHistory,
+      selectedHistoryRunId,
+      setActiveRunIdAndStore,
+      source,
+      updateErrors,
+      updateLoading,
+    ],
+  );
+
+  const clearRunRecords = useCallback(async () => {
+    updateErrors({ runHistory: null });
+
+    if (source === "mock") {
+      setRecentRuns([]);
+      clearHistorySelection();
+      return;
+    }
+
+    updateLoading({ runHistory: true });
+
+    try {
+      const response = await prodwalkApi.clearRuns();
+      if (activeRunId && response.deleted_run_ids.includes(activeRunId)) {
+        setActiveRunIdAndStore(null);
+        setActiveRun(null);
+        setEvents([]);
+        setArtifacts([]);
+        setReport(null);
+        setEvidence(null);
+        setEvaluation(null);
+        setConnectionState("idle");
+      }
+      if (selectedHistoryRunId && response.deleted_run_ids.includes(selectedHistoryRunId)) {
+        clearHistorySelection();
+      }
+      if (response.skipped_run_ids.length > 0) {
+        updateErrors({ runHistory: `已清除历史记录；${response.skipped_run_ids.length} 个运行中的任务被保留。` });
+      }
+      await refreshRunHistory();
+    } catch (error) {
+      updateErrors({ runHistory: errorMessage(error) });
+    } finally {
+      updateLoading({ runHistory: false });
+    }
+  }, [
+    activeRunId,
+    clearHistorySelection,
+    refreshRunHistory,
+    selectedHistoryRunId,
+    setActiveRunIdAndStore,
+    source,
+    updateErrors,
+    updateLoading,
+  ]);
 
   const confirmVerification = useCallback(async () => {
     updateErrors({ verification: null });
@@ -1290,7 +1435,16 @@ export function useProdwalkConsole() {
         current
           ? {
               ...current,
-              status: response.status,
+              status:
+                response.status === "awaiting_verification" ||
+                response.status === "blocked" ||
+                response.status === "running" ||
+                response.status === "failed" ||
+                response.status === "timeout" ||
+                response.status === "canceled" ||
+                response.status === "succeeded"
+                  ? response.status
+                  : current.status,
               error:
                 response.status === "blocked"
                   ? {
@@ -1574,6 +1728,9 @@ export function useProdwalkConsole() {
     startManualLogin,
     confirmManualLogin,
     startAuthenticatedRun,
+    stopActiveRun,
+    deleteRunRecord,
+    clearRunRecords,
     confirmVerification,
     startAuthSession,
     completeAuthSessionAndRetry,

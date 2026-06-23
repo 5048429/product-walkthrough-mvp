@@ -25,6 +25,7 @@ from .models import (
     RetryAfterVerificationRequest,
     RetryAfterVerificationResponse,
     RunActionResponse,
+    RunClearResponse,
     RunCancelRequest,
     RunDetailResponse,
     RunStartRequest,
@@ -48,6 +49,7 @@ def create_app(workspace_root: str | Path | None = None) -> FastAPI:
             "http://localhost:3000",
             "http://127.0.0.1:3000",
         ],
+        allow_origin_regex=r"^http://(localhost|127\.0\.0\.1):\d+$",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -92,6 +94,14 @@ def create_app(workspace_root: str | Path | None = None) -> FastAPI:
     @app.post("/api/runs/{run_id}/cancel", response_model=RunActionResponse)
     async def cancel_run(run_id: str, request: RunCancelRequest | None = None) -> RunActionResponse:
         return await app.state.runtime.cancel_run(run_id, reason=request.reason if request else None)
+
+    @app.delete("/api/runs/{run_id}", response_model=RunActionResponse)
+    async def delete_run(run_id: str) -> RunActionResponse:
+        return await app.state.runtime.delete_run(run_id)
+
+    @app.delete("/api/runs", response_model=RunClearResponse)
+    async def clear_runs() -> RunClearResponse:
+        return await app.state.runtime.clear_runs()
 
     @app.post("/api/runs/{run_id}/verification/confirm", response_model=RunActionResponse)
     async def confirm_verification(

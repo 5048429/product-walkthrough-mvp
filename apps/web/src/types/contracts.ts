@@ -396,10 +396,16 @@ export interface ArtifactResponse {
 
 export interface RunActionResponse {
   run_id: string;
-  status: RunStatus;
+  status: RunStatus | string;
   accepted: boolean;
   message?: string | null;
   retry_run_id?: string | null;
+}
+
+export interface RunClearResponse {
+  deleted_run_ids: string[];
+  skipped_run_ids: string[];
+  message?: string | null;
 }
 
 export interface VerificationConfirmRequest {

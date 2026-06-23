@@ -42,6 +42,7 @@ from .models import (
     RetryAfterVerificationRequest,
     RetryAfterVerificationResponse,
     RunActionResponse,
+    RunClearResponse,
     RunDetail,
     RunListResponse,
     RunStartRequest,
@@ -556,7 +557,8 @@ class RunRuntime:
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         for run_id, state in self._runs.items():
-            records.append(self._normalize_run_record(dict(state["run"])))
+            record = self._normalize_run_record(dict(state["run"]))
+            records.append(self._reconcile_browser_use_terminal_status(run_id, Path(state["run_dir"]), record))
             seen.add(run_id)
 
         for run_dir in self._scan_run_dirs():
@@ -607,6 +609,40 @@ class RunRuntime:
             payload=payload,
         )
         return RunActionResponse(run_id=run_id, status="canceled", accepted=True)
+
+    async def delete_run(self, run_id: str) -> RunActionResponse:
+        run_dir = self._run_dir_for_id(run_id)
+        self._ensure_run_is_deletable(run_id)
+        self._remove_run_state(run_id)
+        self._delete_run_directory(run_dir)
+        return RunActionResponse(
+            run_id=run_id,
+            status="deleted",
+            accepted=True,
+            message="Run record was deleted.",
+        )
+
+    async def clear_runs(self) -> RunClearResponse:
+        deleted: list[str] = []
+        skipped: list[str] = []
+        run_ids = sorted({run_dir.name for run_dir in self._scan_run_dirs()} | set(self._runs.keys()))
+        for run_id in run_ids:
+            try:
+                run_dir = self._run_dir_for_id(run_id)
+                self._ensure_run_is_deletable(run_id)
+                self._remove_run_state(run_id)
+                self._delete_run_directory(run_dir)
+                deleted.append(run_id)
+            except ApiError as exc:
+                if exc.code in {"RUN_DELETE_ACTIVE", "RUN_NOT_FOUND"}:
+                    skipped.append(run_id)
+                    continue
+                raise
+        return RunClearResponse(
+            deleted_run_ids=deleted,
+            skipped_run_ids=skipped,
+            message=f"Deleted {len(deleted)} run records; skipped {len(skipped)} active records.",
+        )
 
     async def confirm_verification(
         self,
@@ -1691,6 +1727,57 @@ class RunRuntime:
             )
         self._active_browser_run_id = None
 
+    def _ensure_run_is_deletable(self, run_id: str) -> None:
+        task = self._tasks.get(run_id)
+        if task is not None and not task.done():
+            raise ApiError(
+                409,
+                "RUN_DELETE_ACTIVE",
+                "Stop the active run before deleting its record.",
+                {"run_id": run_id},
+            )
+        if self._active_browser_run_id == run_id:
+            self._active_browser_run_id = None
+
+    def _remove_run_state(self, run_id: str) -> None:
+        self._runs.pop(run_id, None)
+        self._tasks.pop(run_id, None)
+        subscribers = self._subscribers.pop(run_id, set())
+        for queue in subscribers:
+            queue.put_nowait(
+                {
+                    "id": "evt_deleted",
+                    "run_id": run_id,
+                    "seq": 0,
+                    "ts": utc_now(),
+                    "type": "run.deleted",
+                    "level": "warn",
+                    "message": "Run record was deleted.",
+                    "status": "deleted",
+                    "payload": {},
+                    "artifact_ids": [],
+                }
+            )
+
+    def _delete_run_directory(self, run_dir: Path) -> None:
+        resolved = run_dir.resolve()
+        workspace = self.workspace_root.resolve()
+        if not resolved.is_relative_to(workspace):
+            raise ApiError(
+                403,
+                "RUN_DELETE_FORBIDDEN",
+                "Run directory is outside the prodwalk workspace.",
+                {"run_dir": str(run_dir)},
+            )
+        if not resolved.name.startswith("run-") or not resolved.parent.name.startswith("runs"):
+            raise ApiError(
+                403,
+                "RUN_DELETE_FORBIDDEN",
+                "Only prodwalk run directories can be deleted.",
+                {"run_dir": self._relative_path(resolved)},
+            )
+        shutil.rmtree(resolved)
+
     def _browser_use_readiness_errors(
         self,
         request: RunStartRequest,
@@ -2278,7 +2365,8 @@ class RunRuntime:
         self._validate_run_id(run_id)
         state = self._runs.get(run_id)
         if state:
-            return self._normalize_run_record(dict(state["run"]))
+            record = self._normalize_run_record(dict(state["run"]))
+            return self._reconcile_browser_use_terminal_status(run_id, Path(state["run_dir"]), record)
         run_dir = self._run_dir_for_id(run_id)
         record = self._read_run_record(run_dir)
         if not record:
@@ -2306,7 +2394,8 @@ class RunRuntime:
                     payload = dict(payload)
                     payload["id"] = run_dir.name
                     payload["run_dir"] = self._relative_path(run_dir)
-                    return self._normalize_run_record(payload)
+                    record = self._normalize_run_record(payload)
+                    return self._reconcile_browser_use_terminal_status(run_dir.name, run_dir, record)
             except Exception:
                 return None
         return self._infer_run_record(run_dir)
@@ -2319,6 +2408,25 @@ class RunRuntime:
         normalized["progress"] = self._progress_for_awaiting_verification(progress)
         normalized["completed_at"] = None
         return normalized
+
+    def _reconcile_browser_use_terminal_status(
+        self,
+        run_id: str,
+        run_dir: Path,
+        record: dict[str, Any],
+    ) -> dict[str, Any]:
+        if str(record.get("status") or "") != "timeout":
+            return record
+        mode = str(record.get("mode") or record.get("params", {}).get("mode") or "")
+        if mode not in BROWSER_USE_MODES:
+            return record
+        final_status, _ = self._final_status_from_evidence(run_id, run_dir, record=record)
+        if final_status != "succeeded":
+            return record
+        reconciled = dict(record)
+        reconciled["status"] = "succeeded"
+        reconciled["error"] = None
+        return reconciled
 
     def _infer_run_record(self, run_dir: Path) -> dict[str, Any] | None:
         artifact_paths = [run_dir / "evidence.json", run_dir / "report.md", run_dir / "evaluation.json"]
@@ -2719,8 +2827,14 @@ class RunRuntime:
             index += 1
         return candidate
 
-    def _final_status_from_evidence(self, run_id: str, run_dir: Path) -> tuple[str, dict[str, Any] | None]:
-        record = self._record_for_run(run_id)
+    def _final_status_from_evidence(
+        self,
+        run_id: str,
+        run_dir: Path,
+        *,
+        record: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any] | None]:
+        record = dict(record) if record is not None else self._record_for_run(run_id)
         mode = str(record.get("mode") or record.get("params", {}).get("mode") or "")
         if mode not in BROWSER_USE_MODES:
             return "succeeded", None
@@ -2738,7 +2852,7 @@ class RunRuntime:
 
         text = self._browser_status_text(payload)
         lower_text = text.lower()
-        if self._browser_results_timed_out(results) or any(marker in lower_text for marker in ("timed out", "run timed out")):
+        if self._browser_results_timed_out(results) or self._browser_text_timeout_signal(lower_text):
             return "timeout", {"message": "One or more browser-use walkthroughs timed out.", "type": "timeout"}
 
         verification_mode = str(record.get("params", {}).get("verification_mode") or "off")
@@ -2919,6 +3033,14 @@ class RunRuntime:
                 if data.get("timed_out"):
                     return True
         return False
+
+    def _browser_text_timeout_signal(self, lower_text: str) -> bool:
+        timeout_patterns = (
+            r"\b(?:browser[-\s]?use|walkthrough|run|task|agent)\s+(?:has\s+)?timed out\b",
+            r"\brun\s+timeout\b",
+            r"\btimeout\s+(?:reached|expired)\b",
+        )
+        return any(re.search(pattern, lower_text) for pattern in timeout_patterns)
 
     def _browser_status_text(self, payload: dict[str, Any]) -> str:
         parts: list[str] = []

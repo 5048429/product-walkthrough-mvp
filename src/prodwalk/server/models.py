@@ -190,6 +190,12 @@ class RunActionResponse(BaseModel):
     retry_run_id: str | None = None
 
 
+class RunClearResponse(BaseModel):
+    deleted_run_ids: list[str] = Field(default_factory=list)
+    skipped_run_ids: list[str] = Field(default_factory=list)
+    message: str | None = None
+
+
 class AuthSessionCreateRequest(BaseModel):
     run_id: str | None = None
     url: str | None = None

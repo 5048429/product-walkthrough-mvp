@@ -10,8 +10,8 @@ import { EventLog } from "../components/events/EventLog";
 import { AppShell } from "../components/layout/AppShell";
 import { TopRunContextBar } from "../components/layout/TopRunContextBar";
 import { ReportPreview } from "../components/reports/ReportPreview";
+import { PlanSelector } from "../components/runs/PlanSelector";
 import { RunHistoryPanel } from "../components/runs/RunHistoryPanel";
-import { RunLauncher } from "../components/runs/RunLauncher";
 import { StatusBadge } from "../components/StatusBadge";
 import type { ConsoleDataSource, ConsoleErrorState } from "../hooks/useProdwalkConsole";
 import { useProdwalkConsole } from "../hooks/useProdwalkConsole";
@@ -138,8 +138,10 @@ interface RunProgressPanelProps {
   error: string | null;
   verificationError: string | null;
   verificationBusy: boolean;
+  stopBusy: boolean;
   onStartAuthSession: () => void;
   onCompleteAuthSessionAndRetry: () => void;
+  onStopRun: () => void;
 }
 
 function RunProgressPanel({
@@ -151,11 +153,16 @@ function RunProgressPanel({
   error,
   verificationError,
   verificationBusy,
+  stopBusy,
   onStartAuthSession,
   onCompleteAuthSessionAndRetry,
+  onStopRun,
 }: RunProgressPanelProps) {
   const completion = getCompletion(run);
   const awaitingVerification = run?.status === "awaiting_verification";
+  const canStopRun = Boolean(
+    run && ["queued", "starting", "running", "awaiting_verification", "finalizing", "canceling"].includes(run.status),
+  );
   const panelSession = authSession?.run_id === run?.id ? authSession : null;
   const sessionStatus = panelSession?.status ?? "not_started";
   const canStartAuthSession =
@@ -175,7 +182,12 @@ function RunProgressPanel({
           <h2 id="run-progress-title">当前任务</h2>
           <p>{getRunMessage(status, run)}</p>
         </div>
-        <StatusBadge status={status} />
+        <div className="panel-header-actions">
+          <StatusBadge status={status} />
+          <button type="button" onClick={onStopRun} disabled={!canStopRun || stopBusy}>
+            {stopBusy && canStopRun ? "停止中..." : "立即停止"}
+          </button>
+        </div>
       </div>
 
       {run ? (
@@ -250,41 +262,49 @@ function RunProgressPanel({
 }
 
 interface QuickStartPanelProps {
+  plans: PlanSummary[];
   selectedPlan: PlanSummary | undefined;
+  selectedPlanId: string;
   source: ConsoleDataSource;
   loading: boolean;
+  planLoading: boolean;
+  planError: string | null;
+  onPlanChange: (planId: string) => void;
   onStartMock: () => void;
 }
 
-function QuickStartPanel({ selectedPlan, source, loading, onStartMock }: QuickStartPanelProps) {
+function QuickStartPanel({
+  plans,
+  selectedPlan,
+  selectedPlanId,
+  source,
+  loading,
+  planLoading,
+  planError,
+  onPlanChange,
+  onStartMock,
+}: QuickStartPanelProps) {
   const needsPlan = source === "api" && !selectedPlan;
-  const reportLanguage = selectedPlan?.report_language === "en" ? "英文" : "中文";
 
   return (
     <section className="panel compact-panel" aria-labelledby="quick-start-title">
       <div className="panel-header">
         <div>
-          <h2 id="quick-start-title">启动走查</h2>
-          <p>{selectedPlan ? "使用当前计划快速启动一次模拟走查。" : "先选择走查计划，或使用离线预览数据。"}</p>
+          <h2 id="quick-start-title">全站走查</h2>
+          <p>{selectedPlan ? "选定计划后，先完成登录，再启动一次全站只读走查。" : "先选择走查计划，或使用离线预览数据。"}</p>
         </div>
       </div>
 
-      <div className="active-summary">
-        <div className="section-title">当前计划</div>
-        <strong>{selectedPlan?.title ?? "未选择计划"}</strong>
-        <div className="metric-row">
-          <span>{selectedPlan ? `${selectedPlan.product_count} 个产品` : "等待选择"}</span>
-          <span>{selectedPlan ? `${selectedPlan.scenario_count} 个场景` : "暂无场景"}</span>
-          <span>{selectedPlan ? `报告语言：${reportLanguage}` : "中文报告"}</span>
-        </div>
-      </div>
+      <PlanSelector plans={plans} selectedPlanId={selectedPlanId} onPlanChange={onPlanChange} />
+      {planLoading ? <p className="loading-line">正在读取计划详情...</p> : null}
+      {planError ? <p className="inline-warning">{planError}</p> : null}
 
       <div className="button-row">
         <button type="button" className="primary-action" onClick={onStartMock} disabled={loading || needsPlan}>
-          {loading ? "启动中..." : "启动模拟走查"}
+          {loading ? "启动中..." : "启动离线模拟"}
         </button>
       </div>
-      <p className="empty-copy">需要真实浏览器、browser-use 或验证参数时，展开下方“高级启动设置”。</p>
+      <p className="empty-copy">真实走查会自动使用全站只读默认参数，不需要手动设置步骤数、超时或浏览器状态。</p>
     </section>
   );
 }
@@ -384,7 +404,7 @@ function LoginPreparationPanel({
           disabled={!canStartRealRun || startLoading}
           onClick={onStartAuthenticatedRun}
         >
-          {startLoading ? "启动中..." : "开始真实走查"}
+          {startLoading ? "启动中..." : "开始全站只读走查"}
         </button>
       </div>
 
@@ -560,6 +580,10 @@ function DebugInfoPanel({
 export function ConsolePage() {
   const console = useProdwalkConsole();
   const [activeView, setActiveView] = useState<ConsoleView>("dashboard");
+  const canStopActiveRun = Boolean(
+    console.activeRun &&
+      ["queued", "starting", "running", "awaiting_verification", "finalizing", "canceling"].includes(console.activeRun.status),
+  );
 
   const startTopMockRun = () => {
     void console.startRun({
@@ -574,6 +598,28 @@ export function ConsolePage() {
   const selectRunForReview = (runId: string) => {
     console.selectRun(runId);
     setActiveView("report");
+  };
+
+  const stopCurrentRun = () => {
+    if (!canStopActiveRun) {
+      return;
+    }
+
+    if (window.confirm("确定要立即停止当前任务吗？已生成的产物会保留。")) {
+      void console.stopActiveRun();
+    }
+  };
+
+  const deleteRunRecord = (runId: string) => {
+    if (window.confirm(`确定要删除任务记录 ${runId} 吗？这会删除本地 run 目录和产物。`)) {
+      void console.deleteRunRecord(runId);
+    }
+  };
+
+  const clearRunRecords = () => {
+    if (window.confirm("确定要清空历史任务记录吗？运行中的任务会被保留。")) {
+      void console.clearRunRecords();
+    }
   };
 
   const canOpenReport = Boolean(console.viewedReport?.markdown.trim());
@@ -593,25 +639,6 @@ export function ConsolePage() {
       </div>
     ),
     [activeView],
-  );
-
-  const launcher = (
-    <RunLauncher
-      source={console.source}
-      health={console.health}
-      plans={console.plans}
-      selectedPlanId={console.selectedPlanId}
-      selectedPlanDetail={console.selectedPlanDetail}
-      consoleStatus={console.consoleStatus}
-      authReady={console.loginAuthStatus === "auth_ready"}
-      authSessionId={console.loginSession?.session_id ?? null}
-      loading={console.loading}
-      errors={console.errors}
-      onPlanChange={console.setSelectedPlanId}
-      onStartRun={(options) => void console.startRun(options)}
-      onMockStatusChange={console.setMockPreviewStatus}
-      onRetryApi={console.retryApi}
-    />
   );
 
   const reportPreview = (
@@ -644,6 +671,8 @@ export function ConsolePage() {
       error={console.errors.runHistory}
       onRefresh={() => void console.refreshRunHistory()}
       onSelectRun={selectRunForReview}
+      onDeleteRun={deleteRunRecord}
+      onClearRuns={clearRunRecords}
       onClearSelection={console.clearHistorySelection}
     />
   );
@@ -693,9 +722,14 @@ export function ConsolePage() {
       <div className="dashboard-layout">
         <div className="dashboard-command-row">
           <QuickStartPanel
+            plans={console.plans}
             selectedPlan={console.selectedPlan}
+            selectedPlanId={console.selectedPlanId}
             source={console.source}
             loading={console.loading.start}
+            planLoading={console.loading.planDetail}
+            planError={console.errors.planDetail}
+            onPlanChange={console.setSelectedPlanId}
             onStartMock={startTopMockRun}
           />
           <LoginPreparationPanel
@@ -711,13 +745,6 @@ export function ConsolePage() {
             onConfirmManualLogin={() => void console.confirmManualLogin()}
             onStartAuthenticatedRun={() => void console.startAuthenticatedRun()}
           />
-          <details className="workbench-foldout launcher-foldout">
-            <summary>
-              <strong>高级启动设置</strong>
-              <span>计划选择、browser-use 和人工验证参数</span>
-            </summary>
-            {launcher}
-          </details>
         </div>
         <RunProgressPanel
           run={console.activeRun}
@@ -728,8 +755,10 @@ export function ConsolePage() {
           error={console.runError}
           verificationError={console.errors.verification}
           verificationBusy={console.loading.verification}
+          stopBusy={console.loading.activeRun}
           onStartAuthSession={() => void console.startAuthSession()}
           onCompleteAuthSessionAndRetry={() => void console.completeAuthSessionAndRetry()}
+          onStopRun={stopCurrentRun}
         />
         <div className="dashboard-report">
           <DashboardReportPreview
@@ -771,9 +800,11 @@ export function ConsolePage() {
           selectedPlan={console.selectedPlan}
           consoleStatus={console.consoleStatus}
           onStartMock={startTopMockRun}
+          onStopRun={stopCurrentRun}
           onOpenReport={() => setActiveView("report")}
           canOpenReport={canOpenReport}
           startDisabled={console.loading.start}
+          stopDisabled={!canStopActiveRun || console.loading.activeRun}
         />
       }
       navigation={navigation}

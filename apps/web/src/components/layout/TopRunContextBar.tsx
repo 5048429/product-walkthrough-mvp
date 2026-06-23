@@ -7,9 +7,11 @@ interface TopRunContextBarProps {
   selectedPlan: PlanSummary | undefined;
   consoleStatus: ConsoleStatus;
   onStartMock: () => void;
+  onStopRun: () => void;
   onOpenReport: () => void;
   canOpenReport: boolean;
   startDisabled?: boolean;
+  stopDisabled?: boolean;
 }
 
 function formatElapsed(run: RunDetail | null): string {
@@ -50,9 +52,11 @@ export function TopRunContextBar({
   selectedPlan,
   consoleStatus,
   onStartMock,
+  onStopRun,
   onOpenReport,
   canOpenReport,
   startDisabled = false,
+  stopDisabled = false,
 }: TopRunContextBarProps) {
   return (
     <div className="top-context-bar">
@@ -91,6 +95,9 @@ export function TopRunContextBar({
       <div className="top-actions" aria-label="任务操作">
         <button type="button" className="primary-action" onClick={onStartMock} disabled={startDisabled}>
           启动模拟走查
+        </button>
+        <button type="button" onClick={onStopRun} disabled={stopDisabled}>
+          立即停止当前任务
         </button>
         <button type="button" onClick={onOpenReport} disabled={!canOpenReport}>
           打开报告

@@ -24,6 +24,7 @@ import type {
   RetryAfterVerificationResponse,
   RunMode,
   RunActionResponse,
+  RunClearResponse,
   RunCreateRequest,
   RunCreateResponse,
   RunDetailResponse,
@@ -575,6 +576,16 @@ export const prodwalkApi = {
     requestJson<RunActionResponse>(runApiPath(runId, "/cancel"), {
       method: "POST",
       body: JSON.stringify({ reason }),
+    }),
+
+  deleteRun: async (runId: string) =>
+    requestJson<RunActionResponse>(runApiPath(runId), {
+      method: "DELETE",
+    }),
+
+  clearRuns: async () =>
+    requestJson<RunClearResponse>(apiPath("/runs"), {
+      method: "DELETE",
     }),
 
   confirmVerification: async (runId: string, body: VerificationConfirmRequest) =>

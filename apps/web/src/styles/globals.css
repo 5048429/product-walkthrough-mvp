@@ -354,7 +354,7 @@ img {
 
 .dashboard-command-row {
   display: grid;
-  grid-template-columns: minmax(260px, 0.74fr) minmax(320px, 1fr) minmax(360px, 1.1fr);
+  grid-template-columns: minmax(300px, 0.9fr) minmax(360px, 1.1fr);
   gap: 12px;
   align-items: start;
   min-width: 0;
@@ -500,6 +500,11 @@ img {
 
 .run-debug-details {
   margin-top: 10px;
+}
+
+.history-actions {
+  justify-content: flex-end;
+  margin: 0;
 }
 
 .result-card-grid {
@@ -711,6 +716,14 @@ img {
 }
 
 .panel-header > div {
+  min-width: 0;
+}
+
+.panel-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
   min-width: 0;
 }
 

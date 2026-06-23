@@ -205,9 +205,18 @@ def test_cors_allows_vite_localhost(tmp_path: Path) -> None:
                 "Access-Control-Request-Method": "GET",
             },
         )
+        alternate_port_response = client.options(
+            "/api/health",
+            headers={
+                "Origin": "http://127.0.0.1:5175",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert alternate_port_response.status_code == 200
+    assert alternate_port_response.headers["access-control-allow-origin"] == "http://127.0.0.1:5175"
 
 
 def test_plans_returns_examples(tmp_path: Path) -> None:
@@ -626,6 +635,113 @@ def test_browser_use_run_status_reflects_blocked_timeout_failed_and_verification
                 assert detail["progress"]["completed_scenarios"] < detail["progress"]["total_scenarios"]
 
 
+def test_browser_use_completed_run_ignores_intermediate_llm_timeout_text(tmp_path: Path, monkeypatch) -> None:
+    _write_plan(tmp_path)
+    monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
+    monkeypatch.setattr(
+        runtime_module.RunRuntime,
+        "_browser_use_readiness_errors",
+        lambda self, request, *, user_data_dir, storage_state: [],
+    )
+    _FakeBrowserUseWalker.result_status = "completed"
+    _FakeBrowserUseWalker.final_output = (
+        '{"completed": true, "manual_verification_required": false, '
+        '"notes": ["LLM call timed out after 75 seconds, then the walkthrough recovered."]}'
+    )
+    _FakeBrowserUseWalker.timed_out = False
+    _FakeBrowserUseWalker.errors = []
+    _FakeBrowserUseWalker.screenshot_path = None
+    _FakeBrowserUseWalker.history_path = None
+
+    with _client(tmp_path) as client:
+        response = client.post(
+            "/api/runs",
+            json={
+                "plan_name": "smoke_plan.json",
+                "mode": "browser-use",
+                "out": "runs",
+                "verification_mode": "auto",
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+        detail = _wait_for_terminal(client, run_id)
+        events = client.get(f"/api/runs/{run_id}/events")
+
+    assert detail["status"] == "succeeded"
+    assert "run.completed" in [event["type"] for event in events.json()["items"]]
+    assert "run.timeout" not in [event["type"] for event in events.json()["items"]]
+
+
+def test_browser_use_historical_timeout_reconciles_from_completed_evidence(tmp_path: Path) -> None:
+    run_id = "run-20260102-030405-browser"
+    run_dir = tmp_path / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    completed_at = "2026-01-02T03:05:05Z"
+    run_record = {
+        "id": run_id,
+        "status": "timeout",
+        "mode": "browser-use",
+        "research_goal": "Historical browser-use walkthrough.",
+        "run_dir": f"runs/{run_id}",
+        "created_at": "2026-01-02T03:04:05Z",
+        "started_at": "2026-01-02T03:04:06Z",
+        "completed_at": completed_at,
+        "progress": {"total_scenarios": 1, "completed_scenarios": 1, "failed_scenarios": 0},
+        "params": {"mode": "browser-use", "verification_mode": "auto"},
+        "artifact_ids": [],
+        "error": {"message": "One or more browser-use walkthroughs timed out.", "type": "timeout"},
+        "metadata": {},
+    }
+    evidence = {
+        "created_at": completed_at,
+        "report_language": "en",
+        "plan": {"research_goal": "Historical browser-use walkthrough."},
+        "results": [
+            {
+                "status": "completed",
+                "steps": [
+                    {
+                        "index": 1,
+                        "action": "Run browser-use task",
+                        "status": "passed",
+                        "observation": "LLM call timed out after 75 seconds before the final answer recovered.",
+                    }
+                ],
+                "evidence": [
+                    {
+                        "kind": "browser_run",
+                        "summary": '{"completed": true, "manual_verification_required": false}',
+                        "data": {
+                            "final_output": '{"completed": true, "manual_verification_required": false}',
+                            "timed_out": False,
+                            "errors": [],
+                        },
+                    }
+                ],
+                "metrics": {"timed_out": False},
+                "errors": [],
+            }
+        ],
+        "evidence": [],
+    }
+    (run_dir / "run.json").write_text(json.dumps(run_record), encoding="utf-8")
+    (run_dir / "evidence.json").write_text(json.dumps(evidence), encoding="utf-8")
+    (run_dir / "report.md").write_text("# Browser report\n\nReady.", encoding="utf-8")
+    (run_dir / "evaluation.json").write_text('{"overall_score": 1.0, "notes": []}', encoding="utf-8")
+    (run_dir / "events.jsonl").write_text("", encoding="utf-8")
+
+    with _client(tmp_path) as client:
+        detail = client.get(f"/api/runs/{run_id}")
+        runs = client.get("/api/runs")
+
+    assert detail.status_code == 200
+    assert detail.json()["run"]["status"] == "succeeded"
+    assert detail.json()["run"]["error"] is None
+    assert runs.status_code == 200
+    assert runs.json()["items"][0]["status"] == "succeeded"
+
+
 def test_auth_session_create_validates_request_and_path_safety(tmp_path: Path, monkeypatch) -> None:
     _write_plan(tmp_path)
     monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
@@ -939,6 +1055,51 @@ def test_runs_lists_historical_run_with_artifact_availability(tmp_path: Path) ->
     assert historical["evidence_exists"] is True
     assert historical["evaluation_exists"] is True
     assert historical["screenshot_count"] == 1
+
+
+def test_delete_run_removes_run_directory_and_record(tmp_path: Path) -> None:
+    _write_plan(tmp_path)
+    with _client(tmp_path) as client:
+        response = client.post(
+            "/api/runs",
+            json={"plan_name": "smoke_plan.json", "mode": "mock", "out": "runs", "concurrency": 1},
+        )
+        run_id = response.json()["run_id"]
+        assert _wait_for_terminal(client, run_id)["status"] == "succeeded"
+        run_dir = tmp_path / "runs" / run_id
+        assert run_dir.exists()
+
+        delete_response = client.delete(f"/api/runs/{run_id}")
+        missing_response = client.get(f"/api/runs/{run_id}")
+
+    assert delete_response.status_code == 200
+    assert delete_response.json()["status"] == "deleted"
+    assert not run_dir.exists()
+    assert missing_response.status_code == 404
+
+
+def test_clear_runs_removes_historical_and_completed_records(tmp_path: Path) -> None:
+    _write_plan(tmp_path)
+    historical_dir = _write_historical_run(tmp_path)
+    with _client(tmp_path) as client:
+        response = client.post(
+            "/api/runs",
+            json={"plan_name": "smoke_plan.json", "mode": "mock", "out": "runs", "concurrency": 1},
+        )
+        run_id = response.json()["run_id"]
+        assert _wait_for_terminal(client, run_id)["status"] == "succeeded"
+
+        clear_response = client.delete("/api/runs")
+        runs_response = client.get("/api/runs")
+
+    assert clear_response.status_code == 200
+    payload = clear_response.json()
+    assert run_id in payload["deleted_run_ids"]
+    assert historical_dir.name in payload["deleted_run_ids"]
+    assert payload["skipped_run_ids"] == []
+    assert runs_response.json()["items"] == []
+    assert not historical_dir.exists()
+    assert not (tmp_path / "runs" / run_id).exists()
 
 
 def test_artifact_path_traversal_is_rejected(tmp_path: Path) -> None:
