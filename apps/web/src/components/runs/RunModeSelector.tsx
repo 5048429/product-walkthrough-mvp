@@ -71,7 +71,7 @@ export function RunModeSelector({
         <div className="browser-use-options">
           <div className="browser-run-note">
             <strong>真实页面测试</strong>
-            <span>后端会调用本地 Chrome/Edge 和 browser-use。公开 smoke 默认关闭人工验证；登录态或 UAT 场景可切到自动检测。</span>
+            <span>后端会调用本地 Chrome/Edge 和 browser-use。登录态请先在“登录准备”里完成；这里保留步骤、超时和检测参数。</span>
           </div>
 
           <div className="form-grid browser-basic-grid">
@@ -90,7 +90,7 @@ export function RunModeSelector({
               <span>
                 {verificationMode === "off"
                   ? "将以 verification_mode=off 提交，不会因为普通登录入口误判为等待验证。"
-                  : "将以 verification_mode=auto 提交，建议同时配置可复用 profile 或 storage state。"}
+                  : "将以 verification_mode=auto 提交；如中途回到登录页，任务会暂停等待人工验证。"}
               </span>
             </div>
           </div>

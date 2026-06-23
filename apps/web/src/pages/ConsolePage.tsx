@@ -19,6 +19,7 @@ import type { RunEventConnectionState } from "../api/sse";
 import { labelAgentType, labelMode, labelStatus } from "../i18n/zh";
 import type {
   AgentExecution,
+  AuthReadinessStatus,
   AuthSessionDetail,
   Artifact,
   ConsoleStatus,
@@ -204,10 +205,10 @@ function RunProgressPanel({
       {awaitingVerification ? (
         <div className="verification-panel">
           <div>
-            <strong>需要手动操作</strong>
+            <strong>暂停等待人工验证</strong>
             <span>1. 点击“开始人工验证”，系统会打开可见浏览器。</span>
             <span>2. 在浏览器里完成登录、验证码、MFA 或 SSO。</span>
-            <span>3. 回到这里点击“完成并重试”，用新的登录态继续走查。</span>
+            <span>3. 回到这里点击“完成验证并继续”，用新的登录态继续走查。</span>
             <span>
               验证会话：{labelStatus(sessionStatus)}
               {panelSession?.storage_state_saved ? "，storage state 已保存" : ""}
@@ -284,6 +285,112 @@ function QuickStartPanel({ selectedPlan, source, loading, onStartMock }: QuickSt
         </button>
       </div>
       <p className="empty-copy">需要真实浏览器、browser-use 或验证参数时，展开下方“高级启动设置”。</p>
+    </section>
+  );
+}
+
+function loginStatusCopy(status: AuthReadinessStatus, session: AuthSessionDetail | null): { title: string; detail: string } {
+  if (status === "auth_ready") {
+    return {
+      title: "登录态已就绪",
+      detail: "已保存可复用的浏览器登录态，可以开始真实走查。",
+    };
+  }
+
+  if (status === "awaiting_manual_login") {
+    return {
+      title: "等待你在浏览器中完成登录",
+      detail: "请在已打开的浏览器里完成登录、验证码、MFA 或 SSO，然后回到这里确认。",
+    };
+  }
+
+  if (session && ["failed", "timeout", "canceled"].includes(session.status)) {
+    return {
+      title: "登录态可能失效",
+      detail: session.message ?? "请重新打开浏览器手动登录。",
+    };
+  }
+
+  return {
+    title: "未登录",
+    detail: "先打开浏览器完成手动登录，再启动真实页面走查。",
+  };
+}
+
+interface LoginPreparationPanelProps {
+  selectedPlan: PlanSummary | undefined;
+  source: ConsoleDataSource;
+  loginSession: AuthSessionDetail | null;
+  loginAuthStatus: AuthReadinessStatus;
+  loading: boolean;
+  startLoading: boolean;
+  error: string | null;
+  startError: string | null;
+  onStartManualLogin: () => void;
+  onConfirmManualLogin: () => void;
+  onStartAuthenticatedRun: () => void;
+}
+
+function LoginPreparationPanel({
+  selectedPlan,
+  source,
+  loginSession,
+  loginAuthStatus,
+  loading,
+  startLoading,
+  error,
+  startError,
+  onStartManualLogin,
+  onConfirmManualLogin,
+  onStartAuthenticatedRun,
+}: LoginPreparationPanelProps) {
+  const copy = loginStatusCopy(loginAuthStatus, loginSession);
+  const needsPlan = source === "api" && !selectedPlan;
+  const canOpenLogin = source === "api" && !needsPlan && loginAuthStatus !== "awaiting_manual_login";
+  const canConfirmLogin = loginAuthStatus === "awaiting_manual_login";
+  const canStartRealRun = source === "api" && !needsPlan && loginAuthStatus === "auth_ready";
+
+  return (
+    <section className="panel login-prep-panel" aria-labelledby="login-prep-title">
+      <div className="panel-header">
+        <div>
+          <h2 id="login-prep-title">登录准备</h2>
+          <p>{copy.detail}</p>
+        </div>
+        <span className={`login-status-pill login-status-${loginAuthStatus}`}>{copy.title}</span>
+      </div>
+
+      <div className="active-summary login-prep-summary">
+        <div>
+          <div className="section-title">目标计划</div>
+          <strong>{selectedPlan?.title ?? "未选择计划"}</strong>
+        </div>
+        <div>
+          <div className="section-title">登录会话</div>
+          <strong>{loginSession?.session_id ?? "尚未创建"}</strong>
+        </div>
+      </div>
+
+      <div className="button-row login-prep-actions">
+        <button type="button" disabled={!canOpenLogin || loading} onClick={onStartManualLogin}>
+          {loading && canOpenLogin ? "正在打开浏览器..." : "打开浏览器手动登录"}
+        </button>
+        <button type="button" disabled={!canConfirmLogin || loading} onClick={onConfirmManualLogin}>
+          {loading && canConfirmLogin ? "正在校验登录态..." : "我已完成登录"}
+        </button>
+        <button
+          type="button"
+          className="primary-action"
+          disabled={!canStartRealRun || startLoading}
+          onClick={onStartAuthenticatedRun}
+        >
+          {startLoading ? "启动中..." : "开始真实走查"}
+        </button>
+      </div>
+
+      {needsPlan ? <p className="inline-warning">请先选择一个本地走查计划。</p> : null}
+      {error ? <p className="inline-warning">{error}</p> : null}
+      {startError ? <p className="inline-warning">{startError}</p> : null}
     </section>
   );
 }
@@ -495,8 +602,9 @@ export function ConsolePage() {
       plans={console.plans}
       selectedPlanId={console.selectedPlanId}
       selectedPlanDetail={console.selectedPlanDetail}
-      activeRun={console.activeRun}
       consoleStatus={console.consoleStatus}
+      authReady={console.loginAuthStatus === "auth_ready"}
+      authSessionId={console.loginSession?.session_id ?? null}
       loading={console.loading}
       errors={console.errors}
       onPlanChange={console.setSelectedPlanId}
@@ -589,6 +697,19 @@ export function ConsolePage() {
             source={console.source}
             loading={console.loading.start}
             onStartMock={startTopMockRun}
+          />
+          <LoginPreparationPanel
+            selectedPlan={console.selectedPlan}
+            source={console.source}
+            loginSession={console.loginSession}
+            loginAuthStatus={console.loginAuthStatus}
+            loading={console.loading.verification}
+            startLoading={console.loading.start}
+            error={console.errors.verification}
+            startError={console.errors.start}
+            onStartManualLogin={() => void console.startManualLogin()}
+            onConfirmManualLogin={() => void console.confirmManualLogin()}
+            onStartAuthenticatedRun={() => void console.startAuthenticatedRun()}
           />
           <details className="workbench-foldout launcher-foldout">
             <summary>

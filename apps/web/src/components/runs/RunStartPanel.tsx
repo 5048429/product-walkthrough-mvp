@@ -29,6 +29,8 @@ interface RunStartPanelProps {
   selectedPlanId: string;
   selectedPlanDetail: PlanDetailResponse | null;
   consoleStatus: ConsoleStatus;
+  authReady: boolean;
+  authSessionId: string | null;
   loading: ConsoleLoadingState;
   errors: ConsoleErrorState;
   onPlanChange: (planId: string) => void;
@@ -69,6 +71,8 @@ export function RunStartPanel({
   selectedPlanId,
   selectedPlanDetail,
   consoleStatus,
+  authReady,
+  authSessionId,
   loading,
   errors,
   onPlanChange,
@@ -112,6 +116,7 @@ export function RunStartPanel({
       browser_timeout_sec: browserTimeoutSec,
       browser_user_data_dir: browserUserDataDir.trim() || null,
       browser_storage_state: browserStorageState.trim() || null,
+      auth_session_id: isBrowserUse ? authSessionId : null,
       verification_mode: isBrowserUse ? verificationMode : "off",
       verification_timeout_sec: verificationTimeoutSec,
       verification_success_url_contains: successUrlContains,
@@ -123,6 +128,7 @@ export function RunStartPanel({
       browserTimeoutSec,
       browserUserDataDir,
       isBrowserUse,
+      authSessionId,
       mode,
       reportLanguage,
       resolvedConcurrency,
@@ -149,6 +155,7 @@ export function RunStartPanel({
       browserTimeoutSec,
       browserUserDataDir,
       browserStorageState,
+      authSessionId: nextMode === "browser-use" ? authSessionId : null,
       verificationMode: nextMode === "mock" ? "off" : verificationMode,
       verificationTimeoutSec,
       verificationSuccessUrlContains: successUrlContains,
@@ -162,7 +169,7 @@ export function RunStartPanel({
       setConcurrency(3);
     } else {
       setConcurrency(1);
-      setVerificationMode("off");
+      setVerificationMode("auto");
     }
   }
 
@@ -187,6 +194,9 @@ export function RunStartPanel({
       ) : null}
       {errors.initial && source === "api" ? <p className="inline-warning">{errors.initial}</p> : null}
       {errors.start ? <p className="inline-warning">{errors.start}</p> : null}
+      {isBrowserUse && !authReady ? (
+        <p className="inline-warning">请先在“登录准备”里完成手动登录，再开始真实走查。</p>
+      ) : null}
 
       <div className="launcher-config-grid">
         <div className="launcher-plan-group">
@@ -228,12 +238,12 @@ export function RunStartPanel({
         <button
           type="button"
           className="primary-action"
-          disabled={!selectedPlan || loading.start}
+          disabled={!selectedPlan || loading.start || (isBrowserUse && !authReady)}
           onClick={() => {
             handleModeChange(mode);
           }}
         >
-          {loading.start ? "启动中..." : isBrowserUse ? "启动真实页面测试" : "启动模拟走查"}
+          {loading.start ? "启动中..." : isBrowserUse ? "开始真实走查" : "启动模拟走查"}
         </button>
         <button type="button" disabled title="停止功能尚未完整接入。">
           停止

@@ -354,7 +354,7 @@ img {
 
 .dashboard-command-row {
   display: grid;
-  grid-template-columns: minmax(300px, 0.72fr) minmax(440px, 1.28fr);
+  grid-template-columns: minmax(260px, 0.74fr) minmax(320px, 1fr) minmax(360px, 1.1fr);
   gap: 12px;
   align-items: start;
   min-width: 0;
@@ -642,6 +642,63 @@ img {
 
 .compact-panel {
   flex: none;
+}
+
+.login-prep-panel {
+  border-color: #c4d6ef;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 98%), rgb(246 250 255 / 98%)),
+    var(--surface);
+}
+
+.login-prep-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 0.58fr);
+  gap: 10px;
+}
+
+.login-prep-summary strong {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.login-prep-actions {
+  margin-top: 10px;
+}
+
+.login-status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  max-width: 180px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0 9px;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 760;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.login-status-auth_not_ready {
+  border-color: #d4dde9;
+  background: #f3f6fa;
+}
+
+.login-status-awaiting_manual_login {
+  border-color: var(--amber-strong);
+  background: var(--amber-soft);
+  color: #6f4500;
+}
+
+.login-status-auth_ready {
+  border-color: #80b79f;
+  background: var(--green-soft);
+  color: var(--green);
 }
 
 .panel-header {
@@ -2284,6 +2341,7 @@ dd {
   .context-grid,
   .form-grid,
   .browser-basic-grid,
+  .login-prep-summary,
   .report-toolbar,
   .evidence-card,
   .verification-panel {

@@ -29,6 +29,12 @@ AuthSessionStatus = Literal[
     "canceled",
 ]
 
+AuthReadinessStatus = Literal[
+    "auth_not_ready",
+    "awaiting_manual_login",
+    "auth_ready",
+]
+
 AgentStatus = Literal["pending", "running", "waiting", "succeeded", "failed", "skipped", "canceled"]
 AgentType = Literal[
     "director",
@@ -140,6 +146,7 @@ class RunStartRequest(BaseModel):
     browser_timeout_sec: float = 600.0
     browser_user_data_dir: str | None = None
     browser_storage_state: str | None = None
+    auth_session_id: str | None = None
     verification_mode: str = "off"
     verification_timeout_sec: float = 300.0
     verification_success_url_contains: list[str] = Field(default_factory=list)
@@ -184,7 +191,7 @@ class RunActionResponse(BaseModel):
 
 
 class AuthSessionCreateRequest(BaseModel):
-    run_id: str
+    run_id: str | None = None
     url: str | None = None
     credentials_ref: str | None = None
     browser_user_data_dir: str | None = None
@@ -207,8 +214,9 @@ class RetryAfterVerificationRequest(BaseModel):
 class AuthSessionDetail(BaseModel):
     id: str
     session_id: str
-    run_id: str
+    run_id: str | None = None
     status: AuthSessionStatus
+    auth_status: AuthReadinessStatus = "auth_not_ready"
     url: str
     credentials_ref: str | None = None
     browser_user_data_dir_configured: bool = False
@@ -232,6 +240,8 @@ class AuthSessionDetailResponse(BaseModel):
 class RetryAfterVerificationResponse(BaseModel):
     run_id: str
     retry_run_id: str
+    parent_run_id: str | None = None
+    retry_of_run_id: str | None = None
     status: str
     accepted: bool
     session: AuthSessionDetail | None = None

@@ -30,7 +30,15 @@ npm run dev -- --host 127.0.0.1 --port 5173
 
 Open `http://127.0.0.1:5173/`. If port `8000` is occupied by an older backend, start the current backend on another port, for example `8001`, and set `VITE_API_BASE_URL` to the same port before starting Vite.
 
-The most stable Web Console path is currently `mock` mode with `examples/smoke_plan.json`. Browser-use can be submitted from the UI and has been smoke-tested against a public page, but it may still finish as `awaiting_verification`; full resumable human-verification continuation remains follow-up work. See `docs/frontend_console_zh.md` for the Chinese operator guide and current limitations.
+For authenticated browser-use walkthroughs, use the console's **登录准备** panel before starting the real run:
+
+1. Select the plan that targets the authenticated product.
+2. Click **打开浏览器手动登录**. The backend creates an auth session, opens a visible Chrome/Edge window, and uses the plan's first product URL and `credentials_ref` when available.
+3. Complete login, CAPTCHA, MFA, SSO, or other manual checks in that browser.
+4. Return to the console and click **我已完成登录**. The backend validates the current browser page and refreshes the persistent browser profile plus storage state.
+5. Wait for **登录态已就绪**, then click **开始真实走查**. The browser-use run is started with `auth_session_id`, so it reuses the authenticated profile instead of starting from a logged-out page.
+
+If a browser-use run later reaches login or another manual challenge, the run stays in `awaiting_verification` with the task card showing **暂停等待人工验证**. Click **开始人工验证**, complete the check in the visible browser, then click **完成验证并继续**. The retry run response includes `parent_run_id` and `retry_of_run_id`, and the retry run metadata links it back to the original logical task.
 
 ## Key Files
 

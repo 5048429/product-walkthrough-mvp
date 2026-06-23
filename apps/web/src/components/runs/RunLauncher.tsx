@@ -1,5 +1,5 @@
 import type { ConsoleDataSource, ConsoleErrorState, ConsoleLoadingState, StartRunOptions } from "../../hooks/useProdwalkConsole";
-import type { ConsoleStatus, HealthResponse, PlanDetailResponse, PlanSummary, RunDetail } from "../../types/contracts";
+import type { ConsoleStatus, HealthResponse, PlanDetailResponse, PlanSummary } from "../../types/contracts";
 import { RunStartPanel } from "./RunStartPanel";
 
 interface RunLauncherProps {
@@ -8,8 +8,9 @@ interface RunLauncherProps {
   plans: PlanSummary[];
   selectedPlanId: string;
   selectedPlanDetail: PlanDetailResponse | null;
-  activeRun: RunDetail | null;
   consoleStatus: ConsoleStatus;
+  authReady: boolean;
+  authSessionId: string | null;
   loading: ConsoleLoadingState;
   errors: ConsoleErrorState;
   onPlanChange: (planId: string) => void;
@@ -24,8 +25,9 @@ export function RunLauncher({
   plans,
   selectedPlanId,
   selectedPlanDetail,
-  activeRun,
   consoleStatus,
+  authReady,
+  authSessionId,
   loading,
   errors,
   onPlanChange,
@@ -41,6 +43,8 @@ export function RunLauncher({
       selectedPlanId={selectedPlanId}
       selectedPlanDetail={selectedPlanDetail}
       consoleStatus={consoleStatus}
+      authReady={authReady}
+      authSessionId={authSessionId}
       loading={loading}
       errors={errors}
       onPlanChange={onPlanChange}

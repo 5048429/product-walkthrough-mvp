@@ -102,6 +102,8 @@ export type AuthSessionStatus =
   | "timeout"
   | "canceled";
 
+export type AuthReadinessStatus = "auth_not_ready" | "awaiting_manual_login" | "auth_ready";
+
 export interface RunProgress {
   total_scenarios: number;
   completed_scenarios: number;
@@ -117,6 +119,8 @@ export interface RunParams {
   browser_timeout_sec?: number;
   browser_user_data_dir?: string | null;
   browser_storage_state?: string | null;
+  auth_session_id?: string | null;
+  auth_status?: AuthReadinessStatus;
   verification_mode?: VerificationMode;
   verification_timeout_sec?: number;
   verification_success_url_contains?: string[];
@@ -159,6 +163,7 @@ export interface RunCreateRequest {
   browser_timeout_sec: number;
   browser_user_data_dir: string | null;
   browser_storage_state: string | null;
+  auth_session_id?: string | null;
   verification_mode: VerificationMode;
   verification_timeout_sec: number;
   verification_success_url_contains: string[];
@@ -403,7 +408,7 @@ export interface VerificationConfirmRequest {
 }
 
 export interface AuthSessionCreateRequest {
-  run_id: string;
+  run_id?: string | null;
   url?: string | null;
   credentials_ref?: string | null;
   browser_user_data_dir?: string | null;
@@ -421,8 +426,9 @@ export interface AuthSessionConfirmRequest {
 export interface AuthSessionDetail {
   id: string;
   session_id: string;
-  run_id: string;
+  run_id: string | null;
   status: AuthSessionStatus;
+  auth_status: AuthReadinessStatus;
   url: string;
   credentials_ref: string | null;
   browser_user_data_dir_configured: boolean;
@@ -451,6 +457,8 @@ export interface RetryAfterVerificationRequest {
 export interface RetryAfterVerificationResponse {
   run_id: string;
   retry_run_id: string;
+  parent_run_id?: string | null;
+  retry_of_run_id?: string | null;
   status: RunStatus | string;
   accepted: boolean;
   session: AuthSessionDetail | null;

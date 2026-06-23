@@ -695,6 +695,83 @@ def test_auth_session_requires_awaiting_verification_run(tmp_path: Path, monkeyp
     assert response.json()["error"]["code"] == "RUN_NOT_AWAITING_VERIFICATION"
 
 
+def test_manual_login_first_session_can_start_browser_use_run(tmp_path: Path, monkeypatch) -> None:
+    _write_plan(tmp_path)
+    monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
+    monkeypatch.setattr(
+        runtime_module.RunRuntime,
+        "_browser_use_readiness_errors",
+        lambda self, request, *, user_data_dir, storage_state: [],
+    )
+    monkeypatch.setattr(runtime_module, "open_manual_auth_session", _fake_open_manual_auth_session)
+    monkeypatch.setattr(runtime_module, "complete_manual_auth_session", _fake_complete_manual_auth_session)
+    monkeypatch.setattr(runtime_module, "close_manual_auth_session", _fake_close_manual_auth_session)
+
+    _FakeBrowserUseWalker.result_status = "completed"
+    _FakeBrowserUseWalker.final_output = '{"completed": true, "urls_seen": ["https://example.test/dashboard"]}'
+    _FakeBrowserUseWalker.errors = []
+    _FakeBrowserUseWalker.timed_out = False
+    _FakeBrowserUseWalker.screenshot_path = None
+    _FakeBrowserUseWalker.history_path = None
+    _FakeBrowserUseWalker.init_args = None
+
+    with _client(tmp_path) as client:
+        create_response = client.post(
+            "/api/auth-sessions",
+            json={
+                "url": "https://example.test/login",
+                "credentials_ref": "CLINK_UAT_ACCOUNT",
+                "success_url_contains": ["/dashboard"],
+                "login_url_contains": "/login",
+                "timeout_sec": 120,
+            },
+        )
+        assert create_response.status_code == 200
+        session = create_response.json()["session"]
+        session_id = session["session_id"]
+        assert session["run_id"] is None
+        assert session["status"] == "awaiting_user"
+        assert session["auth_status"] == "awaiting_manual_login"
+
+        poll_response = client.get(f"/api/auth-sessions/{session_id}")
+        assert poll_response.status_code == 200
+        assert poll_response.json()["session"]["auth_status"] == "awaiting_manual_login"
+
+        confirm_response = client.post(
+            f"/api/auth-sessions/{session_id}/confirm",
+            json={"confirmed": True, "note": "login complete"},
+        )
+        assert confirm_response.status_code == 200
+        confirmed = confirm_response.json()["session"]
+        assert confirmed["status"] == "succeeded"
+        assert confirmed["auth_status"] == "auth_ready"
+        assert confirmed["storage_state_saved"] is True
+
+        run_response = client.post(
+            "/api/runs",
+            json={
+                "plan_name": "smoke_plan.json",
+                "mode": "browser-use",
+                "out": "runs",
+                "auth_session_id": session_id,
+                "verification_mode": "off",
+            },
+        )
+        assert run_response.status_code == 200
+        run_id = run_response.json()["run_id"]
+        detail = _wait_for_terminal(client, run_id)
+        session_record = json.loads((tmp_path / ".prodwalk" / "auth-sessions" / f"{session_id}.json").read_text())
+
+    assert detail["status"] == "succeeded"
+    assert detail["params"]["auth_session_id"] == session_id
+    assert detail["params"]["auth_status"] == "auth_ready"
+    assert detail["params"]["verification_mode"] == "auto"
+    assert detail["metadata"]["auth_session_id"] == session_id
+    assert detail["metadata"]["auth_status"] == "auth_ready"
+    assert _FakeBrowserUseWalker.init_args["user_data_dir"] == session_record["browser_user_data_dir"]
+    assert _FakeBrowserUseWalker.init_args["storage_state"] == session_record["browser_storage_state"]
+
+
 def test_auth_session_confirm_then_retry_starts_new_browser_use_run(tmp_path: Path, monkeypatch) -> None:
     _write_plan(tmp_path)
     monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
@@ -766,6 +843,8 @@ def test_auth_session_confirm_then_retry_starts_new_browser_use_run(tmp_path: Pa
         assert retry_response.status_code == 200
         retry_payload = retry_response.json()
         retry_run_id = retry_payload["retry_run_id"]
+        assert retry_payload["parent_run_id"] == run_id
+        assert retry_payload["retry_of_run_id"] == run_id
         retry_detail = _wait_for_terminal(client, retry_run_id)
         original_detail = client.get(f"/api/runs/{run_id}").json()["run"]
         events = client.get(f"/api/runs/{run_id}/events").json()["items"]

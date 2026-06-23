@@ -6,6 +6,7 @@ import { mockArtifacts } from "../mock/artifacts";
 import type {
   AgentExecution,
   AgentStatus,
+  AuthReadinessStatus,
   AuthSessionDetail,
   Artifact,
   ConsoleStatus,
@@ -62,6 +63,7 @@ export interface StartRunOptions {
   browserTimeoutSec?: number;
   browserUserDataDir?: string | null;
   browserStorageState?: string | null;
+  authSessionId?: string | null;
   verificationMode?: VerificationMode;
   verificationTimeoutSec?: number;
   verificationSuccessUrlContains?: string[];
@@ -130,6 +132,53 @@ function errorMessage(error: unknown): string {
   }
 
   return error instanceof Error ? error.message : "Unknown API error.";
+}
+
+function firstProductAuthTarget(plan: unknown): { url: string; credentialsRef: string | null; successMarkers: string[] } | null {
+  if (!plan || typeof plan !== "object" || Array.isArray(plan)) {
+    return null;
+  }
+
+  const products = (plan as { products?: unknown }).products;
+  if (!Array.isArray(products)) {
+    return null;
+  }
+
+  for (const product of products) {
+    if (!product || typeof product !== "object" || Array.isArray(product)) {
+      continue;
+    }
+
+    const record = product as { url?: unknown; credentials_ref?: unknown };
+    if (typeof record.url !== "string" || !record.url.trim()) {
+      continue;
+    }
+
+    const url = record.url.trim();
+    let successMarkers: string[] = [];
+    try {
+      const parsed = new URL(url);
+      if (parsed.pathname && parsed.pathname !== "/") {
+        successMarkers = [parsed.pathname];
+      }
+    } catch {
+      successMarkers = [];
+    }
+
+    return {
+      url,
+      credentialsRef: typeof record.credentials_ref === "string" && record.credentials_ref.trim()
+        ? record.credentials_ref.trim()
+        : null,
+      successMarkers,
+    };
+  }
+
+  return null;
+}
+
+function authReadinessFromSession(session: AuthSessionDetail | null): AuthReadinessStatus {
+  return session?.auth_status ?? "auth_not_ready";
 }
 
 function shouldUseMockFallback(error: unknown): boolean {
@@ -444,6 +493,7 @@ export function useProdwalkConsole() {
   const [report, setReport] = useState<ReportResponse | null>(null);
   const [evidence, setEvidence] = useState<EvidenceResponse | null>(null);
   const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(null);
+  const [loginSession, setLoginSession] = useState<AuthSessionDetail | null>(null);
   const [authSession, setAuthSession] = useState<AuthSessionDetail | null>(null);
   const [verificationSourceRunId, setVerificationSourceRunId] = useState<string | null>(null);
   const [retryRunId, setRetryRunId] = useState<string | null>(null);
@@ -531,6 +581,7 @@ export function useProdwalkConsole() {
       setReport(mockConsoleData.report);
       setEvidence(mockConsoleData.evidence);
       setEvaluation(mockConsoleData.report.evaluation ? { ...mockConsoleData.report.evaluation, run_id: mockConsoleData.report.run_id, artifact_id: "art_evaluation_json" } : null);
+      setLoginSession(null);
       setAuthSession(null);
       setVerificationSourceRunId(null);
       setRetryRunId(null);
@@ -913,6 +964,10 @@ export function useProdwalkConsole() {
   }, [initializeApi]);
 
   useEffect(() => {
+    setLoginSession(null);
+  }, [selectedPlanId]);
+
+  useEffect(() => {
     if (source !== "api" || !selectedPlanId) {
       return;
     }
@@ -952,6 +1007,35 @@ export function useProdwalkConsole() {
 
     void loadRunBundle(activeRunId);
   }, [activeRunId, loadRunBundle, source]);
+
+  useEffect(() => {
+    if (
+      source !== "api" ||
+      !loginSession ||
+      !["running", "awaiting_user"].includes(loginSession.status)
+    ) {
+      return undefined;
+    }
+
+    let canceled = false;
+    const timer = window.setInterval(() => {
+      prodwalkApi
+        .getAuthSession(loginSession.session_id)
+        .then((response) => {
+          if (!canceled) {
+            setLoginSession(response.session);
+          }
+        })
+        .catch(() => {
+          // Keep the current local state; the next explicit action will surface the API error.
+        });
+    }, 3000);
+
+    return () => {
+      canceled = true;
+      window.clearInterval(timer);
+    };
+  }, [loginSession?.session_id, loginSession?.status, source]);
 
   useEffect(() => {
     if (
@@ -1024,6 +1108,7 @@ export function useProdwalkConsole() {
         browser_timeout_sec: browserTimeoutSec,
         browser_user_data_dir: options.browserUserDataDir?.trim() || null,
         browser_storage_state: options.browserStorageState?.trim() || null,
+        auth_session_id: isBrowserUse ? options.authSessionId?.trim() || null : null,
         verification_mode: verificationMode,
         verification_timeout_sec: verificationTimeoutSec,
         verification_success_url_contains: verificationSuccessUrlContains,
@@ -1051,6 +1136,8 @@ export function useProdwalkConsole() {
             browser_timeout_sec: browserTimeoutSec,
             browser_user_data_dir: request.browser_user_data_dir,
             browser_storage_state: request.browser_storage_state,
+            auth_session_id: request.auth_session_id,
+            auth_status: request.auth_session_id ? "auth_ready" : "auth_not_ready",
             verification_mode: verificationMode,
             verification_timeout_sec: verificationTimeoutSec,
             verification_success_url_contains: verificationSuccessUrlContains,
@@ -1091,6 +1178,90 @@ export function useProdwalkConsole() {
       updateLoading,
     ],
   );
+
+  const startManualLogin = useCallback(async () => {
+    updateErrors({ verification: null, start: null });
+
+    if (source === "mock") {
+      updateErrors({ verification: "离线预览无法打开真实浏览器，请先连接 FastAPI 后端。" });
+      return;
+    }
+
+    const target = firstProductAuthTarget(selectedPlanDetail?.plan);
+    if (!target) {
+      updateErrors({ verification: "当前计划没有可用于登录准备的产品 URL。" });
+      return;
+    }
+
+    updateLoading({ verification: true });
+
+    try {
+      const response = await prodwalkApi.createAuthSession({
+        run_id: null,
+        url: target.url,
+        credentials_ref: target.credentialsRef,
+        browser_user_data_dir: null,
+        browser_storage_state: null,
+        success_url_contains: target.successMarkers,
+        login_url_contains: "/auth/login",
+        timeout_sec: 300,
+      });
+      setLoginSession(response.session);
+    } catch (error) {
+      updateErrors({ verification: errorMessage(error) });
+    } finally {
+      updateLoading({ verification: false });
+    }
+  }, [selectedPlanDetail?.plan, source, updateErrors, updateLoading]);
+
+  const confirmManualLogin = useCallback(async () => {
+    updateErrors({ verification: null, start: null });
+
+    if (!loginSession) {
+      updateErrors({ verification: "请先打开浏览器手动登录。" });
+      return;
+    }
+
+    if (loginSession.auth_status === "auth_ready") {
+      return;
+    }
+
+    updateLoading({ verification: true });
+
+    try {
+      const response = await prodwalkApi.confirmAuthSession(loginSession.session_id, {
+        confirmed: true,
+        note: "Manual login completed before starting a browser-use run.",
+      });
+      setLoginSession(response.session);
+    } catch (error) {
+      updateErrors({ verification: errorMessage(error) });
+    } finally {
+      updateLoading({ verification: false });
+    }
+  }, [loginSession, updateErrors, updateLoading]);
+
+  const startAuthenticatedRun = useCallback(async () => {
+    updateErrors({ verification: null, start: null });
+
+    if (!loginSession || loginSession.auth_status !== "auth_ready") {
+      updateErrors({ start: "请先完成手动登录，等状态变为“登录态已就绪”后再开始真实走查。" });
+      return;
+    }
+
+    await startRun({
+      mode: "browser-use",
+      concurrency: 1,
+      reportLanguage: selectedPlan?.report_language ?? "zh",
+      browserMaxSteps: 25,
+      browserTimeoutSec: 600,
+      authSessionId: loginSession.session_id,
+      verificationMode: "auto",
+      verificationTimeoutSec: loginSession.timeout_sec || 300,
+      verificationSuccessUrlContains: loginSession.success_url_contains,
+      verificationLoginUrlContains: loginSession.login_url_contains || "/auth/login",
+    });
+  }, [loginSession, selectedPlan?.report_language, startRun, updateErrors]);
 
   const confirmVerification = useCallback(async () => {
     updateErrors({ verification: null });
@@ -1242,6 +1413,11 @@ export function useProdwalkConsole() {
       setAuthSession(confirmed);
       setVerificationSourceRunId(confirmed.run_id);
 
+      if (!confirmed.run_id) {
+        updateErrors({ verification: "这个登录会话不属于暂停中的任务，请用“开始真实走查”启动新任务。" });
+        return;
+      }
+
       const retryResponse = await prodwalkApi.retryRunAfterVerification(confirmed.run_id, {
         session_id: confirmed.session_id,
         note: "Retry after manual verification from the web console.",
@@ -1380,6 +1556,8 @@ export function useProdwalkConsole() {
     report,
     evidence,
     evaluation,
+    loginSession,
+    loginAuthStatus: authReadinessFromSession(loginSession),
     authSession,
     verificationSourceRunId,
     retryRunId,
@@ -1393,6 +1571,9 @@ export function useProdwalkConsole() {
     errors,
     mockStatus,
     startRun,
+    startManualLogin,
+    confirmManualLogin,
+    startAuthenticatedRun,
     confirmVerification,
     startAuthSession,
     completeAuthSessionAndRetry,

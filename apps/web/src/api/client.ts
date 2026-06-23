@@ -1,6 +1,7 @@
 import type {
   AgentExecution,
   AgentStatus,
+  AuthReadinessStatus,
   AuthSessionConfirmRequest,
   AuthSessionCreateRequest,
   AuthSessionDetail,
@@ -83,6 +84,12 @@ const authSessionStatuses = new Set<AuthSessionStatus>([
   "failed",
   "timeout",
   "canceled",
+]);
+
+const authReadinessStatuses = new Set<AuthReadinessStatus>([
+  "auth_not_ready",
+  "awaiting_manual_login",
+  "auth_ready",
 ]);
 
 export class ProdwalkApiError extends Error {
@@ -254,6 +261,8 @@ function normalizeRunParams(value: unknown): RunParams {
     browser_timeout_sec: asNumber(raw.browser_timeout_sec, 600),
     browser_user_data_dir: asNullableString(raw.browser_user_data_dir),
     browser_storage_state: asNullableString(raw.browser_storage_state),
+    auth_session_id: asNullableString(raw.auth_session_id),
+    auth_status: normalizeAuthReadinessStatus(raw.auth_status),
     verification_mode: verificationMode,
     verification_timeout_sec: asNumber(raw.verification_timeout_sec, 300),
     verification_success_url_contains: asStringArray(raw.verification_success_url_contains),
@@ -297,14 +306,32 @@ function normalizeAuthSessionStatus(value: unknown): AuthSessionStatus {
     : "failed";
 }
 
+function normalizeAuthReadinessStatus(value: unknown, sessionStatus?: AuthSessionStatus): AuthReadinessStatus {
+  if (typeof value === "string" && authReadinessStatuses.has(value as AuthReadinessStatus)) {
+    return value as AuthReadinessStatus;
+  }
+
+  if (sessionStatus === "succeeded") {
+    return "auth_ready";
+  }
+
+  if (sessionStatus === "running" || sessionStatus === "awaiting_user") {
+    return "awaiting_manual_login";
+  }
+
+  return "auth_not_ready";
+}
+
 function normalizeAuthSession(value: unknown): AuthSessionDetail {
   const raw = asRecord(value);
+  const status = normalizeAuthSessionStatus(raw.status);
 
   return {
     id: asString(raw.id, asString(raw.session_id)),
     session_id: asString(raw.session_id, asString(raw.id)),
-    run_id: asString(raw.run_id),
-    status: normalizeAuthSessionStatus(raw.status),
+    run_id: asNullableString(raw.run_id),
+    status,
+    auth_status: normalizeAuthReadinessStatus(raw.auth_status, status),
     url: asString(raw.url),
     credentials_ref: asNullableString(raw.credentials_ref),
     browser_user_data_dir_configured: asBoolean(raw.browser_user_data_dir_configured),
@@ -332,6 +359,8 @@ function normalizeRetryAfterVerificationResponse(value: unknown): RetryAfterVeri
   return {
     run_id: asString(raw.run_id),
     retry_run_id: asString(raw.retry_run_id),
+    parent_run_id: asNullableString(raw.parent_run_id),
+    retry_of_run_id: asNullableString(raw.retry_of_run_id),
     status: typeof raw.status === "string" ? raw.status : "queued",
     accepted: asBoolean(raw.accepted),
     session: raw.session ? normalizeAuthSession(raw.session) : null,
