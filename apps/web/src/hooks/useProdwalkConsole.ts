@@ -28,7 +28,6 @@ import { formatApiError, toConsoleStatus, toRunStatus } from "../types/contracts
 const ACTIVE_RUN_KEY = "prodwalk.activeRunId";
 const terminalRunStatuses = new Set<RunStatus>([
   "succeeded",
-  "awaiting_verification",
   "blocked",
   "timeout",
   "failed",
@@ -1259,6 +1258,7 @@ export function useProdwalkConsole() {
       setEvidence(null);
       setEvaluation(null);
       setConnectionState("connecting");
+      void loadRunBundle(nextRetryRunId);
       void refreshRunHistory();
     } catch (error) {
       updateErrors({ verification: errorMessage(error) });
@@ -1268,6 +1268,7 @@ export function useProdwalkConsole() {
   }, [
     authSession,
     clearHistorySelection,
+    loadRunBundle,
     refreshRunHistory,
     setActiveRunIdAndStore,
     source,

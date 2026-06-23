@@ -192,10 +192,13 @@ class PipelineEventAdapter:
         artifact_ids = [artifact["id"] for artifact in artifacts]
         final_status, final_error = self.runtime._final_status_from_evidence(self.run_id, self.run_dir)
         completed_at = event.created_at
+        if final_status == "awaiting_verification":
+            progress = self.runtime._progress_for_awaiting_verification(progress)
+        run_completed_at = None if final_status == "awaiting_verification" else completed_at
         self.runtime._update_run(
             self.run_id,
             status=final_status,
-            completed_at=completed_at,
+            completed_at=run_completed_at,
             progress=progress,
             artifact_ids=artifact_ids,
             error=final_error,
@@ -203,10 +206,11 @@ class PipelineEventAdapter:
         self.runtime._upsert_agent(
             self.run_id,
             event.agent or "ResearchDirector",
-            "succeeded",
+            "waiting" if final_status == "awaiting_verification" else "succeeded",
             started_at=self.started_at,
-            completed_at=completed_at,
+            completed_at=None if final_status == "awaiting_verification" else completed_at,
             metrics=dict(event.data),
+            error=final_error if final_status == "awaiting_verification" else None,
         )
         await self.runtime.append_event(
             self.run_id,
@@ -546,7 +550,7 @@ class RunRuntime:
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         for run_id, state in self._runs.items():
-            records.append(dict(state["run"]))
+            records.append(self._normalize_run_record(dict(state["run"])))
             seen.add(run_id)
 
         for run_dir in self._scan_run_dirs():
@@ -962,7 +966,7 @@ class RunRuntime:
             status=response.status,
             accepted=True,
             session=self._auth_session_detail(session_id),
-            message="Retry run started. This is a new browser-use run using the refreshed login state.",
+            message="Walkthrough continued with the refreshed login state.",
         )
 
     def list_agents(self, run_id: str) -> list[AgentExecution]:
@@ -973,7 +977,21 @@ class RunRuntime:
         payload = self._read_json(path)
         if not isinstance(payload, list):
             return []
-        return [AgentExecution(**item) for item in payload if isinstance(item, dict)]
+        items = [dict(item) for item in payload if isinstance(item, dict)]
+        try:
+            run_status = str(self._record_for_run(run_id).get("status") or "")
+        except ApiError:
+            run_status = ""
+        if run_status == "awaiting_verification":
+            has_waiting_agent = False
+            for item in items:
+                if item.get("type") == "director":
+                    item["status"] = "waiting"
+                    item["completed_at"] = None
+                    has_waiting_agent = True
+            if not has_waiting_agent:
+                items.append(self._agent(run_id, "waiting"))
+        return [AgentExecution(**item) for item in items]
 
     def list_events(self, run_id: str, after_seq: int = 0, limit: int = 100) -> dict[str, Any]:
         events = self._read_events(run_id, after_seq=after_seq, limit=limit)
@@ -1430,10 +1448,13 @@ class RunRuntime:
                 artifact_ids = [artifact["id"] for artifact in artifacts]
                 final_status, final_error = self._final_status_from_evidence(run_id, run_dir)
                 completed_at = utc_now()
+                if final_status == "awaiting_verification":
+                    progress = self._progress_for_awaiting_verification(progress)
+                run_completed_at = None if final_status == "awaiting_verification" else completed_at
                 self._update_run(
                     run_id,
                     status=final_status,
-                    completed_at=completed_at,
+                    completed_at=run_completed_at,
                     progress=progress,
                     artifact_ids=artifact_ids,
                     error=final_error,
@@ -1441,9 +1462,10 @@ class RunRuntime:
                 self._upsert_agent(
                     run_id,
                     "ResearchDirector",
-                    "succeeded",
+                    "waiting" if final_status == "awaiting_verification" else "succeeded",
                     started_at=adapter.started_at,
-                    completed_at=completed_at,
+                    completed_at=None if final_status == "awaiting_verification" else completed_at,
+                    error=final_error if final_status == "awaiting_verification" else None,
                 )
                 await self.append_event(
                     run_id,
@@ -2170,7 +2192,7 @@ class RunRuntime:
         self._validate_run_id(run_id)
         state = self._runs.get(run_id)
         if state:
-            return dict(state["run"])
+            return self._normalize_run_record(dict(state["run"]))
         run_dir = self._run_dir_for_id(run_id)
         record = self._read_run_record(run_dir)
         if not record:
@@ -2198,10 +2220,19 @@ class RunRuntime:
                     payload = dict(payload)
                     payload["id"] = run_dir.name
                     payload["run_dir"] = self._relative_path(run_dir)
-                    return payload
+                    return self._normalize_run_record(payload)
             except Exception:
                 return None
         return self._infer_run_record(run_dir)
+
+    def _normalize_run_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        if record.get("status") != "awaiting_verification":
+            return record
+        normalized = dict(record)
+        progress = normalized.get("progress") if isinstance(normalized.get("progress"), dict) else {}
+        normalized["progress"] = self._progress_for_awaiting_verification(progress)
+        normalized["completed_at"] = None
+        return normalized
 
     def _infer_run_record(self, run_dir: Path) -> dict[str, Any] | None:
         artifact_paths = [run_dir / "evidence.json", run_dir / "report.md", run_dir / "evaluation.json"]
@@ -2415,6 +2446,18 @@ class RunRuntime:
             "failed_scenarios": sum(
                 1 for result in results if isinstance(result, dict) and result.get("status") != "completed"
             ),
+        }
+
+    def _progress_for_awaiting_verification(self, progress: dict[str, int]) -> dict[str, int]:
+        total = max(0, int(progress.get("total_scenarios") or 0))
+        completed = max(0, int(progress.get("completed_scenarios") or 0))
+        failed = max(0, int(progress.get("failed_scenarios") or 0))
+        if total > 0 and completed >= total:
+            completed = max(0, total - 1)
+        return {
+            "total_scenarios": total,
+            "completed_scenarios": completed,
+            "failed_scenarios": failed,
         }
 
     def _postprocess_run_outputs(self, run_id: str, run_dir: Path) -> None:
@@ -2651,10 +2694,6 @@ class RunRuntime:
         manual_signal = self._manual_verification_text_signal(lower_text)
         if manual_signal:
             return manual_signal
-
-        challenge_signal = self._browser_challenge_text_signal(lower_text)
-        if challenge_signal:
-            return challenge_signal
 
         success_seen = self._verification_success_seen(payload, params, lower_text)
         login_url_signal = self._browser_login_url_signal(payload, params, lower_text)

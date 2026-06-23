@@ -495,6 +495,45 @@ def test_browser_use_auto_verification_ignores_incidental_login_copy(tmp_path: P
     assert "run.awaiting_verification" not in [event["type"] for event in events.json()["items"]]
 
 
+def test_browser_use_auto_verification_ignores_completed_captcha_copy(tmp_path: Path, monkeypatch) -> None:
+    _write_plan(tmp_path)
+    monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
+    monkeypatch.setattr(
+        runtime_module.RunRuntime,
+        "_browser_use_readiness_errors",
+        lambda self, request, *, user_data_dir, storage_state: [],
+    )
+    _FakeBrowserUseWalker.result_status = "completed"
+    _FakeBrowserUseWalker.final_output = (
+        '{"completed": true, "manual_verification_required": false, '
+        '"friction_points": ["ALTCHA captcha verified and did not block this run."]}'
+    )
+    _FakeBrowserUseWalker.errors = []
+    _FakeBrowserUseWalker.timed_out = False
+    _FakeBrowserUseWalker.screenshot_path = None
+    _FakeBrowserUseWalker.history_path = None
+
+    with _client(tmp_path) as client:
+        response = client.post(
+            "/api/runs",
+            json={
+                "plan_name": "smoke_plan.json",
+                "mode": "browser-use",
+                "out": "runs",
+                "verification_mode": "auto",
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+        detail = _wait_for_terminal(client, run_id)
+        events = client.get(f"/api/runs/{run_id}/events")
+
+    assert detail["status"] == "succeeded"
+    assert detail["progress"]["completed_scenarios"] == detail["progress"]["total_scenarios"]
+    assert "run.completed" in [event["type"] for event in events.json()["items"]]
+    assert "run.awaiting_verification" not in [event["type"] for event in events.json()["items"]]
+
+
 def test_browser_use_auto_verification_honors_explicit_false_flag(tmp_path: Path, monkeypatch) -> None:
     _write_plan(tmp_path)
     monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
@@ -578,6 +617,13 @@ def test_browser_use_run_status_reflects_blocked_timeout_failed_and_verification
 
             assert detail["status"] == expected_status
             assert event_type in [event["type"] for event in events.json()["items"]]
+            if expected_status == "awaiting_verification":
+                agents = client.get(f"/api/runs/{run_id}/agents")
+                assert agents.status_code == 200
+                director = next(agent for agent in agents.json()["items"] if agent["type"] == "director")
+                assert director["status"] == "waiting"
+                assert detail["completed_at"] is None
+                assert detail["progress"]["completed_scenarios"] < detail["progress"]["total_scenarios"]
 
 
 def test_auth_session_create_validates_request_and_path_safety(tmp_path: Path, monkeypatch) -> None:

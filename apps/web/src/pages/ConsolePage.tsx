@@ -199,7 +199,7 @@ function RunProgressPanel({
         <EmptyState title="暂无当前任务" message="启动走查后，这里会显示任务目标和场景进度。" compact />
       )}
 
-      {error ? <ErrorState title="任务异常" message="当前任务返回了阻塞或错误信息。" details={error} compact /> : null}
+      {error && !awaitingVerification ? <ErrorState title="任务异常" message="当前任务返回了阻塞或错误信息。" details={error} compact /> : null}
 
       {awaitingVerification ? (
         <div className="verification-panel">
@@ -213,6 +213,7 @@ function RunProgressPanel({
               {panelSession?.storage_state_saved ? "，storage state 已保存" : ""}
               {activeRetryRunId ? `，重试任务：${activeRetryRunId}` : ""}
             </span>
+            {error ? <span>暂停原因：{error}</span> : null}
           </div>
           <div className="verification-actions">
             <button type="button" disabled={!canStartAuthSession || verificationBusy} onClick={onStartAuthSession}>
@@ -224,7 +225,7 @@ function RunProgressPanel({
               disabled={!canCompleteAuthSession || verificationBusy}
               onClick={onCompleteAuthSessionAndRetry}
             >
-              {verificationBusy && canCompleteAuthSession ? "正在保存并重试..." : "完成并重试"}
+              {verificationBusy && canCompleteAuthSession ? "正在保存并继续..." : "完成验证并继续"}
             </button>
           </div>
           {verificationError ? <p className="inline-warning">{verificationError}</p> : null}
