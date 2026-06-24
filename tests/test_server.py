@@ -73,6 +73,27 @@ def _write_historical_map_run(root: Path) -> Path:
     screenshots_dir = run_dir / "screenshots"
     screenshots_dir.mkdir(parents=True)
     (screenshots_dir / "customer.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    page_evidence_dir = run_dir / "page-evidence" / "customer"
+    page_evidence_dir.mkdir(parents=True)
+    (page_evidence_dir / "manifest.json").write_text(
+        json.dumps({"schema_version": "1.0", "title": "Customer Profile", "url": "https://example.test/customers/123?token=secret"}),
+        encoding="utf-8",
+    )
+    (page_evidence_dir / "text.json").write_text(
+        json.dumps({"text": "Customer Profile Activity Timeline C:/secret/profile token=secret"}),
+        encoding="utf-8",
+    )
+    (page_evidence_dir / "elements.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {"tag": "button", "text": "Edit customer", "visible": True, "disabled": False},
+                    {"tag": "input", "placeholder": "Search activity", "type": "search", "visible": True, "disabled": False},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     evidence = {
         "created_at": "2026-01-02T03:04:05Z",
         "report_language": "en",
@@ -127,7 +148,24 @@ def _write_historical_map_run(root: Path) -> Path:
                 "summary": "Opened customer detail.",
                 "url": "https://example.test/customers/123?token=secret",
                 "screenshot": r"C:\temp\customer.png",
-                "data": {"title": "Customer", "screenshot_path": r"C:\temp\customer.png"},
+                "data": {
+                    "title": "Customer",
+                    "screenshot_path": r"C:\temp\customer.png",
+                    "page_evidence": {
+                        "status": "completed",
+                        "title": "Customer Profile",
+                        "page_type": "detail",
+                        "purpose": "Review customer profile and activity.",
+                        "manifest_path": "page-evidence/customer/manifest.json",
+                        "artifact_paths": [
+                            "page-evidence/customer/text.json",
+                            "page-evidence/customer/elements.json",
+                            "page-evidence/customer/manifest.json",
+                        ],
+                        "full_page_screenshot_path": "screenshots/customer.png",
+                        "screenshot_paths": ["screenshots/customer.png"],
+                    },
+                },
             },
         ],
     }
@@ -1226,7 +1264,15 @@ def test_walkthrough_map_endpoint_rebuilds_historical_run_and_artifacts_include_
     assert payload["schema_version"] == "1.0"
     assert payload["artifact_id"] == "art_walkthrough_map"
     assert (run_dir / "walkthrough_map.json").exists()
-    assert any(node["route"] == "/customers/:id" for node in payload["nodes"])
+    customer_node = next(node for node in payload["nodes"] if node["route"] == "/customers/:id")
+    assert customer_node["name"] == "Customer Profile"
+    assert customer_node["page_type"] == "detail"
+    assert customer_node["purpose"] == "Review customer profile and activity."
+    assert "Edit customer" in customer_node["key_controls"]
+    assert customer_node["page_evidence"][0]["artifact_ids"]
+    assert customer_node["page_evidence"][0]["screenshot_artifact_ids"]
+    assert any(insight["source"] == "page_evidence" for insight in customer_node["observations"])
+    assert customer_node["screenshot_evidence"][0]["path"] == "screenshots/customer.png"
     serialized = json.dumps(payload)
     assert "C:" not in serialized
     assert "token=secret" not in serialized

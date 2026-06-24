@@ -12,7 +12,7 @@ import "@xyflow/react/dist/style.css";
 import { EmptyState } from "../common/EmptyState";
 import type { PageEdge, PageNode, WalkthroughMapResponse } from "../../types/contracts";
 import { PageNodeCard, type PageMapFlowNode } from "./PageNodeCard";
-import { getPageMapLayout } from "./pageMapLayout";
+import { getPageMapLayout, type PageMapPosition } from "./pageMapLayout";
 import { getPageEdgeRelation, pageEdgeRelationColors, pageEdgeRelationLabels } from "./pageMapRelations";
 
 interface WhiteboardCanvasProps {
@@ -26,7 +26,33 @@ const nodeTypes: NodeTypes = {
   pageNode: PageNodeCard,
 };
 
-function makeFlowEdges(edges: PageEdge[], visibleIds: Set<string>, nodesById: Map<string, PageNode>): Edge[] {
+function edgeHandles(edge: PageEdge, positions: Record<string, PageMapPosition>) {
+  const source = positions[edge.source];
+  const target = positions[edge.target];
+
+  if (!source || !target) {
+    return { sourceHandle: "source-right", targetHandle: "target-left" };
+  }
+
+  const dx = target.x - source.x;
+  const dy = target.y - source.y;
+  if (Math.abs(dy) > Math.abs(dx) * 0.72) {
+    return dy >= 0
+      ? { sourceHandle: "source-bottom", targetHandle: "target-top" }
+      : { sourceHandle: "source-top", targetHandle: "target-bottom" };
+  }
+
+  return dx >= 0
+    ? { sourceHandle: "source-right", targetHandle: "target-left" }
+    : { sourceHandle: "source-left", targetHandle: "target-right" };
+}
+
+function makeFlowEdges(
+  edges: PageEdge[],
+  visibleIds: Set<string>,
+  nodesById: Map<string, PageNode>,
+  positions: Record<string, PageMapPosition>,
+): Edge[] {
   return edges
     .filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target))
     .map((edge) => {
@@ -34,11 +60,13 @@ function makeFlowEdges(edges: PageEdge[], visibleIds: Set<string>, nodesById: Ma
       const relation = getPageEdgeRelation(edge, target);
       const color = pageEdgeRelationColors[relation];
       const lowConfidence = edge.kind === "inferred" || edge.confidence < 0.5;
+      const handles = edgeHandles(edge, positions);
 
       return {
         id: edge.id,
         source: edge.source,
         target: edge.target,
+        ...handles,
         label: edge.label || pageEdgeRelationLabels[relation],
         type: "smoothstep",
         className: `page-map-edge page-map-edge-${relation}`,
@@ -85,7 +113,7 @@ export function WhiteboardCanvas({ map, nodes, selectedNodeId, onSelectNode }: W
       })),
     [nodes, positions, selectedNodeId],
   );
-  const flowEdges = useMemo(() => makeFlowEdges(map.edges, visibleIds, nodesById), [map.edges, nodesById, visibleIds]);
+  const flowEdges = useMemo(() => makeFlowEdges(map.edges, visibleIds, nodesById, positions), [map.edges, nodesById, positions, visibleIds]);
 
   if (!nodes.length) {
     return (

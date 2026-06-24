@@ -336,6 +336,7 @@ export interface ScreenshotEvidence {
   step_index: number | null;
   captured_at: string | null;
   is_primary: boolean;
+  source?: "browser_step" | "browser_history" | "page_evidence" | string;
 }
 
 export interface PageInsight {
@@ -346,7 +347,35 @@ export interface PageInsight {
   severity?: "info" | "low" | "medium" | "high";
   confidence: number;
   evidence_ids: string[];
-  source: "browser_step" | "browser_run_summary" | "report" | "evaluation" | "heuristic";
+  source: "browser_step" | "browser_run_summary" | "page_evidence" | "report" | "evaluation" | "heuristic";
+}
+
+export interface PageEvidenceArtifactRef {
+  kind: string;
+  label: string;
+  artifact_id: string | null;
+  path: string | null;
+  content_url: string | null;
+}
+
+export interface PageEvidence {
+  id: string;
+  status: "completed" | "partial" | "failed" | string;
+  title: string | null;
+  url: string | null;
+  summary: string | null;
+  captured_at: string | null;
+  controls: string[];
+  text_observations: string[];
+  dom_observations: string[];
+  screenshot_artifact_ids: string[];
+  screenshot_paths: string[];
+  artifact_ids: string[];
+  artifacts: PageEvidenceArtifactRef[];
+  network_event_count: number;
+  console_message_count: number;
+  page_error_count: number;
+  errors: string[];
 }
 
 export interface PageNode {
@@ -365,6 +394,7 @@ export interface PageNode {
   key_controls: string[];
   issues: PageInsight[];
   observations: PageInsight[];
+  page_evidence: PageEvidence[];
   screenshot_evidence: ScreenshotEvidence[];
   primary_screenshot_artifact_id: string | null;
   evidence_ids: string[];

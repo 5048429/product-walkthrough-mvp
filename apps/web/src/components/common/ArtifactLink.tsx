@@ -27,6 +27,16 @@ function resolveArtifact(
   return artifacts?.find((item) => item.id === artifactId) ?? null;
 }
 
+function safeContentUrl(artifact: Artifact | null): string | null {
+  const metadata = artifact?.metadata;
+  if (!metadata || typeof metadata !== "object") {
+    return null;
+  }
+
+  const value = "content_url" in metadata ? metadata.content_url : "path_url" in metadata ? metadata.path_url : null;
+  return typeof value === "string" && value.startsWith("/api/runs/") && !value.includes("..") ? value : null;
+}
+
 export function ArtifactLink({
   artifact,
   artifactId,
@@ -49,7 +59,7 @@ export function ArtifactLink({
     );
   }
 
-  const href = runApiPath(resolvedRunId, `/artifacts/${encodeURIComponent(resolvedId)}/content`);
+  const href = safeContentUrl(resolvedArtifact) ?? runApiPath(resolvedRunId, `/artifacts/${encodeURIComponent(resolvedId)}/content`);
 
   return (
     <a className={`artifact-link ${className ?? ""}`.trim()} href={href} target="_blank" rel="noreferrer">

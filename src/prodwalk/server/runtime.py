@@ -3478,7 +3478,7 @@ class RunRuntime:
         evidence_payload = self._read_json(evidence_path)
         if not isinstance(evidence_payload, dict):
             raise ApiError(500, "MAP_BUILD_FAILED", "evidence.json is not a JSON object.", {"run_id": run_id})
-        artifacts = self._build_artifacts(run_id, run_dir)
+        artifacts = self._map_artifacts_with_page_evidence_payloads(run_dir, self._build_artifacts(run_id, run_dir))
         browser_histories = self._browser_history_sources(run_id, run_dir, artifacts)
         return build_walkthrough_map(
             run_id=run_id,
@@ -3486,6 +3486,42 @@ class RunRuntime:
             artifacts=artifacts,
             browser_histories=browser_histories,
         )
+
+    def _map_artifacts_with_page_evidence_payloads(
+        self,
+        run_dir: Path,
+        artifacts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        enriched: list[dict[str, Any]] = []
+        for artifact in artifacts:
+            item = dict(artifact)
+            payload = self._page_evidence_artifact_payload(run_dir, item)
+            if payload is not None:
+                item["payload"] = payload
+            enriched.append(item)
+        return enriched
+
+    def _page_evidence_artifact_payload(self, run_dir: Path, artifact: dict[str, Any]) -> Any | None:
+        artifact_type = artifact.get("type")
+        if artifact_type not in {"page_evidence_manifest", "page_html", "page_text", "page_elements", "dom_snapshot", "accessibility_tree"}:
+            return None
+        rel_path = artifact.get("path")
+        if not isinstance(rel_path, str) or not rel_path:
+            return None
+        try:
+            path = self._resolve_run_relative_path(run_dir, rel_path)
+        except ApiError:
+            return None
+        if not path.is_file() or path.stat().st_size > 512_000:
+            return None
+        try:
+            if path.suffix.lower() == ".json":
+                payload = self._read_json(path)
+            else:
+                payload = {"text": path.read_text(encoding="utf-8", errors="replace")[:4000]}
+        except Exception:
+            return None
+        return self._sanitize_browser_use_value(payload, {})
 
     def _browser_history_sources(
         self,

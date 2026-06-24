@@ -1,7 +1,15 @@
 import { ArtifactLink } from "../common/ArtifactLink";
 import { EmptyState } from "../common/EmptyState";
 import { ScreenshotPreview } from "../evidence/ScreenshotPreview";
-import type { Artifact, PageInsight, PageNode, ScreenshotEvidence, WalkthroughMapResponse } from "../../types/contracts";
+import type {
+  Artifact,
+  PageEvidence,
+  PageEvidenceArtifactRef,
+  PageInsight,
+  PageNode,
+  ScreenshotEvidence,
+  WalkthroughMapResponse,
+} from "../../types/contracts";
 
 interface PageDetailPanelProps {
   map: WalkthroughMapResponse;
@@ -62,6 +70,64 @@ function screenshotToArtifact(runId: string, shot: ScreenshotEvidence, artifacts
   };
 }
 
+function normalizeArtifactPath(path: string | null): string | null {
+  return path ? path.replace(/\\/g, "/") : null;
+}
+
+function artifactForRef(runId: string, ref: PageEvidenceArtifactRef, artifacts: Artifact[]): Artifact | null {
+  if (ref.artifact_id) {
+    const existing = artifacts.find((artifact) => artifact.id === ref.artifact_id);
+    if (existing) {
+      return existing;
+    }
+  }
+
+  const refPath = normalizeArtifactPath(ref.path);
+  const existingByPath = refPath
+    ? artifacts.find((artifact) => normalizeArtifactPath(artifact.path) === refPath || normalizeArtifactPath(artifact.path)?.endsWith(`/${refPath}`))
+    : null;
+  if (existingByPath) {
+    return existingByPath;
+  }
+
+  if (!ref.content_url && !ref.path) {
+    return null;
+  }
+
+  return {
+    id: ref.artifact_id ?? `${ref.kind}-${ref.path ?? ref.label}`,
+    run_id: runId,
+    type: "log_text",
+    title: ref.label,
+    path: ref.path ?? "",
+    media_type: "application/octet-stream",
+    size_bytes: 0,
+    created_at: "",
+    metadata: {
+      content_url: ref.content_url ?? undefined,
+      path_url: ref.content_url ?? undefined,
+    },
+  };
+}
+
+function artifactIdForPath(path: string | null, artifacts: Artifact[]): string | null {
+  const normalized = normalizeArtifactPath(path);
+  if (!normalized) {
+    return null;
+  }
+
+  return (
+    artifacts.find((artifact) => {
+      const artifactPath = normalizeArtifactPath(artifact.path);
+      return artifactPath === normalized || artifactPath?.endsWith(`/${normalized}`);
+    })?.id ?? null
+  );
+}
+
+function artifactIdsForPaths(paths: string[], artifacts: Artifact[]): string[] {
+  return unique(paths.map((path) => artifactIdForPath(path, artifacts)).filter((artifactId): artifactId is string => Boolean(artifactId)));
+}
+
 function InsightList({ title, insights, onFocusEvidence }: {
   title: string;
   insights: PageInsight[];
@@ -115,6 +181,123 @@ function TagList({ title, items, empty }: { title: string; items: string[]; empt
   );
 }
 
+function ObservationList({ title, items }: { title: string; items: string[] }) {
+  if (!items.length) {
+    return null;
+  }
+
+  return (
+    <div className="page-evidence-observation">
+      <strong>{title}</strong>
+      <ul>
+        {items.slice(0, 3).map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function PageEvidenceCard({
+  runId,
+  evidence,
+  artifacts,
+}: {
+  runId: string;
+  evidence: PageEvidence;
+  artifacts: Artifact[];
+}) {
+  const screenshotArtifactIds = unique([
+    ...evidence.screenshot_artifact_ids,
+    ...artifactIdsForPaths(evidence.screenshot_paths, artifacts),
+  ]);
+  const sourceArtifacts = [
+    ...evidence.artifacts,
+    ...evidence.artifact_ids.map((artifactId) => ({
+      kind: "artifact",
+      label: artifacts.find((artifact) => artifact.id === artifactId)?.title ?? "采集文件",
+      artifact_id: artifactId,
+      path: null,
+      content_url: null,
+    })),
+  ];
+  const metrics = [
+    evidence.controls.length ? `${evidence.controls.length} 个控件` : null,
+    evidence.text_observations.length ? `${evidence.text_observations.length} 条文本观察` : null,
+    evidence.dom_observations.length ? `${evidence.dom_observations.length} 条 DOM 观察` : null,
+    screenshotArtifactIds.length || evidence.screenshot_paths.length ? `${screenshotArtifactIds.length || evidence.screenshot_paths.length} 张采集截图` : null,
+    evidence.network_event_count ? `${evidence.network_event_count} 个网络事件` : null,
+    evidence.console_message_count ? `${evidence.console_message_count} 条 console` : null,
+    evidence.page_error_count ? `${evidence.page_error_count} 个页面错误` : null,
+  ].filter((item): item is string => Boolean(item));
+
+  return (
+    <article className={`page-evidence-card page-evidence-card-${evidence.status}`}>
+      <div className="page-evidence-card-heading">
+        <div>
+          <strong>{evidence.title ?? "页面采集证据"}</strong>
+          <span>{evidence.captured_at ? `采集于 ${evidence.captured_at}` : "Playwright 页面采集"}</span>
+        </div>
+        <span className={`page-detail-status page-evidence-status-${evidence.status}`}>{evidence.status}</span>
+      </div>
+      <p>
+        {evidence.summary ??
+          (evidence.url ? `采集器重新打开页面并记录了可见内容、控件、DOM 线索和截图来源：${evidence.url}` : "采集器记录了页面内容、控件、DOM 线索和截图来源。")}
+      </p>
+      {metrics.length ? (
+        <div className="page-evidence-metric-row">
+          {metrics.map((metric) => (
+            <span key={metric}>{metric}</span>
+          ))}
+        </div>
+      ) : null}
+      {evidence.controls.length ? (
+        <div className="page-tag-list page-evidence-controls">
+          {evidence.controls.slice(0, 8).map((control) => (
+            <span key={control}>{control}</span>
+          ))}
+        </div>
+      ) : null}
+      <ObservationList title="可见文本观察" items={evidence.text_observations} />
+      <ObservationList title="DOM / 可访问性观察" items={evidence.dom_observations} />
+      {screenshotArtifactIds.length ? (
+        <div className="page-evidence-source-row">
+          <strong>截图来源</strong>
+          <div className="page-evidence-links">
+            {screenshotArtifactIds.slice(0, 4).map((artifactId) => (
+              <ArtifactLink key={artifactId} artifactId={artifactId} artifacts={artifacts} runId={runId} label="打开截图" />
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {sourceArtifacts.length ? (
+        <div className="page-evidence-source-row">
+          <strong>采集文件</strong>
+          <div className="page-evidence-artifact-list">
+            {sourceArtifacts.slice(0, 6).map((ref, index) => (
+              <ArtifactLink
+                key={`${ref.artifact_id ?? ref.path ?? ref.label}-${index}`}
+                artifact={artifactForRef(runId, ref, artifacts)}
+                artifactId={ref.artifact_id ?? artifactIdForPath(ref.path, artifacts)}
+                artifacts={artifacts}
+                runId={runId}
+                label={ref.label}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {evidence.errors.length ? (
+        <div className="page-evidence-error-list">
+          {evidence.errors.slice(0, 2).map((error) => (
+            <span key={error}>{error}</span>
+          ))}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
 export function PageDetailPanel({ map, node, artifacts, onFocusEvidence }: PageDetailPanelProps) {
   if (!node) {
     return (
@@ -131,6 +314,12 @@ export function PageDetailPanel({ map, node, artifacts, onFocusEvidence }: PageD
     ...node.screenshot_evidence.map((shot) => shot.evidence_id ?? ""),
   ]);
   const screenshots = node.screenshot_evidence;
+  const pageEvidenceScreenshotIds = unique(
+    node.page_evidence.flatMap((evidence) => [
+      ...evidence.screenshot_artifact_ids,
+      ...artifactIdsForPaths(evidence.screenshot_paths, artifacts),
+    ]),
+  );
   const primaryShot = screenshots.find((shot) => shot.is_primary) ?? screenshots[0] ?? null;
   const otherShots = screenshots.filter((shot) => shot.id !== primaryShot?.id);
 
@@ -177,7 +366,22 @@ export function PageDetailPanel({ map, node, artifacts, onFocusEvidence }: PageD
       </dl>
 
       <TagList title="关键功能" items={node.key_functions} empty="暂无关键功能摘要。" />
-      <TagList title="主要控件" items={node.key_controls} empty="暂无控件信息。" />
+      <TagList
+        title="主要控件"
+        items={unique([...node.key_controls, ...node.page_evidence.flatMap((evidence) => evidence.controls)]).slice(0, 12)}
+        empty="暂无控件信息。"
+      />
+
+      {node.page_evidence.length ? (
+        <section className="page-detail-section">
+          <div className="section-title">页面采集证据</div>
+          <div className="page-evidence-card-list">
+            {node.page_evidence.map((evidence) => (
+              <PageEvidenceCard key={evidence.id} runId={map.run_id} evidence={evidence} artifacts={artifacts} />
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <InsightList title="问题" insights={node.issues} onFocusEvidence={(evidenceId) => onFocusEvidence(evidenceId)} />
       <InsightList title="观察" insights={node.observations} onFocusEvidence={(evidenceId) => onFocusEvidence(evidenceId)} />
@@ -203,6 +407,32 @@ export function PageDetailPanel({ map, node, artifacts, onFocusEvidence }: PageD
                 runId={map.run_id}
                 alt={`${node.name} screenshot ${shot.step_index ?? ""}`}
                 variant="card"
+              />
+            ))}
+            {pageEvidenceScreenshotIds
+              .filter((artifactId) => artifactId !== primaryShot?.artifact_id && !otherShots.some((shot) => shot.artifact_id === artifactId))
+              .slice(0, 3)
+              .map((artifactId) => (
+                <ScreenshotPreview
+                  key={artifactId}
+                  artifactId={artifactId}
+                  artifacts={artifacts}
+                  runId={map.run_id}
+                  alt={`${node.name} page evidence screenshot`}
+                  variant="card"
+                />
+              ))}
+          </div>
+        ) : pageEvidenceScreenshotIds.length ? (
+          <div className="page-screenshot-stack">
+            {pageEvidenceScreenshotIds.slice(0, 4).map((artifactId, index) => (
+              <ScreenshotPreview
+                key={artifactId}
+                artifactId={artifactId}
+                artifacts={artifacts}
+                runId={map.run_id}
+                alt={`${node.name} page evidence screenshot ${index + 1}`}
+                variant={index === 0 ? "detail" : "card"}
               />
             ))}
           </div>

@@ -14,6 +14,7 @@ const laneGap = 390;
 const sideColumnGap = 170;
 
 const detailPageTypes = new Set<PageNode["page_type"]>(["detail", "settings", "form", "auth"]);
+type LayoutRole = "entry" | "primary" | "detail" | "settings" | "task" | "external";
 
 function hasPresetLayout(layout: WalkthroughMapResponse["layout"] | undefined, nodes: PageNode[]): boolean {
   if (!layout?.nodes) {
@@ -38,7 +39,7 @@ function hasPresetLayout(layout: WalkthroughMapResponse["layout"] | undefined, n
     return true;
   }
 
-  if (layout.algorithm === "prototype_map") {
+  if (layout.algorithm === "product_structure_v2") {
     return true;
   }
 
@@ -148,6 +149,102 @@ function isDetailNode(node: PageNode, incomingCount: number): boolean {
   return incomingCount > 0 && detailPageTypes.has(node.page_type);
 }
 
+function routeSection(node: PageNode): string {
+  const metadataSection = typeof node.metadata.route_section === "string" ? node.metadata.route_section : "";
+  if (metadataSection) {
+    return metadataSection;
+  }
+
+  const path = getRoutePath(node) ?? "/";
+  const segments = path.replace(/^#?!?\/?/, "").split("/").filter(Boolean);
+  return segments[0] ?? "home";
+}
+
+function buildSectionOffsets(nodes: PageNode[]): Map<string, number> {
+  const sections = Array.from(
+    new Map(
+      nodes
+        .filter((node) => !isSideNode(node))
+        .sort(sortNodes)
+        .map((node) => [routeSection(node), routeSection(node)]),
+    ).keys(),
+  );
+  const midpoint = (sections.length - 1) / 2;
+  const offsets = new Map<string, number>();
+
+  sections.forEach((section, index) => {
+    offsets.set(section, Math.round((index - midpoint) * 168));
+  });
+
+  return offsets;
+}
+
+function layoutRole(node: PageNode, incomingCount: number): LayoutRole {
+  const metadataRole = typeof node.metadata.layout_role === "string" ? node.metadata.layout_role : "";
+
+  if (isSideNode(node)) {
+    return "external";
+  }
+
+  if (metadataRole === "entry" || incomingCount === 0) {
+    return "entry";
+  }
+
+  if (node.page_type === "settings") {
+    return "settings";
+  }
+
+  if (node.page_type === "detail") {
+    return "detail";
+  }
+
+  if (node.page_type === "form" || node.page_type === "auth" || node.status === "blocked") {
+    return "task";
+  }
+
+  return "primary";
+}
+
+function roleOffset(role: LayoutRole): number {
+  if (role === "detail") {
+    return 214;
+  }
+
+  if (role === "settings") {
+    return 332;
+  }
+
+  if (role === "task") {
+    return -236;
+  }
+
+  if (role === "external") {
+    return -360;
+  }
+
+  return 0;
+}
+
+function nodeVerticalOffset(
+  node: PageNode,
+  incomingCount: number,
+  sectionOffsets: Map<string, number>,
+  depth: number,
+): number {
+  const role = layoutRole(node, incomingCount);
+  const sectionOffset = sectionOffsets.get(routeSection(node)) ?? 0;
+
+  if (role === "entry") {
+    return 0;
+  }
+
+  if (role === "primary") {
+    return sectionOffset || (depth % 2 === 0 ? 126 : -126);
+  }
+
+  return Math.round(roleOffset(role) + sectionOffset * 0.35);
+}
+
 function buildEdgeIndexes(nodes: PageNode[], edges: PageEdge[]) {
   const nodeIds = new Set(nodes.map((node) => node.id));
   const outgoing = new Map<string, PageEdge[]>();
@@ -242,6 +339,7 @@ function getStructuredFallbackLayout(nodes: PageNode[], edges: PageEdge[]): Reco
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const { incoming, outgoing } = buildEdgeIndexes(nodes, edges);
   const depths = getLayeredDepths(nodes, edges);
+  const sectionOffsets = buildSectionOffsets(nodes);
   const parentById = new Map<string, string | null>();
 
   for (const node of nodes) {
@@ -249,7 +347,7 @@ function getStructuredFallbackLayout(nodes: PageNode[], edges: PageEdge[]): Reco
   }
 
   const rootNodes = nodes
-    .filter((node) => !isSideNode(node) && (!parentById.get(node.id) || (incoming.get(node.id)?.length ?? 0) === 0))
+    .filter((node) => !isSideNode(node) && !parentById.get(node.id) && (incoming.get(node.id)?.length ?? 0) === 0)
     .sort(sortNodes);
   const roots = rootNodes.length ? rootNodes : nodes.filter((node) => !isSideNode(node)).slice(0, 1);
   const result: Record<string, PageMapPosition> = {};
@@ -279,7 +377,8 @@ function getStructuredFallbackLayout(nodes: PageNode[], edges: PageEdge[]): Reco
     primaryChildren.forEach((child, index) => {
       const depth = Math.max(sourcePosition.depth + 1, depths.get(child.id) ?? sourcePosition.depth + 1);
       const x = depth * (nodeWidth + columnGap);
-      const y = sourcePosition.y + childOffset(index, primaryChildren.length);
+      const incomingCount = incoming.get(child.id)?.length ?? 0;
+      const y = sourcePosition.y + childOffset(index, primaryChildren.length) + nodeVerticalOffset(child, incomingCount, sectionOffsets, depth);
       result[child.id] = reservePosition(result, x, y, depth);
       placed.add(child.id);
       queue.push(child.id);
@@ -299,7 +398,10 @@ function getStructuredFallbackLayout(nodes: PageNode[], edges: PageEdge[]): Reco
     const siblingDetails = nonSideNodes.filter((candidate) => parentById.get(candidate.id) === parentId && !placed.has(candidate.id));
     const siblingIndex = Math.max(0, siblingDetails.findIndex((candidate) => candidate.id === node.id));
     const preferredX = parentPosition ? parentPosition.x + nodeWidth + columnGap : depth * (nodeWidth + columnGap);
-    const preferredY = parentPosition ? parentPosition.y + childOffset(siblingIndex, siblingDetails.length) : roots.length * laneGap;
+    const incomingCount = incoming.get(node.id)?.length ?? 0;
+    const preferredY = parentPosition
+      ? parentPosition.y + childOffset(siblingIndex, siblingDetails.length) + nodeVerticalOffset(node, incomingCount, sectionOffsets, depth)
+      : roots.length * laneGap + nodeVerticalOffset(node, incomingCount, sectionOffsets, depth);
 
     result[node.id] = reservePosition(result, preferredX, preferredY, depth);
     placed.add(node.id);
@@ -312,7 +414,10 @@ function getStructuredFallbackLayout(nodes: PageNode[], edges: PageEdge[]): Reco
   sideNodes.forEach((node, index) => {
     const parentId = parentById.get(node.id);
     const parentPosition = parentId ? result[parentId] : undefined;
-    const y = parentPosition ? parentPosition.y + childOffset(index, sideNodes.length) : index * (nodeHeight + rowGap);
+    const incomingCount = incoming.get(node.id)?.length ?? 0;
+    const y = parentPosition
+      ? parentPosition.y + childOffset(index, sideNodes.length) + nodeVerticalOffset(node, incomingCount, sectionOffsets, maxX)
+      : index * (nodeHeight + rowGap) + nodeVerticalOffset(node, incomingCount, sectionOffsets, maxX);
 
     result[node.id] = reservePosition(result, sideX, y, Math.round(sideX / (nodeWidth + columnGap)));
   });

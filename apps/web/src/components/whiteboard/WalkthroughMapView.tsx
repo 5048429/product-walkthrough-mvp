@@ -51,6 +51,14 @@ function nodeMatchesQuery(node: PageNode, query: string): boolean {
     node.purpose,
     ...node.key_functions,
     ...node.key_controls,
+    ...node.page_evidence.flatMap((evidence) => [
+      evidence.title,
+      evidence.summary,
+      evidence.url,
+      ...evidence.controls,
+      ...evidence.text_observations,
+      ...evidence.dom_observations,
+    ]),
   ]
     .filter(Boolean)
     .some((value) => String(value).toLowerCase().includes(normalized));
@@ -70,7 +78,12 @@ function filterNodes(nodes: PageNode[], filters: PageMapFiltersState): PageNode[
       return false;
     }
 
-    if (filters.screenshotsOnly && node.screenshot_evidence.length === 0 && !node.primary_screenshot_artifact_id) {
+    if (
+      filters.screenshotsOnly &&
+      node.screenshot_evidence.length === 0 &&
+      node.page_evidence.every((evidence) => evidence.screenshot_artifact_ids.length === 0 && evidence.screenshot_paths.length === 0) &&
+      !node.primary_screenshot_artifact_id
+    ) {
       return false;
     }
 

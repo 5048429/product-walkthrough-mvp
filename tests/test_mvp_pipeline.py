@@ -299,6 +299,10 @@ class EvidenceExtractorTest(unittest.TestCase):
             source_dir.mkdir()
             html = source_dir / "page.html"
             html.write_text("<html><body>Dashboard</body></html>", encoding="utf-8")
+            text = source_dir / "text.json"
+            text.write_text('{"text":"Dashboard Create link"}', encoding="utf-8")
+            elements = source_dir / "elements.json"
+            elements.write_text('{"items":[{"tag":"button","text":"Create link"}]}', encoding="utf-8")
             manifest = source_dir / "manifest.json"
             manifest.write_text('{"schema_version":"1.0"}', encoding="utf-8")
             full_page = source_dir / "full_page.png"
@@ -314,6 +318,8 @@ class EvidenceExtractorTest(unittest.TestCase):
                 data={
                     "page_evidence": {
                         "manifest_path": str(manifest),
+                        "text_path": str(text),
+                        "elements_path": str(elements),
                         "artifact_paths": [str(html), str(manifest)],
                         "full_page_screenshot_path": str(full_page),
                         "screenshot_paths": [str(full_page)],
@@ -338,11 +344,15 @@ class EvidenceExtractorTest(unittest.TestCase):
 
             page_evidence = evidence.data["page_evidence"]
             self.assertEqual(len(archived_screenshots), 1)
-            self.assertEqual(len(archived_page_evidence), 2)
+            self.assertEqual(len(archived_page_evidence), 4)
             self.assertTrue(str(page_evidence["full_page_screenshot_path"]).startswith("screenshots/"))
             self.assertTrue(str(page_evidence["manifest_path"]).startswith("page-evidence/"))
+            self.assertTrue(str(page_evidence["text_path"]).startswith("page-evidence/"))
+            self.assertTrue(str(page_evidence["elements_path"]).startswith("page-evidence/"))
             self.assertTrue(all(str(path).startswith("page-evidence/") for path in page_evidence["artifact_paths"]))
             self.assertTrue((root / "run" / page_evidence["manifest_path"]).exists())
+            self.assertTrue((root / "run" / page_evidence["text_path"]).exists())
+            self.assertTrue((root / "run" / page_evidence["elements_path"]).exists())
             self.assertTrue((root / "run" / page_evidence["artifact_paths"][0]).exists())
 
 

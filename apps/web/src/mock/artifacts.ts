@@ -71,4 +71,43 @@ export const mockArtifacts: Artifact[] = [
       scenario_id: "onboarding",
     },
   },
+  {
+    id: "art_page_evidence_manifest_onboarding",
+    run_id: runId,
+    type: "page_evidence_manifest",
+    title: "manifest.json",
+    path: "page-evidence/onboarding-step-1/manifest.json",
+    media_type: "application/json",
+    size_bytes: 1640,
+    created_at: "2026-06-16T08:30:59Z",
+    metadata: {
+      capture_dir: "page-evidence/onboarding-step-1",
+    },
+  },
+  {
+    id: "art_page_text_onboarding",
+    run_id: runId,
+    type: "page_text",
+    title: "text.json",
+    path: "page-evidence/onboarding-step-1/text.json",
+    media_type: "application/json",
+    size_bytes: 3210,
+    created_at: "2026-06-16T08:30:59Z",
+    metadata: {
+      capture_dir: "page-evidence/onboarding-step-1",
+    },
+  },
+  {
+    id: "art_page_elements_onboarding",
+    run_id: runId,
+    type: "page_elements",
+    title: "elements.json",
+    path: "page-evidence/onboarding-step-1/elements.json",
+    media_type: "application/json",
+    size_bytes: 5820,
+    created_at: "2026-06-16T08:30:59Z",
+    metadata: {
+      capture_dir: "page-evidence/onboarding-step-1",
+    },
+  },
 ];

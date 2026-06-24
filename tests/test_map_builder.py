@@ -153,6 +153,163 @@ def test_build_map_merges_dynamic_routes_and_links_screenshots_without_local_pat
     assert "utm_" not in serialized
 
 
+def test_build_map_uses_page_evidence_for_node_insights_controls_and_screenshots() -> None:
+    payload = {
+        "plan": {"products": [{"name": "Example", "kind": "owned", "url": "https://example.test/payment-links"}]},
+        "results": [
+            {
+                "product": "Example",
+                "product_kind": "owned",
+                "scenario_id": "page-evidence",
+                "status": "completed",
+                "steps": [
+                    {
+                        "index": 1,
+                        "action": "observe",
+                        "status": "passed",
+                        "observation": "Captured page evidence.",
+                        "url": "https://example.test/payment-links?token=secret&utm_source=test",
+                        "evidence_ids": ["ev-payment-links"],
+                    }
+                ],
+            }
+        ],
+        "evidence": [
+            {
+                "id": "ev-payment-links",
+                "product": "Example",
+                "scenario_id": "page-evidence",
+                "kind": "browser_step",
+                "title": "Browser step 1",
+                "summary": "Captured page evidence.",
+                "url": "https://example.test/payment-links?token=secret",
+                "data": {
+                    "page_evidence": {
+                        "status": "completed",
+                        "title": "Payment Links",
+                        "page_type": "list",
+                        "purpose": "Manage payment links and checkout URLs.",
+                        "manifest_path": "page-evidence/payment/manifest.json",
+                        "artifact_paths": [
+                            "page-evidence/payment/text.json",
+                            "page-evidence/payment/elements.json",
+                            "page-evidence/payment/accessibility_tree.json",
+                            "page-evidence/payment/manifest.json",
+                        ],
+                        "full_page_screenshot_path": "screenshots/payment-full.png",
+                        "screenshot_paths": ["screenshots/payment-full.png"],
+                        "network_event_count": 3,
+                    }
+                },
+            }
+        ],
+    }
+    artifacts = [
+        {
+            "id": "art_screenshot_payment_full",
+            "run_id": "run-page-evidence",
+            "type": "screenshot",
+            "title": "payment-full.png",
+            "path": "screenshots/payment-full.png",
+            "media_type": "image/png",
+            "size_bytes": 10,
+            "created_at": "2026-06-24T00:00:01Z",
+            "metadata": {"content_url": "/api/runs/run-page-evidence/artifacts/art_screenshot_payment_full/content"},
+        },
+        {
+            "id": "art_page_text_payment",
+            "run_id": "run-page-evidence",
+            "type": "page_text",
+            "title": "text.json",
+            "path": "page-evidence/payment/text.json",
+            "media_type": "application/json",
+            "size_bytes": 10,
+            "created_at": "2026-06-24T00:00:01Z",
+            "metadata": {},
+            "payload": {
+                "text": "Payment Links Search Create link C:/Users/agent/profile /tmp/playwright-profile storage_state=/home/agent/state.json token=secret"
+            },
+        },
+        {
+            "id": "art_page_elements_payment",
+            "run_id": "run-page-evidence",
+            "type": "page_elements",
+            "title": "elements.json",
+            "path": "page-evidence/payment/elements.json",
+            "media_type": "application/json",
+            "size_bytes": 10,
+            "created_at": "2026-06-24T00:00:01Z",
+            "metadata": {},
+            "payload": {
+                "items": [
+                    {"tag": "button", "text": "Create link", "visible": True, "disabled": False},
+                    {"tag": "input", "placeholder": "Search links", "type": "search", "visible": True, "disabled": False},
+                    {"tag": "input", "placeholder": "Password", "type": "password", "visible": True, "disabled": False},
+                ]
+            },
+        },
+        {
+            "id": "art_accessibility_payment",
+            "run_id": "run-page-evidence",
+            "type": "accessibility_tree",
+            "title": "accessibility_tree.json",
+            "path": "page-evidence/payment/accessibility_tree.json",
+            "media_type": "application/json",
+            "size_bytes": 10,
+            "created_at": "2026-06-24T00:00:01Z",
+            "metadata": {},
+            "payload": {"nodes": [{"role": {"value": "button"}, "name": {"value": "Copy link"}}]},
+        },
+        {
+            "id": "art_manifest_payment",
+            "run_id": "run-page-evidence",
+            "type": "page_evidence_manifest",
+            "title": "manifest.json",
+            "path": "page-evidence/payment/manifest.json",
+            "media_type": "application/json",
+            "size_bytes": 10,
+            "created_at": "2026-06-24T00:00:01Z",
+            "metadata": {},
+            "payload": {"title": "Payment Links", "url": "https://example.test/payment-links?token=secret"},
+        },
+    ]
+
+    walkthrough_map = build_walkthrough_map(
+        run_id="run-page-evidence",
+        evidence_payload=payload,
+        artifacts=artifacts,
+        browser_histories=[],
+        generated_at="2026-06-24T00:00:02Z",
+    )
+
+    node = next(item for item in walkthrough_map["nodes"] if item["route"] == "/payment-links")
+    assert node["name"] == "Payment Links"
+    assert node["page_type"] == "list"
+    assert node["purpose"] == "Manage payment links and checkout URLs."
+    assert "Create link" in node["key_controls"]
+    assert "Search links" in node["key_controls"]
+    assert "Copy link" in node["key_controls"]
+    assert node["screenshot_evidence"][0]["artifact_id"] == "art_screenshot_payment_full"
+    assert node["page_evidence"][0]["artifact_ids"] == [
+        "art_manifest_payment",
+        "art_page_text_payment",
+        "art_page_elements_payment",
+        "art_accessibility_payment",
+    ]
+    assert node["page_evidence"][0]["screenshot_artifact_ids"] == ["art_screenshot_payment_full"]
+    assert any(ref["artifact_id"] == "art_page_elements_payment" for ref in node["page_evidence"][0]["artifacts"])
+    assert node["metadata"]["page_evidence"]["network_event_count"] == 3
+    assert node["metadata"]["page_evidence"]["element_count"] == 3
+    assert any(insight["source"] == "page_evidence" for insight in node["observations"])
+
+    serialized = json.dumps(walkthrough_map)
+    assert "C:/Users" not in serialized
+    assert "/tmp/playwright-profile" not in serialized
+    assert "storage_state=/home/agent/state.json" not in serialized
+    assert "token=secret" not in serialized
+    assert "storage_state" not in serialized
+
+
 def test_build_map_works_without_browser_history() -> None:
     payload = {
         "plan": {"products": [{"name": "Example", "kind": "owned", "url": "https://example.test/a"}]},

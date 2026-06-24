@@ -34,7 +34,7 @@ export function getPageEdgeRelation(edge: PageEdge, target?: PageNode): PageEdge
   }
 
   if (mapRelation === "walkthrough_path") {
-    return "inferred";
+    return edge.kind === "inferred" || edge.confidence < 0.5 ? "inferred" : "navigation";
   }
 
   if (mapRelation === "app_navigation") {

@@ -18,6 +18,7 @@ import type {
   EventListResponse,
   HealthResponse,
   ListResponse,
+  PageEvidence,
   PlanDetailResponse,
   PlanSummary,
   PageInsight,
@@ -111,6 +112,7 @@ const pageInsightKinds = new Set<PageInsight["kind"]>(["purpose", "function", "c
 const pageInsightSources = new Set<PageInsight["source"]>([
   "browser_step",
   "browser_run_summary",
+  "page_evidence",
   "report",
   "evaluation",
   "heuristic",
@@ -236,8 +238,49 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+function asRecordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    : [];
+}
+
 function asNullableRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function firstString(record: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = asNullableString(record[key]);
+    if (value) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function compactStrings(values: unknown, fallbackKeys: string[] = ["label", "text", "title", "name", "summary"]): string[] {
+  if (!Array.isArray(values)) {
+    return typeof values === "string" && values.trim() ? [values.trim()] : [];
+  }
+
+  return values
+    .map((item) => {
+      if (typeof item === "string") {
+        return item.trim();
+      }
+      const record = asNullableRecord(item);
+      return record ? firstString(record, fallbackKeys)?.trim() ?? "" : "";
+    })
+    .filter((item, index, array) => item.length > 0 && array.indexOf(item) === index);
+}
+
+function appendUnique(values: string[], next: string | null | undefined): void {
+  if (!next || values.includes(next)) {
+    return;
+  }
+
+  values.push(next);
 }
 
 function normalizeRunStatus(value: unknown): RunStatus {
@@ -626,7 +669,210 @@ function normalizeScreenshotEvidence(value: unknown): ScreenshotEvidence {
     step_index: asNullableNumber(raw.step_index),
     captured_at: asNullableString(raw.captured_at),
     is_primary: asBoolean(raw.is_primary),
+    source: asNullableString(raw.source) ?? undefined,
   };
+}
+
+const pageEvidencePathLabels: Record<string, string> = {
+  manifest_path: "采集清单",
+  html_path: "页面 HTML",
+  text_path: "可见文本",
+  elements_path: "控件列表",
+  dom_snapshot_path: "DOM 快照",
+  accessibility_tree_path: "可访问性树",
+  network_log_path: "网络记录",
+  console_log_path: "Console 记录",
+};
+
+const pageEvidenceArtifactKinds: Record<string, string> = {
+  manifest_path: "manifest",
+  html_path: "html",
+  text_path: "text",
+  elements_path: "elements",
+  dom_snapshot_path: "dom",
+  accessibility_tree_path: "accessibility",
+  network_log_path: "network",
+  console_log_path: "console",
+};
+
+function normalizePageEvidenceArtifactRef(value: unknown, fallbackKind = "artifact", fallbackLabel = "采集文件"): PageEvidence["artifacts"][number] {
+  const raw = asRecord(value);
+  const kind = asString(raw.kind, fallbackKind);
+  const path = asNullableString(raw.path) ?? asNullableString(raw.artifact_path) ?? (typeof value === "string" ? value : null);
+  const artifactId = asNullableString(raw.artifact_id) ?? asNullableString(raw.id);
+  const label = asString(raw.label, asString(raw.title, fallbackLabel));
+
+  return {
+    kind,
+    label,
+    artifact_id: artifactId,
+    path,
+    content_url: asNullableString(raw.content_url) ?? asNullableString(raw.path_url),
+  };
+}
+
+function pageEvidenceArtifacts(raw: Record<string, unknown>): PageEvidence["artifacts"] {
+  const artifacts: PageEvidence["artifacts"] = [];
+  const seen = new Set<string>();
+  const add = (artifact: PageEvidence["artifacts"][number]) => {
+    const key = artifact.artifact_id ?? artifact.path ?? artifact.content_url ?? `${artifact.kind}:${artifact.label}`;
+    if (!key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    artifacts.push(artifact);
+  };
+
+  for (const [key, label] of Object.entries(pageEvidencePathLabels)) {
+    const path = asNullableString(raw[key]);
+    if (path) {
+      add({
+        kind: pageEvidenceArtifactKinds[key] ?? key,
+        label,
+        artifact_id: asNullableString(raw[key.replace("_path", "_artifact_id")]),
+        path,
+        content_url: null,
+      });
+    }
+  }
+
+  for (const artifact of asRecordArray(raw.artifacts)) {
+    add(normalizePageEvidenceArtifactRef(artifact));
+  }
+
+  for (const artifact of asRecordArray(raw.artifact_refs)) {
+    add(normalizePageEvidenceArtifactRef(artifact));
+  }
+
+  compactStrings(raw.artifact_paths).forEach((path, index) => {
+    add(normalizePageEvidenceArtifactRef({ path }, "artifact", `采集文件 ${index + 1}`));
+  });
+
+  return artifacts;
+}
+
+function normalizePageEvidence(value: unknown, index: number): PageEvidence {
+  const raw = asRecord(value);
+  const controls = [
+    ...compactStrings(raw.controls),
+    ...compactStrings(raw.key_controls),
+    ...compactStrings(raw.visible_controls),
+    ...compactStrings(raw.interactive_elements),
+    ...compactStrings(raw.buttons),
+    ...compactStrings(raw.links),
+  ].filter((item, itemIndex, array) => array.indexOf(item) === itemIndex);
+  const textObservations = [
+    ...compactStrings(raw.text_observations),
+    ...compactStrings(raw.visible_text_observations),
+    ...compactStrings(raw.visible_text),
+    ...compactStrings(raw.text_excerpt),
+    ...compactStrings(raw.page_text),
+  ].filter((item, itemIndex, array) => array.indexOf(item) === itemIndex);
+  const domObservations = [
+    ...compactStrings(raw.dom_observations),
+    ...compactStrings(raw.dom_summary),
+    ...compactStrings(raw.accessibility_observations),
+    ...compactStrings(raw.accessibility_summary),
+  ].filter((item, itemIndex, array) => array.indexOf(item) === itemIndex);
+  const screenshotArtifactIds = [
+    ...asStringArray(raw.screenshot_artifact_ids),
+    ...asStringArray(raw.page_evidence_screenshot_artifact_ids),
+  ];
+  appendUnique(screenshotArtifactIds, asNullableString(raw.screenshot_artifact_id));
+  appendUnique(screenshotArtifactIds, asNullableString(raw.viewport_screenshot_artifact_id));
+  appendUnique(screenshotArtifactIds, asNullableString(raw.full_page_screenshot_artifact_id));
+  const screenshotPaths = [
+    ...compactStrings(raw.screenshot_paths),
+    ...compactStrings(raw.page_evidence_screenshot_paths),
+  ];
+  appendUnique(screenshotPaths, asNullableString(raw.screenshot_path));
+  appendUnique(screenshotPaths, asNullableString(raw.viewport_screenshot_path));
+  appendUnique(screenshotPaths, asNullableString(raw.full_page_screenshot_path));
+
+  const artifactIds = [...asStringArray(raw.artifact_ids), ...asStringArray(raw.page_evidence_artifact_ids)];
+  for (const key of [
+    "manifest_artifact_id",
+    "html_artifact_id",
+    "text_artifact_id",
+    "elements_artifact_id",
+    "dom_snapshot_artifact_id",
+    "accessibility_tree_artifact_id",
+    "network_log_artifact_id",
+    "console_log_artifact_id",
+  ]) {
+    appendUnique(artifactIds, asNullableString(raw[key]));
+  }
+
+  const artifacts = pageEvidenceArtifacts(raw);
+  for (const artifact of artifacts) {
+    appendUnique(artifactIds, artifact.artifact_id);
+  }
+
+  return {
+    id: asString(raw.id, asString(raw.evidence_id, `page-evidence-${index + 1}`)),
+    status: asString(raw.status, "completed"),
+    title: asNullableString(raw.title),
+    url: asNullableString(raw.url) ?? asNullableString(raw.source_url),
+    summary: firstString(raw, ["summary", "page_summary", "description"]),
+    captured_at: asNullableString(raw.captured_at),
+    controls,
+    text_observations: textObservations,
+    dom_observations: domObservations,
+    screenshot_artifact_ids: screenshotArtifactIds.filter((item, itemIndex, array) => array.indexOf(item) === itemIndex),
+    screenshot_paths: screenshotPaths.filter((item, itemIndex, array) => array.indexOf(item) === itemIndex),
+    artifact_ids: artifactIds.filter((item, itemIndex, array) => array.indexOf(item) === itemIndex),
+    artifacts,
+    network_event_count: asNumber(raw.network_event_count),
+    console_message_count: asNumber(raw.console_message_count),
+    page_error_count: asNumber(raw.page_error_count),
+    errors: asStringArray(raw.errors),
+  };
+}
+
+function normalizePageEvidenceList(raw: Record<string, unknown>, metadata: Record<string, unknown>): PageEvidence[] {
+  const candidates: unknown[] = [];
+  const addCandidate = (value: unknown) => {
+    if (Array.isArray(value)) {
+      candidates.push(...value);
+    } else if (value && typeof value === "object") {
+      candidates.push(value);
+    }
+  };
+
+  addCandidate(raw.page_evidence);
+  addCandidate(raw.page_evidence_items);
+  addCandidate(metadata.page_evidence);
+  addCandidate(metadata.page_evidence_items);
+
+  if (!candidates.length) {
+    const synthetic = {
+      status: metadata.page_evidence_status,
+      captured_at: metadata.page_evidence_captured_at,
+      summary: metadata.page_evidence_summary,
+      artifact_ids: metadata.page_evidence_artifact_ids,
+      screenshot_artifact_ids: metadata.page_evidence_screenshot_artifact_ids,
+      screenshot_paths: metadata.page_evidence_screenshot_paths,
+    };
+    if (Object.values(synthetic).some((item) => item !== undefined && item !== null)) {
+      candidates.push(synthetic);
+    }
+  }
+
+  const seen = new Set<string>();
+  return candidates.map(normalizePageEvidence).filter((item) => {
+    const key =
+      item.artifact_ids.join("|") ||
+      item.screenshot_artifact_ids.join("|") ||
+      item.screenshot_paths.join("|") ||
+      item.url ||
+      item.title ||
+      item.id;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function normalizePageInsight(value: unknown): PageInsight {
@@ -668,6 +914,7 @@ function normalizePageNode(value: unknown): WalkthroughMapResponse["nodes"][numb
     key_controls: asStringArray(raw.key_controls),
     issues: Array.isArray(raw.issues) ? raw.issues.map(normalizePageInsight) : [],
     observations: Array.isArray(raw.observations) ? raw.observations.map(normalizePageInsight) : [],
+    page_evidence: normalizePageEvidenceList(raw, metadata),
     screenshot_evidence: Array.isArray(raw.screenshot_evidence) ? raw.screenshot_evidence.map(normalizeScreenshotEvidence) : [],
     primary_screenshot_artifact_id: asNullableString(raw.primary_screenshot_artifact_id),
     evidence_ids: asStringArray(raw.evidence_ids),
@@ -747,7 +994,13 @@ export function normalizeWalkthroughMap(value: unknown): WalkthroughMapResponse 
       external_count: asNumber(summary.external_count, nodes.filter((node) => node.status === "external").length),
       screenshot_count: asNumber(
         summary.screenshot_count,
-        nodes.reduce((count, node) => count + node.screenshot_evidence.length, 0),
+        nodes.reduce(
+          (count, node) =>
+            count +
+            node.screenshot_evidence.length +
+            node.page_evidence.reduce((evidenceCount, evidence) => evidenceCount + evidence.screenshot_artifact_ids.length + evidence.screenshot_paths.length, 0),
+          0,
+        ),
       ),
       confidence: asNumber(summary.confidence),
     },

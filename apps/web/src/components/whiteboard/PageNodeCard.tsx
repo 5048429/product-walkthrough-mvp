@@ -57,14 +57,25 @@ export function PageNodeCard({ data, selected }: NodeProps<PageMapFlowNode>) {
   const evidenceCount = page.evidence_ids.length;
   const issueCount = page.issues.length;
   const screenshotCount = page.screenshot_evidence.length;
+  const pageEvidenceCount = page.page_evidence.length;
   const subtitle = page.route ?? page.metadata.normalized_route ?? shortUrl(page.url);
-  const controls = page.key_controls.slice(0, 2);
-  const hasVisualEvidence = screenshotCount > 0 || Boolean(page.primary_screenshot_artifact_id);
+  const controls = Array.from(new Set([...page.key_controls, ...page.page_evidence.flatMap((item) => item.controls)])).slice(0, 2);
+  const pageEvidenceScreenshotCount = page.page_evidence.reduce(
+    (count, item) => count + item.screenshot_artifact_ids.length + item.screenshot_paths.length,
+    0,
+  );
+  const hasVisualEvidence = screenshotCount > 0 || pageEvidenceScreenshotCount > 0 || Boolean(page.primary_screenshot_artifact_id);
 
   return (
     <article className={`page-node-card page-node-card-${page.status} ${selected ? "page-node-card-selected" : ""}`.trim()}>
-      <Handle type="target" position={Position.Left} className="page-node-handle page-node-handle-target" />
-      <Handle type="source" position={Position.Right} className="page-node-handle page-node-handle-source" />
+      <Handle id="target-left" type="target" position={Position.Left} className="page-node-handle page-node-handle-left" />
+      <Handle id="source-left" type="source" position={Position.Left} className="page-node-handle page-node-handle-left" />
+      <Handle id="target-right" type="target" position={Position.Right} className="page-node-handle page-node-handle-right" />
+      <Handle id="source-right" type="source" position={Position.Right} className="page-node-handle page-node-handle-right" />
+      <Handle id="target-top" type="target" position={Position.Top} className="page-node-handle page-node-handle-top" />
+      <Handle id="source-top" type="source" position={Position.Top} className="page-node-handle page-node-handle-top" />
+      <Handle id="target-bottom" type="target" position={Position.Bottom} className="page-node-handle page-node-handle-bottom" />
+      <Handle id="source-bottom" type="source" position={Position.Bottom} className="page-node-handle page-node-handle-bottom" />
       <div className="page-node-browser-bar">
         <span className="page-node-window-dots" aria-hidden="true">
           <i />
@@ -90,6 +101,7 @@ export function PageNodeCard({ data, selected }: NodeProps<PageMapFlowNode>) {
       <div className="page-node-meta">
         <span>{page.visit_count || 0} 次访问</span>
         <span>{evidenceCount} 条证据</span>
+        {pageEvidenceCount ? <span className="page-node-page-evidence">{pageEvidenceCount} 组页面采集</span> : null}
         {hasVisualEvidence ? <span>{screenshotCount || 1} 张截图</span> : null}
         {issueCount ? <span className="page-node-issue">{issueCount} 个问题</span> : null}
       </div>

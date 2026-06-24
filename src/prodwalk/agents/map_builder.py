@@ -89,6 +89,7 @@ class StepRecord:
     evidence_ids: list[str] = field(default_factory=list)
     event_ids: list[str] = field(default_factory=list)
     history_artifact_ids: list[str] = field(default_factory=list)
+    page_evidence: dict[str, Any] = field(default_factory=dict)
     captured_at: str | None = None
 
 
@@ -98,12 +99,16 @@ def build_walkthrough_map(
     evidence_payload: dict[str, Any],
     artifacts: list[dict[str, Any]] | None = None,
     browser_histories: list[dict[str, Any]] | None = None,
+    page_evidence_sources: list[dict[str, Any]] | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Build a safe page relationship map from run artifacts."""
 
     artifacts = [item for item in artifacts or [] if isinstance(item, dict)]
     browser_histories = [item for item in browser_histories or [] if isinstance(item, dict)]
+    page_evidence_sources = [item for item in page_evidence_sources or [] if isinstance(item, dict)]
+    if page_evidence_sources:
+        artifacts = _merge_page_evidence_source_artifacts(artifacts, page_evidence_sources)
     evidence_payload = evidence_payload if isinstance(evidence_payload, dict) else {}
 
     warnings: list[dict[str, Any]] = []
@@ -132,7 +137,7 @@ def build_walkthrough_map(
             }
         )
 
-    step_records = _step_records_from_evidence(evidence_payload, evidence_by_id, history_steps)
+    step_records = _step_records_from_evidence(evidence_payload, evidence_by_id, history_steps, artifacts)
     seen_step_keys = {
         (record.result_order, record.scenario_id, record.index)
         for record in step_records
@@ -199,6 +204,7 @@ def build_walkthrough_map(
             evidence_id=record.evidence_ids[0] if record.evidence_ids else None,
             step_index=record.index,
         )
+        _apply_page_evidence(node, record, canonical)
         _attach_step_observation(node, record)
         step_nodes.append((record, node_id))
 
@@ -337,8 +343,10 @@ def _step_records_from_evidence(
     payload: dict[str, Any],
     evidence_by_id: dict[str, dict[str, Any]],
     history_steps: list[_HistoryRecord],
+    artifacts: list[dict[str, Any]],
 ) -> list[StepRecord]:
     history_by_index = {record.index: record for record in history_steps}
+    page_evidence_artifacts = _page_evidence_artifact_lookup(artifacts)
     records: list[StepRecord] = []
     results = payload.get("results") if isinstance(payload.get("results"), list) else []
     for result_order, result in enumerate(results, start=1):
@@ -368,6 +376,7 @@ def _step_records_from_evidence(
             screenshot_refs = _step_screenshot_refs(step, evidence_items)
             if history:
                 screenshot_refs.extend(history.screenshot_refs)
+            page_evidence = _page_evidence_summary(evidence_items, page_evidence_artifacts)
             records.append(
                 StepRecord(
                     product=product,
@@ -386,6 +395,7 @@ def _step_records_from_evidence(
                     screenshot_refs=screenshot_refs,
                     evidence_ids=evidence_ids,
                     history_artifact_ids=list(history.history_artifact_ids) if history else [],
+                    page_evidence=page_evidence,
                 )
             )
     return records
@@ -416,6 +426,7 @@ def _new_node(
         "key_controls": [],
         "issues": [],
         "observations": [],
+        "page_evidence": [],
         "screenshot_evidence": [],
         "primary_screenshot_artifact_id": None,
         "evidence_ids": [],
@@ -533,6 +544,208 @@ def _attach_step_observation(node: dict[str, Any], record: StepRecord) -> None:
             "confidence": 0.72,
             "evidence_ids": list(record.evidence_ids),
             "source": "browser_step",
+        }
+    )
+
+
+def _apply_page_evidence(node: dict[str, Any], record: StepRecord, canonical: CanonicalUrl) -> None:
+    evidence = record.page_evidence
+    if not evidence:
+        return
+
+    metadata = node.setdefault("metadata", {})
+    page_meta = metadata.setdefault("page_evidence", {})
+    for artifact_id in evidence.get("artifact_ids") or []:
+        _append_unique(metadata.setdefault("source_page_evidence_artifact_ids", []), artifact_id, limit=24)
+        _append_unique(metadata.setdefault("page_evidence_artifact_ids", []), artifact_id, limit=24)
+        _append_unique(page_meta.setdefault("artifact_ids", []), artifact_id, limit=24)
+    page_meta["capture_count"] = int(page_meta.get("capture_count") or 0) + 1
+    metadata["page_evidence_capture_count"] = int(metadata.get("page_evidence_capture_count") or 0) + 1
+
+    title = _clean_title(evidence.get("title"), canonical.host)
+    page_name = _safe_text(evidence.get("page_name"), limit=120)
+    preferred_name = page_name or title
+    if title:
+        _append_unique(metadata.setdefault("raw_titles", []), title)
+        if node.get("title") is None:
+            node["title"] = title
+    route_name = _name_from_route(canonical.normalized_route, canonical.host)
+    if page_name and str(node.get("name") or "").lower() == route_name.lower():
+        node["name"] = page_name
+    elif preferred_name and _is_better_name(preferred_name, node.get("name"), canonical.normalized_route):
+        node["name"] = preferred_name
+
+    page_type = _safe_page_type(evidence.get("page_type"))
+    if page_type and node.get("page_type") not in {"error", "external"}:
+        node["page_type"] = page_type
+    elif node.get("page_type") == "unknown":
+        inferred = _page_type(canonical.normalized_route, title, evidence.get("text_excerpt"))
+        if inferred != "unknown":
+            node["page_type"] = inferred
+
+    purpose = _safe_text(evidence.get("purpose"), limit=260)
+    if purpose:
+        page_meta["purpose"] = purpose
+    for control in evidence.get("key_controls") or []:
+        _append_unique(node["key_controls"], control, limit=12)
+        _append_unique(page_meta.setdefault("controls", []), control, limit=12)
+
+    for key in ("status", "captured_at"):
+        value = _safe_text(evidence.get(key), limit=80)
+        if value:
+            page_meta[key] = value
+    for key in ("network_event_count", "console_message_count", "page_error_count", "element_count"):
+        if evidence.get(key) is not None:
+            page_meta[key] = _int_or_none(evidence.get(key)) or 0
+    if evidence.get("text_excerpt"):
+        page_meta["text_excerpt"] = evidence["text_excerpt"]
+    if evidence.get("dom_summary"):
+        page_meta["dom_summary"] = evidence["dom_summary"]
+    if evidence.get("artifacts"):
+        page_meta["artifacts"] = evidence["artifacts"]
+    if evidence.get("screenshot_paths"):
+        page_meta["screenshot_paths"] = evidence["screenshot_paths"]
+
+    _append_page_evidence_capture(node, record, evidence)
+
+    summary_parts = []
+    if evidence.get("text_excerpt"):
+        summary_parts.append(f"Visible text: {evidence['text_excerpt']}")
+    if evidence.get("key_controls"):
+        summary_parts.append("Key controls: " + ", ".join(evidence["key_controls"][:6]))
+    if not summary_parts:
+        return
+
+    summary = _safe_text(" ".join(summary_parts), limit=600)
+    existing = {item["summary"] for item in node["observations"]}
+    if summary in existing or len(node["observations"]) >= 5:
+        return
+    node["observations"].append(
+        {
+            "id": f"ins_{node['id']}_{len(node['observations']) + 1}",
+            "kind": "observation",
+            "title": f"Step {record.index} page evidence" if record.index is not None else "Page evidence",
+            "summary": summary,
+            "severity": "info",
+            "confidence": 0.78,
+            "evidence_ids": list(record.evidence_ids),
+            "source": "page_evidence",
+        }
+    )
+
+
+def _append_page_evidence_capture(node: dict[str, Any], record: StepRecord, evidence: dict[str, Any]) -> None:
+    captures = node.setdefault("page_evidence", [])
+    artifact_ids = _unique_list(_string_list(evidence.get("artifact_ids")))
+    screenshot_paths = _unique_list(_string_list(evidence.get("screenshot_paths")))
+    screenshot_artifact_ids = _page_evidence_screenshot_artifact_ids(node, record.evidence_ids, screenshot_paths)
+    capture_key = record.evidence_ids[0] if record.evidence_ids else "|".join(artifact_ids + screenshot_paths)
+    capture_id = f"pev_{slugify(capture_key or str(node.get('id') or 'page-evidence'))[:72]}"
+    if capture_id == "pev_":
+        capture_id = f"pev_{len(captures) + 1}"
+
+    item = {
+        "id": capture_id,
+        "status": _safe_text(evidence.get("status"), limit=80) or "completed",
+        "title": _safe_text(evidence.get("title") or evidence.get("page_name"), limit=160) or None,
+        "url": _safe_text(evidence.get("url"), limit=260) or node.get("canonical_url"),
+        "summary": _safe_text(evidence.get("purpose") or evidence.get("text_excerpt"), limit=420) or None,
+        "captured_at": _safe_text(evidence.get("captured_at"), limit=80) or None,
+        "controls": _unique_list(_string_list(evidence.get("key_controls")))[:12],
+        "text_observations": [_safe_text(evidence.get("text_excerpt"), limit=420)] if evidence.get("text_excerpt") else [],
+        "dom_observations": [_safe_text(evidence.get("dom_summary"), limit=260)] if evidence.get("dom_summary") else [],
+        "screenshot_artifact_ids": screenshot_artifact_ids,
+        "screenshot_paths": screenshot_paths,
+        "artifact_ids": artifact_ids,
+        "artifacts": _safe_page_evidence_artifact_refs(evidence.get("artifacts")),
+        "network_event_count": _int_or_none(evidence.get("network_event_count")) or 0,
+        "console_message_count": _int_or_none(evidence.get("console_message_count")) or 0,
+        "page_error_count": _int_or_none(evidence.get("page_error_count")) or 0,
+        "errors": _unique_list([_safe_text(error, limit=180) for error in evidence.get("errors") or [] if _safe_text(error, limit=180)])[:5],
+    }
+
+    existing = next((capture for capture in captures if capture.get("id") == capture_id), None)
+    if existing is None:
+        captures.append(item)
+    else:
+        _merge_page_evidence_capture(existing, item)
+
+    if item["errors"]:
+        _append_page_insight(
+            node,
+            kind="issue",
+            title="Page evidence capture issue",
+            summary="; ".join(item["errors"][:2]),
+            evidence_ids=record.evidence_ids,
+            source="page_evidence",
+            severity="low",
+            confidence=0.52,
+        )
+
+
+def _page_evidence_screenshot_artifact_ids(
+    node: dict[str, Any],
+    evidence_ids: list[str],
+    screenshot_paths: list[str],
+) -> list[str]:
+    target_evidence_ids = set(evidence_ids)
+    target_paths = set(screenshot_paths)
+    artifact_ids: list[str] = []
+    for screenshot in node.get("screenshot_evidence") or []:
+        if not isinstance(screenshot, dict):
+            continue
+        matches_evidence = bool(target_evidence_ids and screenshot.get("evidence_id") in target_evidence_ids)
+        matches_path = bool(target_paths and screenshot.get("path") in target_paths)
+        if not matches_evidence and not matches_path:
+            continue
+        artifact_id = _safe_text(screenshot.get("artifact_id"), limit=120)
+        if artifact_id:
+            _append_unique(artifact_ids, artifact_id, limit=8)
+    return artifact_ids
+
+
+def _merge_page_evidence_capture(target: dict[str, Any], source: dict[str, Any]) -> None:
+    for key in ("title", "url", "summary", "captured_at"):
+        if not target.get(key) and source.get(key):
+            target[key] = source[key]
+    for key in ("network_event_count", "console_message_count", "page_error_count"):
+        target[key] = max(int(target.get(key) or 0), int(source.get(key) or 0))
+    for key in ("controls", "text_observations", "dom_observations", "screenshot_artifact_ids", "screenshot_paths", "artifact_ids", "errors"):
+        for value in source.get(key) or []:
+            _append_unique(target.setdefault(key, []), value, limit=24)
+    for artifact in source.get("artifacts") or []:
+        existing_keys = {item.get("artifact_id") or item.get("path") for item in target.setdefault("artifacts", []) if isinstance(item, dict)}
+        artifact_key = artifact.get("artifact_id") or artifact.get("path")
+        if artifact_key not in existing_keys:
+            target["artifacts"].append(artifact)
+
+
+def _append_page_insight(
+    node: dict[str, Any],
+    *,
+    kind: str,
+    title: str,
+    summary: str,
+    evidence_ids: list[str],
+    source: str,
+    confidence: float,
+    severity: str = "info",
+) -> None:
+    target = node["issues"] if kind == "issue" else node["observations"]
+    if any(item.get("summary") == summary and item.get("title") == title for item in target):
+        return
+    if len(target) >= 7:
+        return
+    target.append(
+        {
+            "id": f"ins_{node['id']}_{source}_{len(target) + 1}",
+            "kind": kind,
+            "title": title,
+            "summary": summary,
+            "severity": severity,
+            "confidence": confidence,
+            "evidence_ids": _unique_list(evidence_ids),
+            "source": source,
         }
     )
 
@@ -1107,13 +1320,53 @@ def _products_from_payload(payload: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def _source_artifact_ids(artifacts: list[dict[str, Any]]) -> list[str]:
-    source_types = {"evidence_json", "report_markdown", "evaluation_json", "browser_history"}
+    source_types = {
+        "evidence_json",
+        "report_markdown",
+        "evaluation_json",
+        "browser_history",
+        "page_evidence_manifest",
+        "page_html",
+        "page_text",
+        "page_elements",
+        "dom_snapshot",
+        "accessibility_tree",
+        "network_log",
+        "console_log",
+    }
     ids = [
         str(item.get("id"))
         for item in artifacts
         if item.get("type") in source_types and item.get("id") and item.get("id") != WALKTHROUGH_MAP_ARTIFACT_ID
     ]
     return _unique_list(ids)
+
+
+def _merge_page_evidence_source_artifacts(
+    artifacts: list[dict[str, Any]],
+    page_evidence_sources: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged = list(artifacts)
+    seen = {
+        str(item.get("id") or item.get("artifact_id") or item.get("path") or "")
+        for item in merged
+        if item.get("id") or item.get("artifact_id") or item.get("path")
+    }
+    for source in page_evidence_sources:
+        item = dict(source)
+        artifact_id = item.get("id") or item.get("artifact_id")
+        if artifact_id:
+            item["id"] = str(artifact_id)
+        path = _safe_run_relative_path(item.get("path"), allowed_prefix="page-evidence")
+        if not path:
+            continue
+        item["path"] = path
+        key = str(item.get("id") or path)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
 
 
 def _evidence_by_id(raw_evidence: Any) -> dict[str, dict[str, Any]]:
@@ -1137,6 +1390,31 @@ def _screenshot_artifact_lookup(artifacts: list[dict[str, Any]]) -> dict[str, di
     return lookup
 
 
+def _page_evidence_artifact_lookup(artifacts: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    lookup: dict[str, dict[str, Any]] = {}
+    for artifact in artifacts:
+        artifact_type = str(artifact.get("type") or "")
+        if artifact_type not in {
+            "page_evidence_manifest",
+            "page_html",
+            "page_text",
+            "page_elements",
+            "accessibility_tree",
+            "dom_snapshot",
+            "network_log",
+            "console_log",
+        }:
+            continue
+        artifact_id = str(artifact.get("id") or "")
+        rel_path = _safe_run_relative_path(artifact.get("path"), allowed_prefix="page-evidence")
+        if not rel_path:
+            continue
+        for key in {artifact_id, rel_path, PurePosixPath(rel_path).name}:
+            if key:
+                lookup[key] = artifact
+    return lookup
+
+
 def _artifact_for_ref(ref: str, lookup: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     if not isinstance(ref, str) or not ref.strip():
         return None
@@ -1150,6 +1428,384 @@ def _artifact_for_ref(ref: str, lookup: dict[str, dict[str, Any]]) -> dict[str, 
     if name in lookup:
         return lookup[name]
     return None
+
+
+def _page_evidence_summary(
+    evidence_items: list[dict[str, Any]],
+    page_evidence_artifacts: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    summaries: list[dict[str, Any]] = []
+    for item in evidence_items:
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        page_evidence = data.get("page_evidence")
+        if not isinstance(page_evidence, dict):
+            continue
+        summaries.append(_page_evidence_summary_from_data(page_evidence, page_evidence_artifacts))
+    if not summaries:
+        return {}
+
+    merged: dict[str, Any] = {"artifact_ids": [], "key_controls": [], "artifacts": [], "screenshot_paths": [], "errors": []}
+    for summary in summaries:
+        for key in (
+            "status",
+            "captured_at",
+            "url",
+            "title",
+            "page_name",
+            "page_type",
+            "purpose",
+            "text_excerpt",
+            "dom_summary",
+        ):
+            if summary.get(key) and not merged.get(key):
+                merged[key] = summary[key]
+        for key in ("network_event_count", "console_message_count", "page_error_count", "element_count"):
+            if summary.get(key) is not None:
+                merged[key] = max(int(merged.get(key) or 0), int(summary.get(key) or 0))
+        for artifact_id in summary.get("artifact_ids") or []:
+            _append_unique(merged["artifact_ids"], artifact_id, limit=24)
+        for control in summary.get("key_controls") or []:
+            _append_unique(merged["key_controls"], control, limit=12)
+        for path in summary.get("screenshot_paths") or []:
+            _append_unique(merged["screenshot_paths"], path, limit=8)
+        for error in summary.get("errors") or []:
+            _append_unique(merged["errors"], error, limit=5)
+        for artifact in summary.get("artifacts") or []:
+            if not isinstance(artifact, dict):
+                continue
+            existing_keys = {
+                item.get("artifact_id") or item.get("path")
+                for item in merged["artifacts"]
+                if isinstance(item, dict)
+            }
+            artifact_key = artifact.get("artifact_id") or artifact.get("path")
+            if artifact_key not in existing_keys:
+                merged["artifacts"].append(artifact)
+    return {key: value for key, value in merged.items() if value not in ("", [], None)}
+
+
+def _page_evidence_summary_from_data(
+    page_evidence: dict[str, Any],
+    page_evidence_artifacts: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    artifact_refs = _page_evidence_artifact_refs(page_evidence)
+    artifacts = [_artifact_for_ref(ref, page_evidence_artifacts) for ref in artifact_refs]
+    artifacts = [artifact for artifact in artifacts if artifact is not None]
+    payload_by_type: dict[str, list[Any]] = {}
+    artifact_ids: list[str] = []
+    for artifact in artifacts:
+        artifact_id = str(artifact.get("id") or "")
+        if artifact_id:
+            _append_unique(artifact_ids, artifact_id, limit=24)
+        artifact_type = str(artifact.get("type") or "")
+        if "payload" in artifact:
+            payload_by_type.setdefault(artifact_type, []).append(artifact.get("payload"))
+
+    manifest_payload = _first_dict(payload_by_type.get("page_evidence_manifest"))
+    text_payload = _first_dict(payload_by_type.get("page_text"))
+    elements_payload = _first_dict(payload_by_type.get("page_elements"))
+    dom_payload = _first_dict(payload_by_type.get("dom_snapshot"))
+    accessibility_payload = _first_dict(payload_by_type.get("accessibility_tree"))
+    errors = _string_list(page_evidence.get("errors") if isinstance(page_evidence.get("errors"), list) else [])
+    if manifest_payload and isinstance(manifest_payload.get("errors"), list):
+        errors.extend(_string_list(manifest_payload["errors"]))
+    if manifest_payload and isinstance(manifest_payload.get("page_errors"), list):
+        errors.extend(_string_list(manifest_payload["page_errors"]))
+
+    title = (
+        _safe_text(page_evidence.get("page_name"), limit=120)
+        or _safe_text(page_evidence.get("name"), limit=120)
+        or _safe_text(page_evidence.get("title"), limit=160)
+        or _safe_text(manifest_payload.get("title") if manifest_payload else None, limit=160)
+    )
+    text_excerpt = _text_excerpt_from_page_evidence(page_evidence, text_payload)
+    key_controls = _controls_from_page_evidence(page_evidence, elements_payload, accessibility_payload)
+    dom_summary = _dom_summary(dom_payload, elements_payload, accessibility_payload)
+    page_type = _safe_page_type(page_evidence.get("page_type") or page_evidence.get("type"))
+    if page_type is None:
+        page_type = _page_type(
+            _safe_text(page_evidence.get("url") or (manifest_payload or {}).get("url"), limit=240),
+            title,
+            f"{text_excerpt} {' '.join(key_controls)}",
+        )
+
+    return {
+        "status": _safe_text(page_evidence.get("status") or (manifest_payload or {}).get("status"), limit=80),
+        "captured_at": _safe_text(page_evidence.get("captured_at") or (manifest_payload or {}).get("captured_at"), limit=80),
+        "url": _safe_text(page_evidence.get("url") or (manifest_payload or {}).get("url"), limit=240),
+        "title": title,
+        "page_name": title,
+        "page_type": page_type,
+        "purpose": _safe_text(page_evidence.get("purpose"), limit=260),
+        "text_excerpt": text_excerpt,
+        "dom_summary": dom_summary,
+        "key_controls": key_controls,
+        "artifact_ids": artifact_ids,
+        "artifacts": _page_evidence_artifact_ref_items(artifact_refs, page_evidence_artifacts),
+        "screenshot_paths": _page_evidence_screenshot_paths(page_evidence),
+        "network_event_count": _int_or_none(page_evidence.get("network_event_count")),
+        "console_message_count": _int_or_none(page_evidence.get("console_message_count")),
+        "page_error_count": _int_or_none(page_evidence.get("page_error_count")) or len(errors),
+        "element_count": _element_count(elements_payload),
+        "errors": _unique_list(errors)[:5],
+    }
+
+
+def _page_evidence_artifact_refs(page_evidence: dict[str, Any]) -> list[str]:
+    refs: list[Any] = []
+    for key in (
+        "manifest_path",
+        "html_path",
+        "page_html_path",
+        "text_path",
+        "elements_path",
+        "dom_snapshot_path",
+        "accessibility_tree_path",
+        "network_log_path",
+        "console_log_path",
+    ):
+        refs.append(page_evidence.get(key))
+    artifact_paths = page_evidence.get("artifact_paths")
+    if isinstance(artifact_paths, list):
+        refs.extend(artifact_paths)
+    return _string_list(refs)
+
+
+def _page_evidence_artifact_ref_items(
+    refs: list[str],
+    page_evidence_artifacts: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ref in refs:
+        path = _safe_run_relative_path(ref, allowed_prefix="page-evidence")
+        if not path:
+            continue
+        artifact = _artifact_for_ref(ref, page_evidence_artifacts)
+        artifact_type = str(artifact.get("type") or "") if artifact else ""
+        metadata = artifact.get("metadata") if artifact and isinstance(artifact.get("metadata"), dict) else {}
+        artifact_id = _safe_text(artifact.get("id"), limit=120) if artifact else ""
+        key = artifact_id or path
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(
+            {
+                "kind": _page_evidence_artifact_kind(artifact_type, path),
+                "label": _page_evidence_artifact_label(artifact_type, path),
+                "artifact_id": artifact_id or None,
+                "path": path,
+                "content_url": _safe_api_url(metadata.get("content_url")) or _safe_api_url(metadata.get("path_url")),
+            }
+        )
+    return items
+
+
+def _safe_page_evidence_artifact_refs(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    refs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        path = _safe_run_relative_path(item.get("path"), allowed_prefix="page-evidence")
+        artifact_id = _safe_text(item.get("artifact_id"), limit=120) or None
+        key = artifact_id or path
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        refs.append(
+            {
+                "kind": _safe_text(item.get("kind"), limit=40) or _page_evidence_artifact_kind("", path or ""),
+                "label": _safe_text(item.get("label"), limit=80) or _page_evidence_artifact_label("", path or ""),
+                "artifact_id": artifact_id,
+                "path": path,
+                "content_url": _safe_api_url(item.get("content_url")),
+            }
+        )
+    return refs
+
+
+def _page_evidence_screenshot_paths(page_evidence: dict[str, Any]) -> list[str]:
+    refs: list[Any] = [
+        page_evidence.get("viewport_screenshot_path"),
+        page_evidence.get("full_page_screenshot_path"),
+        page_evidence.get("screenshot_path"),
+    ]
+    screenshot_paths = page_evidence.get("screenshot_paths")
+    if isinstance(screenshot_paths, list):
+        refs.extend(screenshot_paths)
+    paths: list[str] = []
+    for ref in refs:
+        path = _safe_run_relative_path(ref, allowed_prefix="screenshots")
+        if path:
+            _append_unique(paths, path, limit=8)
+    return paths
+
+
+def _page_evidence_artifact_kind(artifact_type: str, path: str) -> str:
+    by_type = {
+        "page_evidence_manifest": "manifest",
+        "page_html": "html",
+        "page_text": "text",
+        "page_elements": "elements",
+        "dom_snapshot": "dom",
+        "accessibility_tree": "accessibility",
+        "network_log": "network",
+        "console_log": "console",
+    }
+    if artifact_type in by_type:
+        return by_type[artifact_type]
+    name = PurePosixPath(path).name.lower()
+    if name == "manifest.json":
+        return "manifest"
+    if name.endswith(".html"):
+        return "html"
+    return PurePosixPath(path).stem.replace("_", "-") or "artifact"
+
+
+def _page_evidence_artifact_label(artifact_type: str, path: str) -> str:
+    by_kind = {
+        "manifest": "Page evidence manifest",
+        "html": "Page HTML",
+        "text": "Visible text",
+        "elements": "Interactive elements",
+        "dom": "DOM snapshot",
+        "accessibility": "Accessibility tree",
+        "network": "Network log",
+        "console": "Console log",
+    }
+    return by_kind.get(_page_evidence_artifact_kind(artifact_type, path), PurePosixPath(path).name or "Page evidence artifact")
+
+
+def _text_excerpt_from_page_evidence(page_evidence: dict[str, Any], text_payload: dict[str, Any] | None) -> str:
+    candidates = [
+        page_evidence.get("text"),
+        page_evidence.get("text_excerpt"),
+        page_evidence.get("summary"),
+        text_payload.get("text") if text_payload else None,
+    ]
+    for candidate in candidates:
+        text = _safe_text(candidate, limit=360)
+        if text:
+            return text
+    return ""
+
+
+def _controls_from_page_evidence(
+    page_evidence: dict[str, Any],
+    elements_payload: dict[str, Any] | None,
+    accessibility_payload: dict[str, Any] | None,
+) -> list[str]:
+    controls: list[str] = []
+    for key in ("key_controls", "controls"):
+        values = page_evidence.get(key)
+        if isinstance(values, list):
+            for value in values:
+                label = _safe_text(value, limit=80)
+                if label:
+                    _append_unique(controls, label, limit=12)
+
+    items = elements_payload.get("items") if elements_payload else None
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict) or item.get("visible") is False or item.get("disabled") is True:
+                continue
+            tag = str(item.get("tag") or "").lower()
+            role = str(item.get("role") or "").lower()
+            input_type = str(item.get("type") or "").lower()
+            if tag not in {"a", "button", "input", "select", "textarea", "summary"} and role not in {
+                "button",
+                "link",
+                "menuitem",
+                "tab",
+                "checkbox",
+                "combobox",
+                "searchbox",
+                "textbox",
+            }:
+                continue
+            if input_type in {"hidden", "password"}:
+                continue
+            label = (
+                _safe_text(item.get("text"), limit=80)
+                or _safe_text(item.get("aria_label"), limit=80)
+                or _safe_text(item.get("placeholder"), limit=80)
+                or _safe_text(item.get("name"), limit=80)
+            )
+            if label:
+                _append_unique(controls, label, limit=12)
+
+    ax_nodes = accessibility_payload.get("nodes") if accessibility_payload else None
+    if isinstance(ax_nodes, list):
+        for node in ax_nodes:
+            if not isinstance(node, dict):
+                continue
+            role = _ax_value(node.get("role")).lower()
+            if role not in {"button", "link", "menuitem", "tab", "checkbox", "combobox", "searchbox", "textbox"}:
+                continue
+            label = _safe_text(_ax_value(node.get("name")), limit=80)
+            if label:
+                _append_unique(controls, label, limit=12)
+    return controls[:12]
+
+
+def _dom_summary(
+    dom_payload: dict[str, Any] | None,
+    elements_payload: dict[str, Any] | None,
+    accessibility_payload: dict[str, Any] | None,
+) -> str:
+    parts: list[str] = []
+    element_count = _element_count(elements_payload)
+    if element_count:
+        parts.append(f"{element_count} interactive elements captured")
+    documents = dom_payload.get("documents") if dom_payload else None
+    if isinstance(documents, list):
+        parts.append(f"{len(documents)} DOM document snapshots")
+    ax_nodes = accessibility_payload.get("nodes") if accessibility_payload else None
+    if isinstance(ax_nodes, list):
+        parts.append(f"{len(ax_nodes)} accessibility nodes")
+    return _safe_text("; ".join(parts), limit=220)
+
+
+def _element_count(elements_payload: dict[str, Any] | None) -> int | None:
+    items = elements_payload.get("items") if elements_payload else None
+    return len(items) if isinstance(items, list) else None
+
+
+def _first_dict(values: list[Any] | None) -> dict[str, Any] | None:
+    for value in values or []:
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def _ax_value(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("value") or "")
+    return str(value or "")
+
+
+def _safe_page_type(value: Any) -> str | None:
+    text = _safe_text(value, limit=40).lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "login": "auth",
+        "signin": "auth",
+        "sign_in": "auth",
+        "home": "dashboard",
+        "overview": "dashboard",
+        "table": "list",
+        "record_list": "list",
+        "record_detail": "detail",
+        "details": "detail",
+        "configuration": "settings",
+        "edit": "form",
+        "create": "form",
+    }
+    text = aliases.get(text, text)
+    return text if text in {"dashboard", "list", "detail", "settings", "form", "auth", "error", "external", "unknown"} else None
+
 
 
 def _normalize_path(path: str) -> tuple[str, bool]:
@@ -1231,6 +1887,13 @@ def _step_screenshot_refs(step: dict[str, Any], evidence_items: list[dict[str, A
         screenshot_paths = data.get("screenshot_paths")
         if isinstance(screenshot_paths, list):
             refs.extend(screenshot_paths)
+        page_evidence = data.get("page_evidence")
+        if isinstance(page_evidence, dict):
+            for key in ("viewport_screenshot_path", "full_page_screenshot_path", "screenshot_path"):
+                refs.append(page_evidence.get(key))
+            nested_screenshots = page_evidence.get("screenshot_paths")
+            if isinstance(nested_screenshots, list):
+                refs.extend(nested_screenshots)
     return _string_list(refs)
 
 
@@ -1264,6 +1927,9 @@ def _safe_text(value: Any, *, limit: int) -> str:
     for pattern in SENSITIVE_TEXT_PATTERNS:
         text = pattern.sub("<redacted>", text)
     text = re.sub(r"(?i)(password|token|secret|credential|api[_ -]?key)\s*[:=]\s*[^\s,;]+", r"\1=<redacted>", text)
+    text = re.sub(r"(?i)(storage_state|user_data_dir|profile_dir)\s*[:=]\s*[^\s\"'<>;,]+", "<redacted-path>", text)
+    text = re.sub(r"[A-Za-z]:[\\/][^\s\"'<>]+", "<redacted-path>", text)
+    text = re.sub(r"(?<!http:)(?<!https:)(?:/Users|/home|/tmp|/private/tmp|/var/folders)/[^\s\"'<>]+", "<redacted-path>", text)
     text = re.sub(r"\s+", " ", text)
     if len(text) > limit:
         text = text[: limit - 1].rstrip() + "..."
@@ -1389,6 +2055,11 @@ def _key_functions(node: dict[str, Any]) -> list[str]:
 def _purpose(node: dict[str, Any]) -> str:
     name = str(node.get("name") or "This page")
     page_type = str(node.get("page_type") or "unknown")
+    page_evidence = node.get("metadata", {}).get("page_evidence")
+    if isinstance(page_evidence, dict):
+        purpose = _safe_text(page_evidence.get("purpose"), limit=260)
+        if purpose:
+            return purpose
     if page_type == "dashboard":
         return f"{name} provides an overview surface observed during the walkthrough."
     if page_type == "list":
