@@ -310,6 +310,90 @@ def test_build_map_uses_page_evidence_for_node_insights_controls_and_screenshots
     assert "storage_state" not in serialized
 
 
+def test_build_map_accepts_page_evidence_without_control_list() -> None:
+    payload = {
+        "plan": {"products": [{"name": "Example", "kind": "owned", "url": "https://example.test/analytics"}]},
+        "results": [
+            {
+                "product": "Example",
+                "product_kind": "owned",
+                "scenario_id": "page-evidence-empty-controls",
+                "status": "completed",
+                "steps": [
+                    {
+                        "index": 1,
+                        "action": "observe",
+                        "status": "passed",
+                        "observation": "Navigated to https://example.test/analytics and captured analytics page evidence.",
+                        "url": "https://example.test/analytics",
+                        "evidence_ids": ["ev-analytics"],
+                    }
+                ],
+            }
+        ],
+        "evidence": [
+            {
+                "id": "ev-analytics",
+                "product": "Example",
+                "scenario_id": "page-evidence-empty-controls",
+                "kind": "browser_step",
+                "title": "Browser step 1",
+                "summary": "Captured analytics page evidence.",
+                "url": "https://example.test/analytics",
+                "data": {
+                    "page_evidence": {
+                        "status": "partial",
+                        "title": "Clink",
+                        "manifest_path": "page-evidence/analytics/manifest.json",
+                        "artifact_paths": ["page-evidence/analytics/manifest.json"],
+                        "screenshot_paths": ["screenshots/analytics.png"],
+                        "errors": ["Navigation/capture load issue"],
+                    }
+                },
+            }
+        ],
+    }
+    artifacts = [
+        {
+            "id": "art_screenshot_analytics",
+            "run_id": "run-page-evidence-no-controls",
+            "type": "screenshot",
+            "title": "analytics.png",
+            "path": "screenshots/analytics.png",
+            "media_type": "image/png",
+            "size_bytes": 10,
+            "created_at": "2026-06-24T00:00:01Z",
+            "metadata": {},
+        },
+        {
+            "id": "art_manifest_analytics",
+            "run_id": "run-page-evidence-no-controls",
+            "type": "page_evidence_manifest",
+            "title": "manifest.json",
+            "path": "page-evidence/analytics/manifest.json",
+            "media_type": "application/json",
+            "size_bytes": 10,
+            "created_at": "2026-06-24T00:00:01Z",
+            "metadata": {},
+            "payload": {"title": "Clink", "url": "https://example.test/analytics"},
+        },
+    ]
+
+    walkthrough_map = build_walkthrough_map(
+        run_id="run-page-evidence-no-controls",
+        evidence_payload=payload,
+        artifacts=artifacts,
+        browser_histories=[],
+        generated_at="2026-06-24T00:00:02Z",
+    )
+
+    node = next(item for item in walkthrough_map["nodes"] if item["route"] == "/analytics")
+    assert node["page_evidence"][0]["controls"] == []
+    assert node["page_evidence"][0]["artifact_ids"] == ["art_manifest_analytics"]
+    assert node["page_evidence"][0]["screenshot_artifact_ids"] == ["art_screenshot_analytics"]
+    assert any("https://example.test/analytics" in item["summary"] for item in node["observations"])
+
+
 def test_build_map_works_without_browser_history() -> None:
     payload = {
         "plan": {"products": [{"name": "Example", "kind": "owned", "url": "https://example.test/a"}]},

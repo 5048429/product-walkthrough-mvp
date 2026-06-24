@@ -1933,7 +1933,7 @@ def _safe_text(value: Any, *, limit: int) -> str:
         text = pattern.sub("<redacted>", text)
     text = re.sub(r"(?i)(password|token|secret|credential|api[_ -]?key)\s*[:=]\s*[^\s,;]+", r"\1=<redacted>", text)
     text = re.sub(r"(?i)(storage_state|user_data_dir|profile_dir)\s*[:=]\s*[^\s\"'<>;,]+", "<redacted-path>", text)
-    text = re.sub(r"[A-Za-z]:[\\/][^\s\"'<>]+", "<redacted-path>", text)
+    text = re.sub(r"(?<![A-Za-z])[A-Za-z]:[\\/][^\s\"'<>]+", "<redacted-path>", text)
     text = re.sub(r"(?<!http:)(?<!https:)(?:/Users|/home|/tmp|/private/tmp|/var/folders)/[^\s\"'<>]+", "<redacted-path>", text)
     text = re.sub(r"\s+", " ", text)
     if len(text) > limit:
@@ -2135,7 +2135,9 @@ def _roughly_matches(label: str, target_name: str) -> bool:
     return bool(left and right and left.intersection(right))
 
 
-def _string_list(values: list[Any]) -> list[str]:
+def _string_list(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
     return [str(value).strip() for value in values if isinstance(value, str) and value.strip()]
 
 
