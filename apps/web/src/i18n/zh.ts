@@ -86,6 +86,14 @@ const artifactTypeLabels: Record<ArtifactType | string, string> = {
   evaluation_json: "评分文件",
   screenshot: "截图",
   browser_history: "浏览器历史",
+  page_evidence_manifest: "页面证据清单",
+  page_html: "页面 HTML",
+  page_text: "页面文本",
+  page_elements: "页面元素",
+  dom_snapshot: "DOM 快照",
+  accessibility_tree: "可访问性树",
+  network_log: "网络日志",
+  console_log: "控制台日志",
   log_text: "日志",
 };
 

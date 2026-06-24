@@ -79,6 +79,14 @@ const artifactTypes = new Set<ArtifactType>([
   "walkthrough_map",
   "screenshot",
   "browser_history",
+  "page_evidence_manifest",
+  "page_html",
+  "page_text",
+  "page_elements",
+  "dom_snapshot",
+  "accessibility_tree",
+  "network_log",
+  "console_log",
   "log_text",
 ]);
 

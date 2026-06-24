@@ -44,6 +44,14 @@ export type ArtifactType =
   | "walkthrough_map"
   | "screenshot"
   | "browser_history"
+  | "page_evidence_manifest"
+  | "page_html"
+  | "page_text"
+  | "page_elements"
+  | "dom_snapshot"
+  | "accessibility_tree"
+  | "network_log"
+  | "console_log"
   | "log_text";
 
 export type EventLevel = "debug" | "info" | "warn" | "error";

@@ -26,6 +26,7 @@ from ..models import (
     utc_now,
 )
 from ..credentials import CredentialStore, normalize_ref
+from .page_evidence import PageEvidenceCollector
 
 
 class BrowserWalker(ABC):
@@ -181,6 +182,7 @@ class BrowserUseLocalWalker(BrowserWalker):
             create_parent=True,
         )
         self.record_video_dir = os.getenv("BROWSER_USE_RECORD_VIDEO_DIR") or None
+        self.collect_page_evidence = self._bool_env("BROWSER_USE_COLLECT_PAGE_EVIDENCE", default=True)
 
     async def walk(self, product: ProductTarget, scenario: Scenario) -> WalkthroughResult:
         started_at = utc_now()
@@ -247,6 +249,7 @@ class BrowserUseLocalWalker(BrowserWalker):
                     "timed_out": run_data.get("timed_out", False),
                     "history_file": run_data.get("history_file"),
                     "screenshot_paths": run_data.get("screenshot_paths", []),
+                    "page_evidence_count": run_data.get("page_evidence_count", 0),
                     "urls": run_data.get("urls", []),
                     "action_names": run_data.get("action_names", []),
                     "errors": run_data.get("errors", []),
@@ -317,6 +320,7 @@ class BrowserUseLocalWalker(BrowserWalker):
                 "blocker_count": blocker_count,
                 "completion_score": 1.0 if status == "completed" else 0.0,
                 "browser_steps": run_data.get("step_count", 0),
+                "page_evidence_count": run_data.get("page_evidence_count", 0),
                 "run_timeout_sec": self.run_timeout_sec,
                 "timed_out": run_data.get("timed_out", False),
             },
@@ -429,18 +433,67 @@ focused and stop after roughly {self.max_steps} meaningful browser steps.
         except Exception:
             history_file = None
         observations = self._extract_observations(history_file)
+        await self._close_agent_after_run(agent)
+        await self._attach_page_evidence(task, observations, sensitive_data)
         errors = [error for observation in observations for error in observation.get("errors", [])]
 
         return {
             "output": self._redact_sensitive_text(str(history.final_result() or ""), sensitive_data),
             "history_file": history_file,
             "screenshot_paths": history.screenshot_paths(),
+            "page_evidence_count": sum(1 for observation in observations if observation.get("page_evidence")),
             "urls": history.urls(),
             "action_names": history.action_names(),
             "step_count": history.number_of_steps(),
             "observations": observations,
             "errors": errors,
         }
+
+    async def _close_agent_after_run(self, agent: Any) -> None:
+        close = getattr(agent, "close", None)
+        if not callable(close):
+            return
+        try:
+            result = close()
+            if inspect.isawaitable(result):
+                await asyncio.wait_for(result, timeout=10)
+        except Exception:
+            pass
+
+    async def _attach_page_evidence(
+        self,
+        task: str,
+        observations: list[dict[str, Any]],
+        sensitive_data: dict[str, dict[str, str]],
+    ) -> None:
+        if not self.collect_page_evidence or not observations:
+            return
+
+        redaction_values = [
+            secret
+            for values in sensitive_data.values()
+            for secret in values.values()
+            if isinstance(secret, str) and secret
+        ]
+        collector = PageEvidenceCollector(
+            headless=bool(self.headless),
+            executable_path=self.executable_path,
+            user_data_dir=self.user_data_dir,
+            storage_state=self.storage_state,
+            redaction_values=redaction_values,
+        )
+        task_slug = slugify(task[:80])
+        page_evidence = await collector.collect_for_observations(observations, task_slug=task_slug)
+        for observation, capture in zip(observations, page_evidence):
+            if not capture:
+                continue
+            observation["page_evidence"] = capture
+            screenshot_paths = list(observation.get("screenshot_paths") or [])
+            for screenshot_path in capture.get("screenshot_paths") or []:
+                if isinstance(screenshot_path, str) and screenshot_path:
+                    screenshot_paths.append(screenshot_path)
+            if screenshot_paths:
+                observation["screenshot_paths"] = screenshot_paths
 
     async def _stop_agent_after_cancel(self, agent: Any) -> None:
         stop = getattr(agent, "stop", None)

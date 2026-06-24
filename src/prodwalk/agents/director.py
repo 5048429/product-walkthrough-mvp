@@ -80,12 +80,14 @@ class ResearchDirector:
 
             await self._emit_agent_started("EvidenceExtractor")
             archived_screenshots = self.evidence_extractor.archive_screenshots(results, output_dir)
+            archived_page_evidence = self.evidence_extractor.archive_page_evidence_artifacts(results, output_dir)
             evidence = self.evidence_extractor.collect(results)
             await self._emit_agent_finished(
                 "EvidenceExtractor",
                 data={
                     "evidence_count": len(evidence),
                     "archived_screenshot_count": len(archived_screenshots),
+                    "archived_page_evidence_count": len(archived_page_evidence),
                 },
             )
 

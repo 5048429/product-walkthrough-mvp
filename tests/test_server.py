@@ -157,6 +157,7 @@ class _FakeBrowserUseWalker:
     timed_out = False
     screenshot_path: str | None = None
     history_path: str | None = None
+    page_evidence: dict | None = None
     init_args: dict | None = None
 
     def __init__(
@@ -167,6 +168,8 @@ class _FakeBrowserUseWalker:
         user_data_dir: str | None = None,
         storage_state: str | None = None,
     ) -> None:
+        self.page_evidence = self.__class__.page_evidence
+        self.__class__.page_evidence = None
         self.__class__.init_args = {
             "model": model,
             "max_steps": max_steps,
@@ -189,6 +192,8 @@ class _FakeBrowserUseWalker:
             data["screenshot_paths"] = [self.screenshot_path]
         if self.history_path:
             data["history_file"] = self.history_path
+        if self.page_evidence:
+            data["page_evidence"] = dict(self.page_evidence)
 
         step_status = "passed" if self.result_status == "completed" else "blocked"
         started_at = utc_now()
@@ -421,6 +426,20 @@ def test_browser_use_local_run_uses_walker_and_exposes_artifacts(tmp_path: Path,
     external_dir.mkdir()
     screenshot_path = external_dir / "shot.png"
     screenshot_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    full_page_screenshot_path = external_dir / "full-page.png"
+    full_page_screenshot_path.write_bytes(b"\x89PNG\r\n\x1a\nfull")
+    page_html_path = external_dir / "page.html"
+    page_html_path.write_text("<html><body>Dashboard</body></html>", encoding="utf-8")
+    dom_snapshot_path = external_dir / "dom_snapshot.json"
+    dom_snapshot_path.write_text('{"documents":[]}', encoding="utf-8")
+    ax_tree_path = external_dir / "accessibility_tree.json"
+    ax_tree_path.write_text('{"nodes":[]}', encoding="utf-8")
+    network_log_path = external_dir / "network_log.json"
+    network_log_path.write_text('{"items":[]}', encoding="utf-8")
+    console_log_path = external_dir / "console_log.json"
+    console_log_path.write_text('{"items":[]}', encoding="utf-8")
+    manifest_path = external_dir / "manifest.json"
+    manifest_path.write_text('{"schema_version":"1.0"}', encoding="utf-8")
     history_path = external_dir / "browser_use_history_fake.json"
     history_path.write_text(
         json.dumps(
@@ -438,6 +457,22 @@ def test_browser_use_local_run_uses_walker_and_exposes_artifacts(tmp_path: Path,
     _FakeBrowserUseWalker.timed_out = False
     _FakeBrowserUseWalker.screenshot_path = str(screenshot_path)
     _FakeBrowserUseWalker.history_path = str(history_path)
+    _FakeBrowserUseWalker.page_evidence = {
+        "status": "completed",
+        "manifest_path": str(manifest_path),
+        "artifact_paths": [
+            str(page_html_path),
+            str(dom_snapshot_path),
+            str(ax_tree_path),
+            str(network_log_path),
+            str(console_log_path),
+            str(manifest_path),
+        ],
+        "screenshot_paths": [str(full_page_screenshot_path)],
+        "full_page_screenshot_path": str(full_page_screenshot_path),
+        "network_event_count": 0,
+        "console_message_count": 0,
+    }
     _FakeBrowserUseWalker.init_args = None
     monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
     monkeypatch.setattr(
@@ -495,18 +530,33 @@ def test_browser_use_local_run_uses_walker_and_exposes_artifacts(tmp_path: Path,
         "evaluation_json",
         "screenshot",
         "browser_history",
+        "page_html",
+        "dom_snapshot",
+        "accessibility_tree",
+        "network_log",
+        "console_log",
+        "page_evidence_manifest",
     }
+    page_html_artifact = next(item for item in artifact_items if item["type"] == "page_html")
+    page_html_content = client.get(f"/api/runs/{run_id}/artifacts/{page_html_artifact['id']}/content")
     assert evidence.status_code == 200
     evidence_item = evidence.json()["evidence"][0]
     assert evidence_item["screenshot_artifact_id"]
-    assert evidence_item["screenshot_artifact_ids"] == [evidence_item["screenshot_artifact_id"]]
+    assert len(evidence_item["screenshot_artifact_ids"]) == 2
+    assert evidence_item["screenshot_artifact_id"] in evidence_item["screenshot_artifact_ids"]
+    linked_types = {item["type"] for item in artifact_items if item["id"] in evidence_item["artifact_ids"]}
+    assert {"page_html", "dom_snapshot", "accessibility_tree", "network_log", "console_log"} <= linked_types
     assert "user_data_dir" not in evidence_item["data"]
     assert "storage_state" not in evidence_item["data"]
     assert "history_file" not in evidence_item["data"]
     assert evidence_item["data"]["browser_history_artifact_id"] == history_artifact["id"]
+    assert "C:/secret" not in json.dumps(evidence_item["data"])
     assert report.status_code == 200
     assert evaluation.status_code == 200
     assert history_content.status_code == 200
+    assert page_html_content.status_code == 200
+    assert page_html_content.headers["x-content-type-options"] == "nosniff"
+    assert "Dashboard" in page_html_content.text
     assert "C:/secret" not in history_content.text
     assert agents.status_code == 200
     event_items = events.json()["items"]
@@ -537,7 +587,7 @@ def test_browser_use_local_run_uses_walker_and_exposes_artifacts(tmp_path: Path,
     assert detail["progress"]["current_stage_label"] == "Run completed"
     assert detail["progress"]["completed_stage_count"] == detail["progress"]["total_stage_count"]
     assert detail["progress"]["artifact_count"] >= len(artifact_items)
-    assert detail["progress"]["screenshot_count"] == 1
+    assert detail["progress"]["screenshot_count"] == 2
     assert detail["progress"]["browser_history_count"] == 1
     assert detail["progress"]["evidence_count"] >= 1
 

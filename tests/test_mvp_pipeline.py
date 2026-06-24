@@ -292,6 +292,59 @@ class EvidenceExtractorTest(unittest.TestCase):
             self.assertEqual(run_evidence.data["screenshot_paths"], [expected])
             self.assertTrue((root / "run" / expected).exists())
 
+    def test_archives_page_evidence_artifacts_into_run_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_dir = root / "page_temp"
+            source_dir.mkdir()
+            html = source_dir / "page.html"
+            html.write_text("<html><body>Dashboard</body></html>", encoding="utf-8")
+            manifest = source_dir / "manifest.json"
+            manifest.write_text('{"schema_version":"1.0"}', encoding="utf-8")
+            full_page = source_dir / "full_page.png"
+            full_page.write_bytes(b"\x89PNG\r\n\x1a\nfull")
+
+            evidence = EvidenceItem(
+                id="ev-example-scenario-step-1",
+                product="Example",
+                scenario_id="scenario",
+                kind="browser_step",
+                title="Browser step 1",
+                summary="Loaded the dashboard.",
+                data={
+                    "page_evidence": {
+                        "manifest_path": str(manifest),
+                        "artifact_paths": [str(html), str(manifest)],
+                        "full_page_screenshot_path": str(full_page),
+                        "screenshot_paths": [str(full_page)],
+                    }
+                },
+            )
+            result = WalkthroughResult(
+                product="Example",
+                product_kind="owned",
+                scenario_id="scenario",
+                scenario_title="Scenario",
+                status="completed",
+                started_at=utc_now(),
+                completed_at=utc_now(),
+                steps=[],
+                evidence=[evidence],
+            )
+
+            extractor = EvidenceExtractor()
+            archived_screenshots = extractor.archive_screenshots([result], root / "run")
+            archived_page_evidence = extractor.archive_page_evidence_artifacts([result], root / "run")
+
+            page_evidence = evidence.data["page_evidence"]
+            self.assertEqual(len(archived_screenshots), 1)
+            self.assertEqual(len(archived_page_evidence), 2)
+            self.assertTrue(str(page_evidence["full_page_screenshot_path"]).startswith("screenshots/"))
+            self.assertTrue(str(page_evidence["manifest_path"]).startswith("page-evidence/"))
+            self.assertTrue(all(str(path).startswith("page-evidence/") for path in page_evidence["artifact_paths"]))
+            self.assertTrue((root / "run" / page_evidence["manifest_path"]).exists())
+            self.assertTrue((root / "run" / page_evidence["artifact_paths"][0]).exists())
+
 
 class BrowserUseLocalWalkerTest(unittest.IsolatedAsyncioTestCase):
     def test_classifies_browser_errors_as_blocked(self) -> None:

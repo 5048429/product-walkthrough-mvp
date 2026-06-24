@@ -71,6 +71,7 @@ Outputs:
 - `report.md`: product research report.
 - `evaluation.json`: MVP scoring.
 - `screenshots/`: archived browser screenshots for the run when browser-use captures them.
+- `page-evidence/`: archived Playwright/CDP page evidence for browser-use runs, including HTML, text, elements, DOM snapshots, accessibility trees, network logs, console logs, and full-page screenshots when available.
 
 ## Local Browser-Use
 
@@ -212,6 +213,8 @@ python -m prodwalk.cli run --config examples/clink_uat_full_continuous_plan.json
 
 Each browser-use scenario is bounded by `--browser-timeout-sec`, so a stuck login, loading state, or navigation loop becomes a blocked scenario in the report instead of preventing artifact generation. Browser screenshots captured during the run are copied into that run's `screenshots/` directory and referenced from `evidence.json` and `report.md` with relative paths.
 
+By default, browser-use runs also replay observed step URLs with Playwright/CDP after the agent finishes. This produces run-local `page-evidence/` artifacts and links them from normalized evidence as `artifact_ids`, while full-page and viewport screenshots are archived through the existing `screenshots/` pipeline.
+
 For Clink-style UAT runs, one command is enough:
 
 ```powershell
@@ -237,6 +240,9 @@ If verification is needed, complete it in the browser window, then press Enter i
 - `BROWSER_USE_STORAGE_STATE`: storage state JSON file for login/session reuse
 - `BROWSER_USE_RUN_TIMEOUT_SEC`: maximum seconds per browser-use scenario
 - `BROWSER_USE_RECORD_VIDEO_DIR`: local video recording output directory
+- `BROWSER_USE_COLLECT_PAGE_EVIDENCE`: collect Playwright/CDP page evidence after browser-use runs, default `true`
+- `BROWSER_USE_PAGE_EVIDENCE_TIMEOUT_SEC`: maximum seconds per replayed page evidence capture, default `20`
+- `BROWSER_USE_PAGE_EVIDENCE_MAX_HTML_CHARS`: maximum saved HTML characters per page, default `2000000`
 - `PRODWALK_CREDENTIAL_STORE`: local credential store path, default `.prodwalk/credentials.json`
 
 ## Verification Options

@@ -130,6 +130,20 @@ IMAGE_MEDIA_TYPES = {
     ".webp": "image/webp",
     ".gif": "image/gif",
 }
+PAGE_EVIDENCE_ARTIFACT_TYPES = {
+    "accessibility_tree.json": "accessibility_tree",
+    "accessibility-tree.json": "accessibility_tree",
+    "console_log.json": "console_log",
+    "console-log.json": "console_log",
+    "dom_snapshot.json": "dom_snapshot",
+    "dom-snapshot.json": "dom_snapshot",
+    "elements.json": "page_elements",
+    "manifest.json": "page_evidence_manifest",
+    "network_log.json": "network_log",
+    "network-log.json": "network_log",
+    "page.html": "page_html",
+    "text.json": "page_text",
+}
 SENSITIVE_DATA_KEYS = {
     "browser_storage_state",
     "browser_user_data_dir",
@@ -140,6 +154,22 @@ SENSITIVE_DATA_KEYS = {
     "screenshot_paths",
     "storage_state",
     "user_data_dir",
+}
+PAGE_EVIDENCE_PATH_KEYS = {
+    "accessibility_tree_path",
+    "artifact_path",
+    "console_log_path",
+    "dom_snapshot_path",
+    "elements_path",
+    "html_path",
+    "manifest_path",
+    "network_log_path",
+    "page_evidence_artifact_path",
+    "text_path",
+}
+PAGE_EVIDENCE_PATH_LIST_KEYS = {
+    "artifact_paths",
+    "page_evidence_artifact_paths",
 }
 
 
@@ -1518,6 +1548,7 @@ class RunRuntime:
         payload = self._read_json(path)
         artifacts = self._build_artifacts(run_id, run_dir)
         screenshot_map = self._screenshot_artifact_map(run_dir, artifacts)
+        artifact_map = self._artifact_ref_map(run_dir, artifacts)
         raw_results = payload.get("results", [])
         raw_evidence = payload.get("evidence", [])
         evidence_context = self._evidence_context(raw_results)
@@ -1527,7 +1558,7 @@ class RunRuntime:
             "created_at": payload.get("created_at"),
             "report_language": payload.get("report_language"),
             "results": self._normalize_results(raw_results, screenshot_map),
-            "evidence": self._normalize_evidence_items(raw_evidence, evidence_context, screenshot_map),
+            "evidence": self._normalize_evidence_items(raw_evidence, evidence_context, screenshot_map, artifact_map),
             "plan": payload.get("plan"),
             "scenarios": payload.get("scenarios", []),
         }
@@ -1622,6 +1653,7 @@ class RunRuntime:
         raw_evidence: Any,
         context_by_id: dict[str, dict[str, Any]],
         screenshot_map: dict[str, str],
+        artifact_map: dict[str, str],
     ) -> list[dict[str, Any]]:
         if not isinstance(raw_evidence, list):
             return []
@@ -1642,7 +1674,18 @@ class RunRuntime:
                         screenshot_artifact_id = self._screenshot_artifact_id(screenshot_path, screenshot_map)
                         if screenshot_artifact_id:
                             break
+            if screenshot_artifact_id is None:
+                page_evidence = data.get("page_evidence")
+                if isinstance(page_evidence, dict):
+                    for screenshot_path in (
+                        page_evidence.get("viewport_screenshot_path"),
+                        page_evidence.get("full_page_screenshot_path"),
+                    ):
+                        screenshot_artifact_id = self._screenshot_artifact_id(screenshot_path, screenshot_map)
+                        if screenshot_artifact_id:
+                            break
             screenshot_artifact_ids = self._screenshot_artifact_ids(item, data, screenshot_map)
+            artifact_ids = self._linked_artifact_ids(item, data, artifact_map)
 
             errors = data.get("errors")
             if not isinstance(errors, list):
@@ -1664,6 +1707,7 @@ class RunRuntime:
                     "action": data.get("action") or context.get("action"),
                     "screenshot_artifact_id": screenshot_artifact_id,
                     "screenshot_artifact_ids": screenshot_artifact_ids,
+                    "artifact_ids": artifact_ids,
                     "confidence": item.get("confidence"),
                     "created_at": item.get("created_at"),
                     "errors": errors,
@@ -1672,6 +1716,53 @@ class RunRuntime:
                 }
             )
         return items
+
+    def _artifact_ref_map(self, run_dir: Path, artifacts: list[dict[str, Any]]) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        root = run_dir.resolve()
+        for artifact in artifacts:
+            artifact_id = str(artifact.get("id") or "")
+            rel_path = str(artifact.get("path") or "").replace("\\", "/")
+            if not artifact_id or not rel_path:
+                continue
+            mapping[artifact_id] = artifact_id
+            mapping[rel_path] = artifact_id
+            abs_path = (root / rel_path).resolve()
+            mapping[str(abs_path)] = artifact_id
+            mapping[str(abs_path).replace("\\", "/")] = artifact_id
+        return mapping
+
+    def _linked_artifact_ids(
+        self,
+        item: dict[str, Any],
+        data: dict[str, Any],
+        artifact_map: dict[str, str],
+    ) -> list[str]:
+        refs: list[Any] = [item.get("screenshot"), data.get("screenshot_path"), data.get("browser_history_artifact_id")]
+
+        def visit(value: Any) -> None:
+            if isinstance(value, dict):
+                for child in value.values():
+                    visit(child)
+            elif isinstance(value, list):
+                for child in value:
+                    visit(child)
+            elif isinstance(value, str):
+                refs.append(value)
+
+        visit(data)
+        seen: set[str] = set()
+        artifact_ids: list[str] = []
+        for ref in refs:
+            if not isinstance(ref, str) or not ref.strip():
+                continue
+            normalized = ref.strip().replace("\\", "/")
+            artifact_id = artifact_map.get(normalized)
+            if not artifact_id or artifact_id in seen:
+                continue
+            seen.add(artifact_id)
+            artifact_ids.append(artifact_id)
+        return artifact_ids
 
     def _evidence_context(self, raw_results: Any) -> dict[str, dict[str, Any]]:
         if not isinstance(raw_results, list):
@@ -1765,6 +1856,13 @@ class RunRuntime:
         screenshot_paths = data.get("screenshot_paths")
         if isinstance(screenshot_paths, list):
             refs.extend(screenshot_paths)
+        page_evidence = data.get("page_evidence")
+        if isinstance(page_evidence, dict):
+            for key in ("viewport_screenshot_path", "full_page_screenshot_path", "screenshot_path"):
+                refs.append(page_evidence.get(key))
+            page_evidence_screenshots = page_evidence.get("screenshot_paths")
+            if isinstance(page_evidence_screenshots, list):
+                refs.extend(page_evidence_screenshots)
         seen: set[str] = set()
         artifact_ids: list[str] = []
         for ref in refs:
@@ -3542,6 +3640,21 @@ class RunRuntime:
                     if safe_refs:
                         sanitized[key_text] = safe_refs
                 continue
+            if lowered in PAGE_EVIDENCE_PATH_KEYS:
+                safe_ref = self._safe_run_artifact_ref(item, allowed_prefix="page-evidence")
+                if safe_ref:
+                    sanitized[key_text] = safe_ref
+                continue
+            if lowered in PAGE_EVIDENCE_PATH_LIST_KEYS:
+                if isinstance(item, list):
+                    safe_refs = [
+                        safe_ref
+                        for raw in item
+                        if (safe_ref := self._safe_run_artifact_ref(raw, allowed_prefix="page-evidence"))
+                    ]
+                    if safe_refs:
+                        sanitized[key_text] = safe_refs
+                continue
             if lowered in SENSITIVE_DATA_KEYS:
                 continue
             if any(marker in lowered for marker in ("secret", "token", "credential", "password", "api_key")):
@@ -3958,6 +4071,35 @@ class RunRuntime:
                         "metadata": {
                             "content_url": f"/api/runs/{run_id}/artifacts/{artifact_id}/content",
                             "path_url": f"/api/runs/{run_id}/artifacts/{quote(rel_path, safe='/')}",
+                        },
+                    }
+                )
+        page_evidence_dir = run_dir / "page-evidence"
+        if page_evidence_dir.exists():
+            for path in sorted(page_evidence_dir.rglob("*")):
+                if not path.is_file():
+                    continue
+                resolved = path.resolve()
+                run_root = run_dir.resolve()
+                if not resolved.is_relative_to(run_root):
+                    continue
+                rel_path = resolved.relative_to(run_root).as_posix()
+                artifact_type = PAGE_EVIDENCE_ARTIFACT_TYPES.get(path.name, "log_text")
+                artifact_id = self._artifact_id_for_path(f"art_{artifact_type}", rel_path)
+                artifacts.append(
+                    {
+                        "id": artifact_id,
+                        "run_id": run_id,
+                        "type": artifact_type,
+                        "title": path.name,
+                        "path": rel_path,
+                        "media_type": self._media_type_for_path(path),
+                        "size_bytes": path.stat().st_size,
+                        "created_at": self._mtime_iso(path),
+                        "metadata": {
+                            "content_url": f"/api/runs/{run_id}/artifacts/{artifact_id}/content",
+                            "path_url": f"/api/runs/{run_id}/artifacts/{quote(rel_path, safe='/')}",
+                            "capture_dir": resolved.parent.relative_to(run_root).as_posix(),
                         },
                     }
                 )
