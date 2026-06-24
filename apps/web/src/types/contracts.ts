@@ -41,6 +41,7 @@ export type ArtifactType =
   | "evidence_json"
   | "report_markdown"
   | "evaluation_json"
+  | "walkthrough_map"
   | "screenshot"
   | "browser_history"
   | "log_text";
@@ -299,6 +300,135 @@ export interface EvidenceResponse {
   artifacts?: Artifact[];
   plan?: unknown;
   scenarios?: Array<Record<string, unknown>>;
+}
+
+export type PageType =
+  | "dashboard"
+  | "list"
+  | "detail"
+  | "settings"
+  | "form"
+  | "auth"
+  | "error"
+  | "external"
+  | "unknown";
+
+export type PageNodeStatus = "visited" | "blocked" | "discovered" | "external" | "error";
+
+export type EdgeKind = "navigation" | "menu" | "button" | "link" | "redirect" | "form_submit" | "inferred";
+
+export interface ScreenshotEvidence {
+  id: string;
+  artifact_id: string | null;
+  title: string;
+  path: string | null;
+  content_url: string | null;
+  screenshot_url: string | null;
+  evidence_id: string | null;
+  step_index: number | null;
+  captured_at: string | null;
+  is_primary: boolean;
+}
+
+export interface PageInsight {
+  id: string;
+  kind: "purpose" | "function" | "control" | "issue" | "observation";
+  title: string;
+  summary: string;
+  severity?: "info" | "low" | "medium" | "high";
+  confidence: number;
+  evidence_ids: string[];
+  source: "browser_step" | "browser_run_summary" | "report" | "evaluation" | "heuristic";
+}
+
+export interface PageNode {
+  id: string;
+  product: string;
+  scenario_ids: string[];
+  name: string;
+  title: string | null;
+  url: string | null;
+  route: string | null;
+  canonical_url: string | null;
+  page_type: PageType;
+  status: PageNodeStatus;
+  purpose: string;
+  key_functions: string[];
+  key_controls: string[];
+  issues: PageInsight[];
+  observations: PageInsight[];
+  screenshot_evidence: ScreenshotEvidence[];
+  primary_screenshot_artifact_id: string | null;
+  evidence_ids: string[];
+  event_ids: string[];
+  first_seen_step: number | null;
+  last_seen_step: number | null;
+  visit_count: number;
+  confidence: number;
+  metadata: {
+    normalized_route: string | null;
+    dynamic_route_pattern?: string | null;
+    discovered_from_node_id?: string | null;
+    source_history_artifact_ids?: string[];
+    raw_titles?: string[];
+    raw_urls?: string[];
+    [key: string]: unknown;
+  };
+}
+
+export interface PageEdge {
+  id: string;
+  source: string;
+  target: string;
+  label: string;
+  kind: EdgeKind;
+  action: string | null;
+  from_step_index: number | null;
+  to_step_index: number | null;
+  evidence_ids: string[];
+  event_ids: string[];
+  confidence: number;
+  metadata: {
+    source_url?: string | null;
+    target_url?: string | null;
+    inferred_reason?: string | null;
+    occurrence_count?: number;
+    [key: string]: unknown;
+  };
+}
+
+export interface WalkthroughMapResponse {
+  run_id: string;
+  artifact_id: string;
+  generated_at: string;
+  schema_version: "1.0" | string;
+  source_artifact_ids: string[];
+  products: Array<{
+    name: string;
+    kind: string;
+    start_url: string;
+  }>;
+  summary: {
+    node_count: number;
+    edge_count: number;
+    visited_count: number;
+    blocked_count: number;
+    discovered_count: number;
+    external_count: number;
+    screenshot_count: number;
+    confidence: number;
+  };
+  nodes: PageNode[];
+  edges: PageEdge[];
+  layout?: {
+    algorithm: "layered" | "none" | string;
+    nodes: Record<string, { x: number; y: number; depth: number }>;
+  };
+  warnings: Array<{
+    code: string;
+    message: string;
+    details?: Record<string, unknown>;
+  }>;
 }
 
 export interface Evaluation {

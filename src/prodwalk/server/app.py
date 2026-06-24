@@ -208,6 +208,10 @@ def create_app(workspace_root: str | Path | None = None) -> FastAPI:
     async def get_evaluation(run_id: str) -> Any:
         return app.state.runtime.read_evaluation(run_id)
 
+    @app.get("/api/runs/{run_id}/map")
+    async def get_walkthrough_map(run_id: str) -> Any:
+        return app.state.runtime.read_map(run_id)
+
     return app
 
 

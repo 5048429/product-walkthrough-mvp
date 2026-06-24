@@ -23,6 +23,7 @@ from prodwalk.auth_session import (
     open_manual_auth_session,
 )
 from prodwalk.agents.director import ResearchDirector
+from prodwalk.agents.map_builder import WALKTHROUGH_MAP_ARTIFACT_ID, build_walkthrough_map
 from prodwalk.agents.planner import ScenarioPlanner
 from prodwalk.agents.walker import BrowserUseLocalWalker, BrowserWalker, MockBrowserWalker
 from prodwalk.config_loader import ConfigError, parse_research_plan
@@ -1414,6 +1415,7 @@ class RunRuntime:
 
     def list_artifacts(self, run_id: str) -> list[Artifact]:
         run_dir = self._run_dir_for_id(run_id)
+        self._ensure_walkthrough_map(run_id, run_dir)
         artifacts = self._build_artifacts(run_id, run_dir)
         seen_ids = {str(item.get("id")) for item in artifacts}
         path = run_dir / "artifacts.json"
@@ -1553,6 +1555,18 @@ class RunRuntime:
             raise ApiError(404, "ARTIFACT_NOT_FOUND", "evaluation.json is not available yet.", {"run_id": run_id})
         payload = self._read_json(path)
         return {"run_id": run_id, "artifact_id": "art_evaluation_json", **payload}
+
+    def read_map(self, run_id: str) -> dict[str, Any]:
+        run_dir = self._run_dir_for_id(run_id)
+        path = run_dir / "walkthrough_map.json"
+        if path.exists():
+            payload = self._read_json(path)
+            if isinstance(payload, dict):
+                return payload
+        payload = self._ensure_walkthrough_map(run_id, run_dir, raise_on_missing_evidence=True)
+        if payload is None:
+            raise ApiError(404, "ARTIFACT_NOT_FOUND", "walkthrough_map.json is not available yet.", {"run_id": run_id})
+        return payload
 
     def _normalize_results(
         self,
@@ -3309,10 +3323,105 @@ class RunRuntime:
         except ApiError:
             return
         mode = str(record.get("mode") or record.get("params", {}).get("mode") or "")
-        if mode not in BROWSER_USE_MODES:
-            return
-        history_map = self._archive_browser_histories(run_dir)
-        self._sanitize_browser_use_evidence_file(run_dir, history_map)
+        if mode in BROWSER_USE_MODES:
+            history_map = self._archive_browser_histories(run_dir)
+            self._sanitize_browser_use_evidence_file(run_dir, history_map)
+        self._ensure_walkthrough_map(run_id, run_dir)
+
+    def _ensure_walkthrough_map(
+        self,
+        run_id: str,
+        run_dir: Path,
+        *,
+        raise_on_missing_evidence: bool = False,
+    ) -> dict[str, Any] | None:
+        map_path = run_dir / "walkthrough_map.json"
+        if map_path.exists():
+            try:
+                payload = self._read_json(map_path)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                return payload
+
+        evidence_path = run_dir / "evidence.json"
+        if not evidence_path.exists():
+            if raise_on_missing_evidence:
+                raise ApiError(
+                    404,
+                    "ARTIFACT_NOT_FOUND",
+                    "walkthrough_map.json cannot be rebuilt because evidence.json is missing.",
+                    {"run_id": run_id},
+                )
+            return None
+
+        try:
+            payload = self._build_walkthrough_map(run_id, run_dir)
+        except ApiError:
+            if raise_on_missing_evidence:
+                raise
+            return None
+        except Exception as exc:  # noqa: BLE001 - map generation should not fail the run finalization path.
+            if raise_on_missing_evidence:
+                raise ApiError(
+                    500,
+                    "MAP_BUILD_FAILED",
+                    f"walkthrough_map.json could not be generated: {exc}",
+                    {"run_id": run_id},
+                ) from exc
+            return None
+        self._write_json(map_path, payload)
+        return payload
+
+    def _build_walkthrough_map(self, run_id: str, run_dir: Path) -> dict[str, Any]:
+        evidence_path = run_dir / "evidence.json"
+        if not evidence_path.exists():
+            raise ApiError(404, "ARTIFACT_NOT_FOUND", "evidence.json is not available yet.", {"run_id": run_id})
+        evidence_payload = self._read_json(evidence_path)
+        if not isinstance(evidence_payload, dict):
+            raise ApiError(500, "MAP_BUILD_FAILED", "evidence.json is not a JSON object.", {"run_id": run_id})
+        artifacts = self._build_artifacts(run_id, run_dir)
+        browser_histories = self._browser_history_sources(run_id, run_dir, artifacts)
+        return build_walkthrough_map(
+            run_id=run_id,
+            evidence_payload=evidence_payload,
+            artifacts=artifacts,
+            browser_histories=browser_histories,
+        )
+
+    def _browser_history_sources(
+        self,
+        run_id: str,
+        run_dir: Path,
+        artifacts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        sources: list[dict[str, Any]] = []
+        for artifact in artifacts:
+            if artifact.get("type") != "browser_history":
+                continue
+            rel_path = artifact.get("path")
+            if not isinstance(rel_path, str) or not rel_path:
+                continue
+            try:
+                path = self._resolve_run_relative_path(run_dir, rel_path)
+            except ApiError:
+                continue
+            if not path.exists() or not path.is_file():
+                continue
+            try:
+                payload = self._read_json(path)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            sources.append(
+                {
+                    "artifact_id": str(artifact.get("id") or self._artifact_id_for_path("art_browser_history", rel_path)),
+                    "path": rel_path,
+                    "payload": payload,
+                }
+            )
+        return sources
 
     def _archive_browser_histories(self, run_dir: Path) -> dict[str, str]:
         evidence_path = run_dir / "evidence.json"
@@ -3763,6 +3872,13 @@ class RunRuntime:
             ("art_evidence_json", "evidence_json", "evidence.json", "evidence.json", "application/json"),
             ("art_report_md", "report_markdown", "report.md", "report.md", "text/markdown; charset=utf-8"),
             ("art_evaluation_json", "evaluation_json", "evaluation.json", "evaluation.json", "application/json"),
+            (
+                WALKTHROUGH_MAP_ARTIFACT_ID,
+                "walkthrough_map",
+                "walkthrough_map.json",
+                "walkthrough_map.json",
+                "application/json",
+            ),
         ]
         artifacts: list[dict[str, Any]] = []
         for artifact_id, artifact_type, title, rel_path, media_type in specs:

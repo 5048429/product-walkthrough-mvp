@@ -11,6 +11,7 @@ import type {
   ArtifactResponse,
   ArtifactType,
   CursorListResponse,
+  EdgeKind,
   EvaluationResponse,
   EvidenceResponse,
   EventLevel,
@@ -19,6 +20,9 @@ import type {
   ListResponse,
   PlanDetailResponse,
   PlanSummary,
+  PageInsight,
+  PageNodeStatus,
+  PageType,
   ReportResponse,
   RetryAfterVerificationRequest,
   RetryAfterVerificationResponse,
@@ -32,7 +36,9 @@ import type {
   RunParams,
   RunStatus,
   RunSummary,
+  ScreenshotEvidence,
   VerificationConfirmRequest,
+  WalkthroughMapResponse,
   WalkthroughResult,
 } from "../types/contracts";
 import { apiPath, runApiPath } from "./paths";
@@ -70,10 +76,39 @@ const artifactTypes = new Set<ArtifactType>([
   "evidence_json",
   "report_markdown",
   "evaluation_json",
+  "walkthrough_map",
   "screenshot",
   "browser_history",
   "log_text",
 ]);
+
+const pageTypes = new Set<PageType>([
+  "dashboard",
+  "list",
+  "detail",
+  "settings",
+  "form",
+  "auth",
+  "error",
+  "external",
+  "unknown",
+]);
+
+const pageNodeStatuses = new Set<PageNodeStatus>(["visited", "blocked", "discovered", "external", "error"]);
+
+const edgeKinds = new Set<EdgeKind>(["navigation", "menu", "button", "link", "redirect", "form_submit", "inferred"]);
+
+const pageInsightKinds = new Set<PageInsight["kind"]>(["purpose", "function", "control", "issue", "observation"]);
+
+const pageInsightSources = new Set<PageInsight["source"]>([
+  "browser_step",
+  "browser_run_summary",
+  "report",
+  "evaluation",
+  "heuristic",
+]);
+
+const pageInsightSeverities = new Set<NonNullable<PageInsight["severity"]>>(["info", "low", "medium", "high"]);
 
 const eventLevels = new Set<EventLevel>(["debug", "info", "warn", "error"]);
 
@@ -215,6 +250,30 @@ function normalizeAgentStatus(value: unknown): AgentStatus {
 
 function normalizeArtifactType(value: unknown): ArtifactType {
   return typeof value === "string" && artifactTypes.has(value as ArtifactType) ? (value as ArtifactType) : "log_text";
+}
+
+function normalizePageType(value: unknown): PageType {
+  return typeof value === "string" && pageTypes.has(value as PageType) ? (value as PageType) : "unknown";
+}
+
+function normalizePageNodeStatus(value: unknown): PageNodeStatus {
+  return typeof value === "string" && pageNodeStatuses.has(value as PageNodeStatus) ? (value as PageNodeStatus) : "discovered";
+}
+
+function normalizeEdgeKind(value: unknown): EdgeKind {
+  return typeof value === "string" && edgeKinds.has(value as EdgeKind) ? (value as EdgeKind) : "inferred";
+}
+
+function normalizePageInsightKind(value: unknown): PageInsight["kind"] {
+  return typeof value === "string" && pageInsightKinds.has(value as PageInsight["kind"])
+    ? (value as PageInsight["kind"])
+    : "observation";
+}
+
+function normalizePageInsightSource(value: unknown): PageInsight["source"] {
+  return typeof value === "string" && pageInsightSources.has(value as PageInsight["source"])
+    ? (value as PageInsight["source"])
+    : "heuristic";
 }
 
 function normalizeEventLevel(value: unknown): EventLevel {
@@ -545,6 +604,178 @@ function normalizeEvidence(value: unknown): EvidenceResponse {
   };
 }
 
+function normalizeScreenshotEvidence(value: unknown): ScreenshotEvidence {
+  const raw = asRecord(value);
+
+  return {
+    id: asString(raw.id, asString(raw.artifact_id, `shot-${Math.random().toString(36).slice(2)}`)),
+    artifact_id: asNullableString(raw.artifact_id),
+    title: asString(raw.title, asString(raw.path, "Screenshot")),
+    path: asNullableString(raw.path),
+    content_url: asNullableString(raw.content_url),
+    screenshot_url: asNullableString(raw.screenshot_url),
+    evidence_id: asNullableString(raw.evidence_id),
+    step_index: asNullableNumber(raw.step_index),
+    captured_at: asNullableString(raw.captured_at),
+    is_primary: asBoolean(raw.is_primary),
+  };
+}
+
+function normalizePageInsight(value: unknown): PageInsight {
+  const raw = asRecord(value);
+  const severity =
+    typeof raw.severity === "string" && pageInsightSeverities.has(raw.severity as NonNullable<PageInsight["severity"]>)
+      ? (raw.severity as NonNullable<PageInsight["severity"]>)
+      : undefined;
+
+  return {
+    id: asString(raw.id, `ins-${Math.random().toString(36).slice(2)}`),
+    kind: normalizePageInsightKind(raw.kind),
+    title: asString(raw.title, asString(raw.kind, "Observation")),
+    summary: asString(raw.summary),
+    severity,
+    confidence: asNumber(raw.confidence),
+    evidence_ids: asStringArray(raw.evidence_ids),
+    source: normalizePageInsightSource(raw.source),
+  };
+}
+
+function normalizePageNode(value: unknown): WalkthroughMapResponse["nodes"][number] {
+  const raw = asRecord(value);
+  const metadata = asRecord(raw.metadata);
+
+  return {
+    id: asString(raw.id, `page-${Math.random().toString(36).slice(2)}`),
+    product: asString(raw.product, "Unknown product"),
+    scenario_ids: asStringArray(raw.scenario_ids),
+    name: asString(raw.name, asString(raw.title, "Untitled page")),
+    title: asNullableString(raw.title),
+    url: asNullableString(raw.url),
+    route: asNullableString(raw.route),
+    canonical_url: asNullableString(raw.canonical_url),
+    page_type: normalizePageType(raw.page_type),
+    status: normalizePageNodeStatus(raw.status),
+    purpose: asString(raw.purpose),
+    key_functions: asStringArray(raw.key_functions),
+    key_controls: asStringArray(raw.key_controls),
+    issues: Array.isArray(raw.issues) ? raw.issues.map(normalizePageInsight) : [],
+    observations: Array.isArray(raw.observations) ? raw.observations.map(normalizePageInsight) : [],
+    screenshot_evidence: Array.isArray(raw.screenshot_evidence) ? raw.screenshot_evidence.map(normalizeScreenshotEvidence) : [],
+    primary_screenshot_artifact_id: asNullableString(raw.primary_screenshot_artifact_id),
+    evidence_ids: asStringArray(raw.evidence_ids),
+    event_ids: asStringArray(raw.event_ids),
+    first_seen_step: asNullableNumber(raw.first_seen_step),
+    last_seen_step: asNullableNumber(raw.last_seen_step),
+    visit_count: asNumber(raw.visit_count),
+    confidence: asNumber(raw.confidence),
+    metadata: {
+      ...metadata,
+      normalized_route: asNullableString(metadata.normalized_route),
+      dynamic_route_pattern: asNullableString(metadata.dynamic_route_pattern),
+      discovered_from_node_id: asNullableString(metadata.discovered_from_node_id),
+      source_history_artifact_ids: asStringArray(metadata.source_history_artifact_ids),
+      raw_titles: asStringArray(metadata.raw_titles),
+      raw_urls: asStringArray(metadata.raw_urls),
+    },
+  };
+}
+
+function normalizePageEdge(value: unknown): WalkthroughMapResponse["edges"][number] {
+  const raw = asRecord(value);
+  const metadata = asRecord(raw.metadata);
+
+  return {
+    id: asString(raw.id, `edge-${Math.random().toString(36).slice(2)}`),
+    source: asString(raw.source),
+    target: asString(raw.target),
+    label: asString(raw.label),
+    kind: normalizeEdgeKind(raw.kind),
+    action: asNullableString(raw.action),
+    from_step_index: asNullableNumber(raw.from_step_index),
+    to_step_index: asNullableNumber(raw.to_step_index),
+    evidence_ids: asStringArray(raw.evidence_ids),
+    event_ids: asStringArray(raw.event_ids),
+    confidence: asNumber(raw.confidence),
+    metadata: {
+      ...metadata,
+      source_url: asNullableString(metadata.source_url),
+      target_url: asNullableString(metadata.target_url),
+      inferred_reason: asNullableString(metadata.inferred_reason),
+      occurrence_count: asNumber(metadata.occurrence_count, 0),
+    },
+  };
+}
+
+export function normalizeWalkthroughMap(value: unknown): WalkthroughMapResponse {
+  const raw = asRecord(value);
+  const nodes = Array.isArray(raw.nodes) ? raw.nodes.map(normalizePageNode) : [];
+  const edges = Array.isArray(raw.edges) ? raw.edges.map(normalizePageEdge) : [];
+  const summary = asRecord(raw.summary);
+  const layout = asRecord(raw.layout);
+  const layoutNodes = asRecord(layout.nodes);
+
+  return {
+    run_id: asString(raw.run_id),
+    artifact_id: asString(raw.artifact_id, "art_walkthrough_map"),
+    generated_at: asString(raw.generated_at),
+    schema_version: asString(raw.schema_version, "1.0"),
+    source_artifact_ids: asStringArray(raw.source_artifact_ids),
+    products: Array.isArray(raw.products)
+      ? raw.products.map((product) => {
+          const productRecord = asRecord(product);
+          return {
+            name: asString(productRecord.name, "Unknown product"),
+            kind: asString(productRecord.kind, "unknown"),
+            start_url: asString(productRecord.start_url),
+          };
+        })
+      : [],
+    summary: {
+      node_count: asNumber(summary.node_count, nodes.length),
+      edge_count: asNumber(summary.edge_count, edges.length),
+      visited_count: asNumber(summary.visited_count, nodes.filter((node) => node.status === "visited").length),
+      blocked_count: asNumber(summary.blocked_count, nodes.filter((node) => node.status === "blocked").length),
+      discovered_count: asNumber(summary.discovered_count, nodes.filter((node) => node.status === "discovered").length),
+      external_count: asNumber(summary.external_count, nodes.filter((node) => node.status === "external").length),
+      screenshot_count: asNumber(
+        summary.screenshot_count,
+        nodes.reduce((count, node) => count + node.screenshot_evidence.length, 0),
+      ),
+      confidence: asNumber(summary.confidence),
+    },
+    nodes,
+    edges,
+    layout: Object.keys(layout).length
+      ? {
+          algorithm: asString(layout.algorithm, "layered"),
+          nodes: Object.fromEntries(
+            Object.entries(layoutNodes).map(([id, position]) => {
+              const rawPosition = asRecord(position);
+              return [
+                id,
+                {
+                  x: asNumber(rawPosition.x),
+                  y: asNumber(rawPosition.y),
+                  depth: asNumber(rawPosition.depth),
+                },
+              ];
+            }),
+          ),
+        }
+      : undefined,
+    warnings: Array.isArray(raw.warnings)
+      ? raw.warnings.map((warning) => {
+          const warningRecord = asRecord(warning);
+          return {
+            code: asString(warningRecord.code, "MAP_WARNING"),
+            message: asString(warningRecord.message),
+            details: asNullableRecord(warningRecord.details) ?? undefined,
+          };
+        })
+      : [],
+  };
+}
+
 export const prodwalkApi = {
   getHealth: async () => requestJson<HealthResponse>(apiPath("/health")),
 
@@ -643,4 +874,6 @@ export const prodwalkApi = {
   getEvidence: async (runId: string) => normalizeEvidence(await requestJson<unknown>(runApiPath(runId, "/evidence"))),
 
   getEvaluation: async (runId: string) => normalizeEvaluation(await requestJson<unknown>(runApiPath(runId, "/evaluation"))),
+
+  getWalkthroughMap: async (runId: string) => normalizeWalkthroughMap(await requestJson<unknown>(runApiPath(runId, "/map"))),
 };

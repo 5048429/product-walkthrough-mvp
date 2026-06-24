@@ -29,7 +29,7 @@ export const mockActiveRun: RunDetail = {
     browser_timeout_sec: 600,
     verification_mode: "off",
   },
-  artifact_ids: ["art_evidence_json", "art_report_md", "art_evaluation_json"],
+  artifact_ids: ["art_evidence_json", "art_report_md", "art_evaluation_json", "art_walkthrough_map"],
   error: null,
 };
 

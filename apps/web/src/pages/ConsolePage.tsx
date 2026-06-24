@@ -13,6 +13,7 @@ import { ReportPreview } from "../components/reports/ReportPreview";
 import { PlanSelector } from "../components/runs/PlanSelector";
 import { RunHistoryPanel } from "../components/runs/RunHistoryPanel";
 import { StatusBadge } from "../components/StatusBadge";
+import { WalkthroughMapView } from "../components/whiteboard/WalkthroughMapView";
 import type { ConsoleDataSource, ConsoleErrorState } from "../hooks/useProdwalkConsole";
 import { useProdwalkConsole } from "../hooks/useProdwalkConsole";
 import type { RunEventConnectionState } from "../api/sse";
@@ -32,10 +33,11 @@ import type {
   RunEvent,
 } from "../types/contracts";
 
-type ConsoleView = "dashboard" | "report" | "evidence" | "history" | "details";
+type ConsoleView = "dashboard" | "map" | "report" | "evidence" | "history" | "details";
 
 const views: Array<{ id: ConsoleView; label: string }> = [
   { id: "dashboard", label: "工作台" },
+  { id: "map", label: "白板" },
   { id: "report", label: "报告" },
   { id: "evidence", label: "证据" },
   { id: "history", label: "历史" },
@@ -1192,6 +1194,18 @@ export function ConsolePage() {
 
   if (activeView === "report") {
     content = reportPreview;
+  } else if (activeView === "map") {
+    content = (
+      <WalkthroughMapView
+        map={console.viewedMap}
+        run={console.viewedRun}
+        artifacts={console.viewedArtifacts}
+        status={console.viewedStatus}
+        loading={console.viewedMapLoading}
+        error={console.viewedMapError}
+        onOpenEvidence={() => setActiveView("evidence")}
+      />
+    );
   } else if (activeView === "evidence") {
     content = evidenceSnapshot;
   } else if (activeView === "history") {

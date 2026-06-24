@@ -57,6 +57,7 @@ ArtifactType = Literal[
     "evidence_json",
     "report_markdown",
     "evaluation_json",
+    "walkthrough_map",
     "screenshot",
     "browser_history",
     "log_text",

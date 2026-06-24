@@ -43,6 +43,20 @@ export const mockArtifacts: Artifact[] = [
     },
   },
   {
+    id: "art_walkthrough_map",
+    run_id: runId,
+    type: "walkthrough_map",
+    title: "walkthrough_map.json",
+    path: "walkthrough_map.json",
+    media_type: "application/json",
+    size_bytes: 18340,
+    created_at: "2026-06-16T08:31:16Z",
+    metadata: {
+      node_count: 6,
+      edge_count: 5,
+    },
+  },
+  {
     id: "art_screenshot_onboarding_step_1",
     run_id: runId,
     type: "screenshot",

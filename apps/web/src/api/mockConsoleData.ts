@@ -4,6 +4,7 @@ import { mockEvidence } from "../mock/evidence";
 import { mockPlans } from "../mock/plans";
 import { mockReport } from "../mock/report";
 import { mockActiveRun, mockRecentRuns } from "../mock/runs";
+import { mockWalkthroughMap } from "../mock/walkthroughMap";
 
 export const mockConsoleData = {
   plans: mockPlans,
@@ -15,4 +16,5 @@ export const mockConsoleData = {
   getEventsForStatus: getMockEventsForStatus,
   evidence: mockEvidence,
   report: mockReport,
+  walkthroughMap: mockWalkthroughMap,
 };

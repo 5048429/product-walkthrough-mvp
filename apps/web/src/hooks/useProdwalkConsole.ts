@@ -23,6 +23,7 @@ import type {
   RunStatus,
   RunSummary,
   VerificationMode,
+  WalkthroughMapResponse,
 } from "../types/contracts";
 import { formatApiError, toConsoleStatus, toRunStatus } from "../types/contracts";
 
@@ -87,10 +88,12 @@ export interface ConsoleLoadingState {
   report: boolean;
   evidence: boolean;
   evaluation: boolean;
+  map: boolean;
   historyRun: boolean;
   historyReport: boolean;
   historyEvidence: boolean;
   historyEvaluation: boolean;
+  historyMap: boolean;
   verification: boolean;
 }
 
@@ -103,10 +106,12 @@ export interface ConsoleErrorState {
   report: string | null;
   evidence: string | null;
   evaluation: string | null;
+  map: string | null;
   historyRun: string | null;
   historyReport: string | null;
   historyEvidence: string | null;
   historyEvaluation: string | null;
+  historyMap: string | null;
   verification: string | null;
 }
 
@@ -478,7 +483,8 @@ function shouldLoadFinalArtifacts(event: RunEvent): boolean {
       artifactType === "evidence_json" ||
       artifactType === "report_markdown" ||
       artifactType === "evaluation_json" ||
-      Boolean(event.artifact_ids?.some((id) => ["art_evidence_json", "art_report_md", "art_evaluation_json"].includes(id)))
+      artifactType === "walkthrough_map" ||
+      Boolean(event.artifact_ids?.some((id) => ["art_evidence_json", "art_report_md", "art_evaluation_json", "art_walkthrough_map"].includes(id)))
     );
   }
 
@@ -501,6 +507,7 @@ export function useProdwalkConsole() {
   const [report, setReport] = useState<ReportResponse | null>(null);
   const [evidence, setEvidence] = useState<EvidenceResponse | null>(null);
   const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(null);
+  const [walkthroughMap, setWalkthroughMap] = useState<WalkthroughMapResponse | null>(null);
   const [loginSession, setLoginSession] = useState<AuthSessionDetail | null>(null);
   const [authSession, setAuthSession] = useState<AuthSessionDetail | null>(null);
   const [verificationSourceRunId, setVerificationSourceRunId] = useState<string | null>(null);
@@ -509,6 +516,7 @@ export function useProdwalkConsole() {
   const [historyReport, setHistoryReport] = useState<ReportResponse | null>(null);
   const [historyEvidence, setHistoryEvidence] = useState<EvidenceResponse | null>(null);
   const [historyEvaluation, setHistoryEvaluation] = useState<EvaluationResponse | null>(null);
+  const [historyWalkthroughMap, setHistoryWalkthroughMap] = useState<WalkthroughMapResponse | null>(null);
   const [connectionState, setConnectionState] = useState<RunEventConnectionState>("idle");
   const [mockStatus, setMockStatus] = useState<ConsoleStatus>("running");
   const [loading, setLoading] = useState<ConsoleLoadingState>({
@@ -520,10 +528,12 @@ export function useProdwalkConsole() {
     report: false,
     evidence: false,
     evaluation: false,
+    map: false,
     historyRun: false,
     historyReport: false,
     historyEvidence: false,
     historyEvaluation: false,
+    historyMap: false,
     verification: false,
   });
   const [errors, setErrors] = useState<ConsoleErrorState>({
@@ -535,10 +545,12 @@ export function useProdwalkConsole() {
     report: null,
     evidence: null,
     evaluation: null,
+    map: null,
     historyRun: null,
     historyReport: null,
     historyEvidence: null,
     historyEvaluation: null,
+    historyMap: null,
     verification: null,
   });
 
@@ -589,6 +601,7 @@ export function useProdwalkConsole() {
       setReport(mockConsoleData.report);
       setEvidence(mockConsoleData.evidence);
       setEvaluation(mockConsoleData.report.evaluation ? { ...mockConsoleData.report.evaluation, run_id: mockConsoleData.report.run_id, artifact_id: "art_evaluation_json" } : null);
+      setWalkthroughMap(nextStatus === "idle" ? null : mockConsoleData.walkthroughMap);
       setLoginSession(null);
       setAuthSession(null);
       setVerificationSourceRunId(null);
@@ -597,6 +610,7 @@ export function useProdwalkConsole() {
       setHistoryReport(null);
       setHistoryEvidence(null);
       setHistoryEvaluation(null);
+      setHistoryWalkthroughMap(null);
       setConnectionState("closed");
       updateLoading({
         initial: false,
@@ -606,10 +620,12 @@ export function useProdwalkConsole() {
         report: false,
         evidence: false,
         evaluation: false,
+        map: false,
         historyRun: false,
         historyReport: false,
         historyEvidence: false,
         historyEvaluation: false,
+        historyMap: false,
         verification: false,
       });
       updateErrors({
@@ -620,10 +636,12 @@ export function useProdwalkConsole() {
         report: null,
         evidence: null,
         evaluation: null,
+        map: null,
         historyRun: null,
         historyReport: null,
         historyEvidence: null,
         historyEvaluation: null,
+        historyMap: null,
         verification: null,
       });
     },
@@ -688,13 +706,14 @@ export function useProdwalkConsole() {
 
   const loadFinalArtifacts = useCallback(
     async (runId: string) => {
-      updateLoading({ report: true, evidence: true, evaluation: true });
-      updateErrors({ report: null, evidence: null, evaluation: null });
+      updateLoading({ report: true, evidence: true, evaluation: true, map: true });
+      updateErrors({ report: null, evidence: null, evaluation: null, map: null });
 
-      const [reportResult, evidenceResult, evaluationResult] = await Promise.allSettled([
+      const [reportResult, evidenceResult, evaluationResult, mapResult] = await Promise.allSettled([
         prodwalkApi.getReport(runId),
         prodwalkApi.getEvidence(runId),
         prodwalkApi.getEvaluation(runId),
+        prodwalkApi.getWalkthroughMap(runId),
       ]);
 
       if (reportResult.status === "fulfilled") {
@@ -719,7 +738,14 @@ export function useProdwalkConsole() {
         updateErrors({ evaluation: errorMessage(evaluationResult.reason) });
       }
 
-      updateLoading({ report: false, evidence: false, evaluation: false });
+      if (mapResult.status === "fulfilled") {
+        setWalkthroughMap(mapResult.value);
+      } else {
+        setWalkthroughMap(null);
+        updateErrors({ map: errorMessage(mapResult.reason) });
+      }
+
+      updateLoading({ report: false, evidence: false, evaluation: false, map: false });
     },
     [updateErrors, updateLoading],
   );
@@ -750,17 +776,20 @@ export function useProdwalkConsole() {
     setHistoryReport(null);
     setHistoryEvidence(null);
     setHistoryEvaluation(null);
+    setHistoryWalkthroughMap(null);
     updateErrors({
       historyRun: null,
       historyReport: null,
       historyEvidence: null,
       historyEvaluation: null,
+      historyMap: null,
     });
     updateLoading({
       historyRun: false,
       historyReport: false,
       historyEvidence: false,
       historyEvaluation: false,
+      historyMap: false,
     });
   }, [updateErrors, updateLoading]);
 
@@ -772,17 +801,20 @@ export function useProdwalkConsole() {
       setHistoryReport(null);
       setHistoryEvidence(null);
       setHistoryEvaluation(null);
+      setHistoryWalkthroughMap(null);
       updateLoading({
         historyRun: true,
         historyReport: true,
         historyEvidence: true,
         historyEvaluation: true,
+        historyMap: true,
       });
       updateErrors({
         historyRun: null,
         historyReport: null,
         historyEvidence: null,
         historyEvaluation: null,
+        historyMap: null,
       });
 
       let run: RunDetail;
@@ -798,6 +830,7 @@ export function useProdwalkConsole() {
           historyReport: false,
           historyEvidence: false,
           historyEvaluation: false,
+          historyMap: false,
         });
         return;
       } finally {
@@ -807,6 +840,7 @@ export function useProdwalkConsole() {
       const canReadReport = run.report_exists || run.artifact_ids.includes("art_report_md");
       const canReadEvidence = run.evidence_exists || run.artifact_ids.includes("art_evidence_json");
       const canReadEvaluation = run.evaluation_exists || run.artifact_ids.includes("art_evaluation_json");
+      const canReadMap = run.artifact_ids.includes("art_walkthrough_map") || canReadEvidence;
 
       if (!canReadReport) {
         updateErrors({ historyReport: unavailableArtifactMessage("report.md") });
@@ -817,12 +851,16 @@ export function useProdwalkConsole() {
       if (!canReadEvaluation) {
         updateErrors({ historyEvaluation: unavailableArtifactMessage("evaluation.json") });
       }
+      if (!canReadMap) {
+        updateErrors({ historyMap: unavailableArtifactMessage("walkthrough_map.json") });
+      }
 
-      const [artifactResult, reportResult, evidenceResult, evaluationResult] = await Promise.allSettled([
+      const [artifactResult, reportResult, evidenceResult, evaluationResult, mapResult] = await Promise.allSettled([
         prodwalkApi.getArtifacts(runId),
         canReadReport ? prodwalkApi.getReport(runId) : Promise.resolve(null),
         canReadEvidence ? prodwalkApi.getEvidence(runId) : Promise.resolve(null),
         canReadEvaluation ? prodwalkApi.getEvaluation(runId) : Promise.resolve(null),
+        canReadMap ? prodwalkApi.getWalkthroughMap(runId) : Promise.resolve(null),
       ]);
 
       if (artifactResult.status === "fulfilled") {
@@ -853,10 +891,18 @@ export function useProdwalkConsole() {
         updateErrors({ historyEvaluation: errorMessage(evaluationResult.reason) });
       }
 
+      if (mapResult.status === "fulfilled") {
+        setHistoryWalkthroughMap(mapResult.value);
+      } else {
+        setHistoryWalkthroughMap(null);
+        updateErrors({ historyMap: errorMessage(mapResult.reason) });
+      }
+
       updateLoading({
         historyReport: false,
         historyEvidence: false,
         historyEvaluation: false,
+        historyMap: false,
       });
     },
     [updateErrors, updateLoading],
@@ -888,6 +934,7 @@ export function useProdwalkConsole() {
       setReport(null);
       setEvidence(null);
       setEvaluation(null);
+      setWalkthroughMap(null);
       setAuthSession(null);
       setVerificationSourceRunId(null);
       setRetryRunId(null);
@@ -929,7 +976,10 @@ export function useProdwalkConsole() {
         setArtifacts(artifactResult.value.items);
       }
 
-      if (terminalRunStatuses.has(run.status) || run.artifact_ids.some((id) => ["art_report_md", "art_evidence_json", "art_evaluation_json"].includes(id))) {
+      if (
+        terminalRunStatuses.has(run.status) ||
+        run.artifact_ids.some((id) => ["art_report_md", "art_evidence_json", "art_evaluation_json", "art_walkthrough_map"].includes(id))
+      ) {
         void loadFinalArtifacts(runId);
       }
     },
@@ -1159,6 +1209,7 @@ export function useProdwalkConsole() {
         setReport(null);
         setEvidence(null);
         setEvaluation(null);
+        setWalkthroughMap(null);
         setAuthSession(null);
         setVerificationSourceRunId(null);
         setRetryRunId(null);
@@ -1338,6 +1389,7 @@ export function useProdwalkConsole() {
           setReport(null);
           setEvidence(null);
           setEvaluation(null);
+          setWalkthroughMap(null);
           setConnectionState("idle");
         }
         if (selectedHistoryRunId === runId) {
@@ -1383,6 +1435,7 @@ export function useProdwalkConsole() {
         setReport(null);
         setEvidence(null);
         setEvaluation(null);
+        setWalkthroughMap(null);
         setConnectionState("idle");
       }
       if (selectedHistoryRunId && response.deleted_run_ids.includes(selectedHistoryRunId)) {
@@ -1587,6 +1640,7 @@ export function useProdwalkConsole() {
       setReport(null);
       setEvidence(null);
       setEvaluation(null);
+      setWalkthroughMap(null);
       setConnectionState("connecting");
       void loadRunBundle(nextRetryRunId);
       void refreshRunHistory();
@@ -1629,17 +1683,20 @@ export function useProdwalkConsole() {
         setHistoryReport(summary.report_exists ? { ...mockConsoleData.report, run_id: summary.id, evaluation: evaluationPayload } : null);
         setHistoryEvidence(summary.evidence_exists ? { ...mockConsoleData.evidence, run_id: summary.id } : null);
         setHistoryEvaluation(evaluationPayload);
+        setHistoryWalkthroughMap(summary.evidence_exists ? { ...mockConsoleData.walkthroughMap, run_id: summary.id } : null);
         updateErrors({
           historyRun: null,
           historyReport: summary.report_exists ? null : unavailableArtifactMessage("report.md"),
           historyEvidence: summary.evidence_exists ? null : unavailableArtifactMessage("evidence.json"),
           historyEvaluation: summary.evaluation_exists ? null : unavailableArtifactMessage("evaluation.json"),
+          historyMap: summary.evidence_exists ? null : unavailableArtifactMessage("walkthrough_map.json"),
         });
         updateLoading({
           historyRun: false,
           historyReport: false,
           historyEvidence: false,
           historyEvaluation: false,
+          historyMap: false,
         });
         return;
       }
@@ -1662,6 +1719,7 @@ export function useProdwalkConsole() {
       setReport(status === "idle" ? null : mockConsoleData.report);
       setEvidence(status === "idle" ? null : mockConsoleData.evidence);
       setEvaluation(status === "idle" || !mockConsoleData.report.evaluation ? null : { ...mockConsoleData.report.evaluation, run_id: mockConsoleData.report.run_id, artifact_id: "art_evaluation_json" });
+      setWalkthroughMap(status === "idle" ? null : mockConsoleData.walkthroughMap);
       setArtifacts(status === "idle" ? [] : mockArtifacts);
       setConnectionState(status === "idle" ? "idle" : "closed");
     },
@@ -1681,13 +1739,16 @@ export function useProdwalkConsole() {
   const viewedReport = viewingHistory ? historyReport : report;
   const viewedEvidence = viewingHistory ? historyEvidence : evidence;
   const viewedEvaluation = viewingHistory ? historyEvaluation : evaluation;
+  const viewedMap = viewingHistory ? historyWalkthroughMap : walkthroughMap;
   const viewedArtifacts = viewingHistory ? historyArtifacts : artifacts;
   const viewedReportError = viewingHistory ? errors.historyReport : errors.report;
   const viewedEvidenceError = viewingHistory ? errors.historyEvidence : errors.evidence;
   const viewedEvaluationError = viewingHistory ? errors.historyEvaluation : errors.evaluation;
+  const viewedMapError = viewingHistory ? errors.historyMap : errors.map;
   const viewedReportLoading = viewingHistory ? loading.historyReport : loading.report;
   const viewedEvidenceLoading = viewingHistory ? loading.historyEvidence : loading.evidence;
   const viewedEvaluationLoading = viewingHistory ? loading.historyEvaluation : loading.evaluation;
+  const viewedMapLoading = viewingHistory ? loading.historyMap : loading.map;
 
   return {
     source,
@@ -1710,6 +1771,8 @@ export function useProdwalkConsole() {
     report,
     evidence,
     evaluation,
+    walkthroughMap,
+    historyWalkthroughMap,
     loginSession,
     loginAuthStatus: authReadinessFromSession(loginSession),
     authSession,
@@ -1719,6 +1782,7 @@ export function useProdwalkConsole() {
     viewedReport,
     viewedEvidence,
     viewedEvaluation,
+    viewedMap,
     consoleStatus,
     connectionState,
     loading,
@@ -1745,9 +1809,11 @@ export function useProdwalkConsole() {
     viewedReportError,
     viewedEvidenceError,
     viewedEvaluationError,
+    viewedMapError,
     viewedReportLoading,
     viewedEvidenceLoading,
     viewedEvaluationLoading,
+    viewedMapLoading,
     runError: formatApiError(activeRun?.error),
   };
 }

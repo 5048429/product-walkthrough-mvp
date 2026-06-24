@@ -191,12 +191,12 @@ export const mockEvents: RunEvent[] = [
     ts: "2026-06-16T08:31:14Z",
     type: "artifact.created",
     level: "info",
-    message: "Report artifact created",
+    message: "Report and map artifacts created",
     agent_id: "agent_report_writer",
     agent_type: "report_writer",
     status: "finalizing",
     payload: { artifact_type: "report_markdown" },
-    artifact_ids: ["art_report_md"],
+    artifact_ids: ["art_report_md", "art_walkthrough_map"],
   },
   {
     id: "evt_000014",
@@ -222,7 +222,7 @@ export const mockEvents: RunEvent[] = [
     message: "Mock run completed and artifacts are available",
     status: "succeeded",
     payload: { duration_ms: 37000 },
-    artifact_ids: ["art_evidence_json", "art_report_md", "art_evaluation_json"],
+    artifact_ids: ["art_evidence_json", "art_report_md", "art_evaluation_json", "art_walkthrough_map"],
   },
   {
     id: "evt_000016",

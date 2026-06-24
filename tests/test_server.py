@@ -68,6 +68,75 @@ def _write_historical_run(root: Path) -> Path:
     return run_dir
 
 
+def _write_historical_map_run(root: Path) -> Path:
+    run_dir = root / "runs" / "run-20260102-030405-map"
+    screenshots_dir = run_dir / "screenshots"
+    screenshots_dir.mkdir(parents=True)
+    (screenshots_dir / "customer.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    evidence = {
+        "created_at": "2026-01-02T03:04:05Z",
+        "report_language": "en",
+        "plan": {
+            "research_goal": "Map historical artifacts.",
+            "products": [{"name": "Example Product", "url": "https://example.test/home", "kind": "owned"}],
+        },
+        "results": [
+            {
+                "product": "Example Product",
+                "product_kind": "owned",
+                "scenario_id": "map",
+                "status": "completed",
+                "steps": [
+                    {
+                        "index": 1,
+                        "action": "navigate",
+                        "status": "passed",
+                        "observation": "Opened home.",
+                        "url": "https://example.test/home?utm_source=test",
+                        "evidence_ids": ["ev-home"],
+                    },
+                    {
+                        "index": 2,
+                        "action": "click",
+                        "status": "passed",
+                        "observation": 'Clicked a role=menuitem "Customer"',
+                        "url": "https://example.test/customers/123?token=secret",
+                        "screenshot": r"C:\temp\customer.png",
+                        "evidence_ids": ["ev-customer"],
+                    },
+                ],
+            }
+        ],
+        "evidence": [
+            {
+                "id": "ev-home",
+                "product": "Example Product",
+                "scenario_id": "map",
+                "kind": "browser_step",
+                "title": "Home",
+                "summary": "Opened home.",
+                "url": "https://example.test/home",
+                "data": {"title": "Home"},
+            },
+            {
+                "id": "ev-customer",
+                "product": "Example Product",
+                "scenario_id": "map",
+                "kind": "browser_step",
+                "title": "Customer",
+                "summary": "Opened customer detail.",
+                "url": "https://example.test/customers/123?token=secret",
+                "screenshot": r"C:\temp\customer.png",
+                "data": {"title": "Customer", "screenshot_path": r"C:\temp\customer.png"},
+            },
+        ],
+    }
+    (run_dir / "evidence.json").write_text(json.dumps(evidence), encoding="utf-8")
+    (run_dir / "report.md").write_text("# Historical Map Report\n\nReady.", encoding="utf-8")
+    (run_dir / "evaluation.json").write_text('{"overall_score": 1.0, "notes": []}', encoding="utf-8")
+    return run_dir
+
+
 def _wait_for_terminal(client: TestClient, run_id: str) -> dict:
     deadline = time.time() + 5
     detail = {}
@@ -248,9 +317,11 @@ def test_post_runs_starts_mock_run_and_artifacts_are_readable(tmp_path: Path) ->
         report = client.get(f"/api/runs/{run_id}/report")
         evidence = client.get(f"/api/runs/{run_id}/evidence")
         evaluation = client.get(f"/api/runs/{run_id}/evaluation")
+        walkthrough_map = client.get(f"/api/runs/{run_id}/map")
         events = client.get(f"/api/runs/{run_id}/events")
         agents = client.get(f"/api/runs/{run_id}/agents")
         report_artifact = client.get(f"/api/runs/{run_id}/artifacts/art_report_md/content")
+        artifacts = client.get(f"/api/runs/{run_id}/artifacts")
         runs = client.get("/api/runs")
 
         assert report.status_code == 200
@@ -262,6 +333,8 @@ def test_post_runs_starts_mock_run_and_artifacts_are_readable(tmp_path: Path) ->
         assert "screenshot_artifact_id" in evidence_items[0]
         assert evaluation.status_code == 200
         assert "overall_score" in evaluation.json()
+        assert walkthrough_map.status_code == 200
+        assert walkthrough_map.json()["schema_version"] == "1.0"
         assert events.status_code == 200
         event_items = events.json()["items"]
         event_types = [event["type"] for event in event_items]
@@ -274,6 +347,8 @@ def test_post_runs_starts_mock_run_and_artifacts_are_readable(tmp_path: Path) ->
         assert any(agent["type"] == "walker" for agent in agents.json()["items"])
         assert report_artifact.status_code == 200
         assert "# Product Walkthrough Research Report" in report_artifact.text
+        assert artifacts.status_code == 200
+        assert "walkthrough_map" in {item["type"] for item in artifacts.json()["items"]}
         assert runs.status_code == 200
         run_items = runs.json()["items"]
         listed = next(item for item in run_items if item["run_id"] == run_id)
@@ -1085,6 +1160,44 @@ def test_runs_lists_historical_run_with_artifact_availability(tmp_path: Path) ->
     assert historical["evidence_exists"] is True
     assert historical["evaluation_exists"] is True
     assert historical["screenshot_count"] == 1
+
+
+def test_walkthrough_map_endpoint_rebuilds_historical_run_and_artifacts_include_map(tmp_path: Path) -> None:
+    _write_plan(tmp_path)
+    run_dir = _write_historical_map_run(tmp_path)
+    assert not (run_dir / "walkthrough_map.json").exists()
+
+    with _client(tmp_path) as client:
+        map_response = client.get(f"/api/runs/{run_dir.name}/map")
+        artifacts_response = client.get(f"/api/runs/{run_dir.name}/artifacts")
+
+    assert map_response.status_code == 200
+    payload = map_response.json()
+    assert payload["schema_version"] == "1.0"
+    assert payload["artifact_id"] == "art_walkthrough_map"
+    assert (run_dir / "walkthrough_map.json").exists()
+    assert any(node["route"] == "/customers/:id" for node in payload["nodes"])
+    serialized = json.dumps(payload)
+    assert "C:" not in serialized
+    assert "token=secret" not in serialized
+
+    assert artifacts_response.status_code == 200
+    map_artifact = next(item for item in artifacts_response.json()["items"] if item["type"] == "walkthrough_map")
+    assert map_artifact["id"] == "art_walkthrough_map"
+    assert map_artifact["metadata"]["content_url"] == f"/api/runs/{run_dir.name}/artifacts/art_walkthrough_map/content"
+
+
+def test_walkthrough_map_endpoint_returns_404_without_evidence(tmp_path: Path) -> None:
+    _write_plan(tmp_path)
+    run_dir = tmp_path / "runs" / "run-20260102-030405-no-evidence"
+    run_dir.mkdir(parents=True)
+    (run_dir / "report.md").write_text("# Missing evidence\n", encoding="utf-8")
+
+    with _client(tmp_path) as client:
+        response = client.get(f"/api/runs/{run_dir.name}/map")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "ARTIFACT_NOT_FOUND"
 
 
 def test_delete_run_removes_run_directory_and_record(tmp_path: Path) -> None:
