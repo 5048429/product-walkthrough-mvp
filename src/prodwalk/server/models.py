@@ -169,6 +169,9 @@ class RunStartRequest(BaseModel):
     browser_timeout_sec: float = 600.0
     browser_user_data_dir: str | None = None
     browser_storage_state: str | None = None
+    browser_discover_all_pages: bool | None = None
+    browser_discovery_max_pages: int | None = None
+    browser_discovery_max_depth: int | None = None
     auth_session_id: str | None = None
     verification_mode: str = "off"
     verification_timeout_sec: float = 300.0

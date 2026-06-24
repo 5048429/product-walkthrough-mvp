@@ -2073,6 +2073,9 @@ class RunRuntime:
                 run_timeout_sec=request.browser_timeout_sec,
                 user_data_dir=options.browser_user_data_dir,
                 storage_state=options.browser_storage_state,
+                discover_all_pages=request.browser_discover_all_pages,
+                discovery_max_pages=request.browser_discovery_max_pages,
+                discovery_max_depth=request.browser_discovery_max_depth,
             )
         return MockBrowserWalker()
 
@@ -2138,6 +2141,20 @@ class RunRuntime:
                     "BAD_REQUEST",
                     "browser_timeout_sec must be between 0 and 7200.",
                     {"browser_timeout_sec": request.browser_timeout_sec},
+                )
+            if request.browser_discovery_max_pages is not None and not (1 <= request.browser_discovery_max_pages <= 1000):
+                raise ApiError(
+                    400,
+                    "BAD_REQUEST",
+                    "browser_discovery_max_pages must be between 1 and 1000.",
+                    {"browser_discovery_max_pages": request.browser_discovery_max_pages},
+                )
+            if request.browser_discovery_max_depth is not None and not (0 <= request.browser_discovery_max_depth <= 10):
+                raise ApiError(
+                    400,
+                    "BAD_REQUEST",
+                    "browser_discovery_max_depth must be between 0 and 10.",
+                    {"browser_discovery_max_depth": request.browser_discovery_max_depth},
                 )
             if request.verification_timeout_sec <= 0 or request.verification_timeout_sec > 3600:
                 raise ApiError(
@@ -2288,6 +2305,9 @@ class RunRuntime:
                 run_timeout_sec=request.browser_timeout_sec,
                 user_data_dir=user_data_dir,
                 storage_state=storage_state,
+                discover_all_pages=request.browser_discover_all_pages,
+                discovery_max_pages=request.browser_discovery_max_pages,
+                discovery_max_depth=request.browser_discovery_max_depth,
             )
         except Exception as exc:  # noqa: BLE001 - configuration errors are returned to the API caller.
             return [f"browser-use configuration failed: {exc}"]
@@ -2672,6 +2692,21 @@ class RunRuntime:
             browser_timeout_sec=float(params.get("browser_timeout_sec") or 600),
             browser_user_data_dir=str(session["browser_user_data_dir"]),
             browser_storage_state=str(session["browser_storage_state"]),
+            browser_discover_all_pages=(
+                bool(params["browser_discover_all_pages"])
+                if isinstance(params.get("browser_discover_all_pages"), bool)
+                else None
+            ),
+            browser_discovery_max_pages=(
+                int(params["browser_discovery_max_pages"])
+                if params.get("browser_discovery_max_pages") is not None
+                else None
+            ),
+            browser_discovery_max_depth=(
+                int(params["browser_discovery_max_depth"])
+                if params.get("browser_discovery_max_depth") is not None
+                else None
+            ),
             verification_mode=verification_mode if verification_mode in {"auto", "off", "manual"} else "auto",
             verification_timeout_sec=float(params.get("verification_timeout_sec") or session.get("timeout_sec") or 300),
             verification_success_url_contains=[
@@ -2821,6 +2856,9 @@ class RunRuntime:
             "browser_model": request.browser_model,
             "browser_max_steps": request.browser_max_steps,
             "browser_timeout_sec": request.browser_timeout_sec,
+            "browser_discover_all_pages": request.browser_discover_all_pages,
+            "browser_discovery_max_pages": request.browser_discovery_max_pages,
+            "browser_discovery_max_depth": request.browser_discovery_max_depth,
             "browser_user_data_dir_configured": options.browser_user_data_dir is not None,
             "browser_storage_state_configured": options.browser_storage_state is not None,
             "auth_session_id": options.auth_session_id,

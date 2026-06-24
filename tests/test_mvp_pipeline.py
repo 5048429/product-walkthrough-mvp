@@ -530,6 +530,70 @@ class BrowserUseLocalWalkerTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(Path(walker.storage_state or "").resolve(), root / "auth" / "storage_state.json")
             self.assertTrue((root / "auth").exists())
 
+    async def test_page_discovery_appends_unique_redacted_observations(self) -> None:
+        class FakeDiscoveryCrawler:
+            init_kwargs: dict | None = None
+
+            def __init__(self, **kwargs) -> None:
+                self.__class__.init_kwargs = kwargs
+
+            async def discover(self, start_urls: list[str]) -> list[dict]:
+                self.start_urls = start_urls
+                return [
+                    {
+                        "url": "https://example.test/dashboard",
+                        "title": "Dashboard",
+                        "depth": 0,
+                        "source_url": "",
+                        "source_label": "seed",
+                        "errors": [],
+                    },
+                    {
+                        "url": "https://example.test/settings?token=secret&utm_source=x&tab=team",
+                        "title": "Settings for user@example.test",
+                        "depth": 1,
+                        "source_url": "https://example.test/dashboard?token=secret",
+                        "source_label": "Settings",
+                        "errors": ["Saw user@example.test in page title"],
+                    },
+                ]
+
+        walker = BrowserUseLocalWalker(
+            max_steps=3,
+            discover_all_pages=True,
+            discovery_max_pages=5,
+            discovery_max_depth=2,
+        )
+        observations = [
+            {
+                "step_number": 1,
+                "action_names": ["go_to_url"],
+                "summary": "Loaded dashboard.",
+                "url": "https://example.test/dashboard",
+                "title": "Dashboard",
+                "errors": [],
+            }
+        ]
+        sensitive_data = {"example.test": {"test_username": "user@example.test"}}
+
+        with patch("prodwalk.agents.walker.PageDiscoveryCrawler", FakeDiscoveryCrawler):
+            errors = await walker._attach_page_discovery(
+                "Open https://example.test/dashboard and perform a product walkthrough.",
+                observations,
+                sensitive_data,
+                history_urls=[],
+            )
+
+        self.assertEqual(len(observations), 2)
+        discovered = observations[1]
+        self.assertEqual(discovered["action_names"], ["discover_page"])
+        self.assertEqual(discovered["url"], "https://example.test/settings?tab=team")
+        self.assertEqual(discovered["page_discovery"]["source_url"], "https://example.test/dashboard")
+        self.assertIn("<secret>test_username</secret>", discovered["title"])
+        self.assertIn("<secret>test_username</secret>", errors[0])
+        self.assertEqual(FakeDiscoveryCrawler.init_kwargs["max_pages"], 5)
+        self.assertEqual(FakeDiscoveryCrawler.init_kwargs["max_depth"], 2)
+
     def test_sensitive_data_is_loaded_from_credential_ref_env(self) -> None:
         previous = {
             "CLINK_UAT_ACCOUNT_USERNAME": os.environ.get("CLINK_UAT_ACCOUNT_USERNAME"),

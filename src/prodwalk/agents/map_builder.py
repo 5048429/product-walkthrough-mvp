@@ -471,12 +471,17 @@ def _update_node_from_step(node: dict[str, Any], record: StepRecord, canonical: 
                 node["name"] = clean_title
 
     status = str(record.status or "").lower()
+    is_discovery_step = "discover_page" in str(record.action or "").lower()
     text = f"{record.observation} {record.title or ''} {canonical.normalized_route}".lower()
     if "404" in text or "not found" in text or "error" in text:
         node["status"] = "error"
         node["page_type"] = "error"
     elif status in {"blocked", "failed", "friction"} and node.get("status") not in {"error", "external"}:
         node["status"] = "blocked"
+    elif is_discovery_step and node.get("status") not in {"error", "external", "blocked"} and int(node.get("visit_count") or 0) == 1:
+        node["status"] = "discovered"
+    elif not is_discovery_step and node.get("status") == "discovered":
+        node["status"] = "visited"
     if node.get("page_type") not in {"error", "external"}:
         node["page_type"] = _page_type(canonical.normalized_route, clean_title, record.observation)
 

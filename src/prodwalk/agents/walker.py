@@ -26,6 +26,7 @@ from ..models import (
     utc_now,
 )
 from ..credentials import CredentialStore, normalize_ref
+from .page_discovery import PageDiscoveryCrawler, normalize_discovery_url
 from .page_evidence import PageEvidenceCollector
 
 
@@ -156,6 +157,9 @@ class BrowserUseLocalWalker(BrowserWalker):
         run_timeout_sec: float | None = None,
         user_data_dir: str | None = None,
         storage_state: str | None = None,
+        discover_all_pages: bool | None = None,
+        discovery_max_pages: int | None = None,
+        discovery_max_depth: int | None = None,
     ) -> None:
         self.codex_config = self._load_codex_llm_config()
         self.provider = (os.getenv("BROWSER_USE_LLM_PROVIDER") or self.codex_config.get("provider") or "openai").lower()
@@ -183,6 +187,19 @@ class BrowserUseLocalWalker(BrowserWalker):
         )
         self.record_video_dir = os.getenv("BROWSER_USE_RECORD_VIDEO_DIR") or None
         self.collect_page_evidence = self._bool_env("BROWSER_USE_COLLECT_PAGE_EVIDENCE", default=True)
+        self.discover_all_pages = (
+            discover_all_pages
+            if discover_all_pages is not None
+            else bool(self._bool_env("BROWSER_USE_DISCOVER_ALL_PAGES", default=False))
+        )
+        self.discovery_max_pages = discovery_max_pages or self._int_env("BROWSER_USE_DISCOVERY_MAX_PAGES") or 50
+        self.discovery_max_depth = (
+            discovery_max_depth
+            if discovery_max_depth is not None
+            else self._int_env("BROWSER_USE_DISCOVERY_MAX_DEPTH") or 3
+        )
+        self.discovery_allowed_path_prefixes = self._csv_env("BROWSER_USE_DISCOVERY_ALLOWED_PATH_PREFIXES")
+        self.discovery_exclude_patterns = self._csv_env("BROWSER_USE_DISCOVERY_EXCLUDE_PATTERNS")
 
     async def walk(self, product: ProductTarget, scenario: Scenario) -> WalkthroughResult:
         started_at = utc_now()
@@ -250,6 +267,9 @@ class BrowserUseLocalWalker(BrowserWalker):
                     "history_file": run_data.get("history_file"),
                     "screenshot_paths": run_data.get("screenshot_paths", []),
                     "page_evidence_count": run_data.get("page_evidence_count", 0),
+                    "page_discovery_enabled": run_data.get("page_discovery_enabled", False),
+                    "discovered_page_count": run_data.get("discovered_page_count", 0),
+                    "page_discovery_errors": run_data.get("page_discovery_errors", []),
                     "urls": run_data.get("urls", []),
                     "action_names": run_data.get("action_names", []),
                     "errors": run_data.get("errors", []),
@@ -260,7 +280,8 @@ class BrowserUseLocalWalker(BrowserWalker):
         ]
 
         steps: list[WalkStep] = []
-        for index, observation in enumerate(observations[: self.max_steps], start=1):
+        step_observations = observations if run_data.get("page_discovery_enabled") else observations[: self.max_steps]
+        for index, observation in enumerate(step_observations, start=1):
             step_evidence_id = f"{evidence_id}-step-{index}"
             action_names = observation.get("action_names", [])
             action = ", ".join(action_names) if action_names else "Observe browser state"
@@ -321,6 +342,9 @@ class BrowserUseLocalWalker(BrowserWalker):
                 "completion_score": 1.0 if status == "completed" else 0.0,
                 "browser_steps": run_data.get("step_count", 0),
                 "page_evidence_count": run_data.get("page_evidence_count", 0),
+                "page_discovery_enabled": run_data.get("page_discovery_enabled", False),
+                "discovered_page_count": run_data.get("discovered_page_count", 0),
+                "page_discovery_errors": run_data.get("page_discovery_errors", []),
                 "run_timeout_sec": self.run_timeout_sec,
                 "timed_out": run_data.get("timed_out", False),
             },
@@ -434,15 +458,29 @@ focused and stop after roughly {self.max_steps} meaningful browser steps.
             history_file = None
         observations = self._extract_observations(history_file)
         await self._close_agent_after_run(agent)
+        history_urls = list(history.urls())
+        discovery_errors = await self._attach_page_discovery(task, observations, sensitive_data, history_urls)
         await self._attach_page_evidence(task, observations, sensitive_data)
         errors = [error for observation in observations for error in observation.get("errors", [])]
+        errors = list(dict.fromkeys([*errors, *discovery_errors]))
+        urls = list(
+            dict.fromkeys(
+                [
+                    *history_urls,
+                    *(str(observation.get("url") or "") for observation in observations if observation.get("url")),
+                ]
+            )
+        )
 
         return {
             "output": self._redact_sensitive_text(str(history.final_result() or ""), sensitive_data),
             "history_file": history_file,
             "screenshot_paths": history.screenshot_paths(),
             "page_evidence_count": sum(1 for observation in observations if observation.get("page_evidence")),
-            "urls": history.urls(),
+            "page_discovery_enabled": self.discover_all_pages,
+            "discovered_page_count": sum(1 for observation in observations if observation.get("page_discovery")),
+            "page_discovery_errors": discovery_errors,
+            "urls": urls,
             "action_names": history.action_names(),
             "step_count": history.number_of_steps(),
             "observations": observations,
@@ -494,6 +532,108 @@ focused and stop after roughly {self.max_steps} meaningful browser steps.
                     screenshot_paths.append(screenshot_path)
             if screenshot_paths:
                 observation["screenshot_paths"] = screenshot_paths
+
+    async def _attach_page_discovery(
+        self,
+        task: str,
+        observations: list[dict[str, Any]],
+        sensitive_data: dict[str, dict[str, str]],
+        history_urls: list[str],
+    ) -> list[str]:
+        if not self.discover_all_pages:
+            return []
+
+        start_urls = self._discovery_start_urls(task, observations, history_urls)
+        if not start_urls:
+            return []
+
+        crawler = PageDiscoveryCrawler(
+            headless=bool(self.headless),
+            executable_path=self.executable_path,
+            user_data_dir=self.user_data_dir,
+            storage_state=self.storage_state,
+            allowed_domains=self._discovery_allowed_domains_from_task(task),
+            allowed_path_prefixes=self.discovery_allowed_path_prefixes,
+            exclude_patterns=self.discovery_exclude_patterns or None,
+            max_pages=self.discovery_max_pages,
+            max_depth=self.discovery_max_depth,
+        )
+        try:
+            discovered_pages = await crawler.discover(start_urls)
+        except Exception as exc:  # noqa: BLE001 - discovery is best-effort.
+            return [self._redact_sensitive_text(f"Page discovery failed: {exc}", sensitive_data)]
+
+        errors: list[str] = []
+        seen = {
+            normalized
+            for normalized in (
+                normalize_discovery_url(str(observation.get("url") or "")) for observation in observations
+            )
+            if normalized
+        }
+        next_step = max([int(item.get("step_number") or 0) for item in observations] or [0]) + 1
+        for page in discovered_pages:
+            if not isinstance(page, dict):
+                continue
+            url = normalize_discovery_url(str(page.get("url") or ""))
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            page_errors = [
+                self._redact_sensitive_text(str(error), sensitive_data)
+                for error in page.get("errors") or []
+                if str(error).strip()
+            ]
+            errors.extend(page_errors)
+            source_url = normalize_discovery_url(str(page.get("source_url") or "")) or ""
+            observations.append(
+                {
+                    "step_number": next_step,
+                    "action_names": ["discover_page"],
+                    "summary": (
+                        "Discovered page during full same-origin crawl"
+                        + (f" from {source_url}." if source_url else ".")
+                    ),
+                    "url": url,
+                    "title": self._redact_sensitive_text(str(page.get("title") or ""), sensitive_data),
+                    "screenshot_path": None,
+                    "errors": page_errors,
+                    "page_discovery": {
+                        "discovered_at": page.get("discovered_at"),
+                        "depth": page.get("depth"),
+                        "source_url": source_url,
+                        "source_label": self._redact_sensitive_text(str(page.get("source_label") or ""), sensitive_data),
+                    },
+                }
+            )
+            next_step += 1
+        return errors
+
+    def _discovery_start_urls(
+        self,
+        task: str,
+        observations: list[dict[str, Any]],
+        history_urls: list[str],
+    ) -> list[str]:
+        candidates = [self._first_url_from_task(task), *history_urls]
+        candidates.extend(str(observation.get("url") or "") for observation in observations)
+        result: list[str] = []
+        for candidate in candidates:
+            normalized = normalize_discovery_url(str(candidate or ""))
+            if normalized and normalized not in result:
+                result.append(normalized)
+        return result
+
+    def _discovery_allowed_domains_from_task(self, task: str) -> list[str]:
+        url = self._first_url_from_task(task)
+        if not url:
+            return []
+        host = urlparse(url).hostname
+        domains = [host.lower()] if host else []
+        extra = os.getenv("BROWSER_USE_DISCOVERY_ALLOWED_DOMAINS")
+        if extra:
+            domains.extend(item.strip().lower() for item in extra.split(",") if item.strip())
+        return domains
 
     async def _stop_agent_after_cancel(self, agent: Any) -> None:
         stop = getattr(agent, "stop", None)
@@ -889,6 +1029,18 @@ focused and stop after roughly {self.max_steps} meaningful browser steps.
         if not value:
             return None
         return float(value)
+
+    def _int_env(self, name: str) -> int | None:
+        value = os.getenv(name)
+        if not value:
+            return None
+        return int(value)
+
+    def _csv_env(self, name: str) -> list[str]:
+        value = os.getenv(name)
+        if not value:
+            return []
+        return [item.strip() for item in value.split(",") if item.strip()]
 
     def _bool_env(self, name: str, default: bool | None) -> bool | None:
         value = os.getenv(name)

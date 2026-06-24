@@ -215,6 +215,16 @@ Each browser-use scenario is bounded by `--browser-timeout-sec`, so a stuck logi
 
 By default, browser-use runs also replay observed step URLs with Playwright/CDP after the agent finishes. This produces run-local `page-evidence/` artifacts and links them from normalized evidence as `artifact_ids`, while full-page and viewport screenshots are archived through the existing `screenshots/` pipeline.
 
+For fuller page coverage, enable the deterministic same-origin discovery pass. Browser-use still performs the guided walkthrough first; then Playwright crawls discovered internal links and safe navigation controls, captures each page's screenshot, HTML, text, elements, DOM snapshot, accessibility tree, network log, and console log, and adds those pages to `evidence.json` and `walkthrough_map.json`.
+
+```powershell
+$env:PYTHONPATH="src"
+$env:BROWSER_USE_HEADLESS="true"
+python -m prodwalk.cli run --config examples/clink_uat_full_continuous_plan.json --mode browser-use --out runs-clink-full --concurrency 1 --browser-max-steps 55 --browser-timeout-sec 900 --browser-user-data-dir .prodwalk\browser-profiles\clink_uat_account --report-language zh --browser-discover-all-pages --browser-discovery-max-pages 120 --browser-discovery-max-depth 4
+```
+
+Use `BROWSER_USE_DISCOVERY_ALLOWED_PATH_PREFIXES` when you want to limit the crawl to known app sections, for example `/analytics,/transactions,/settings,#/settings`. The discovery pass is read-only best effort: it follows links and safe navigation/menu/tab controls, skips external domains and destructive-looking routes, and avoids form submits.
+
 For Clink-style UAT runs, one command is enough:
 
 ```powershell
@@ -243,6 +253,16 @@ If verification is needed, complete it in the browser window, then press Enter i
 - `BROWSER_USE_COLLECT_PAGE_EVIDENCE`: collect Playwright/CDP page evidence after browser-use runs, default `true`
 - `BROWSER_USE_PAGE_EVIDENCE_TIMEOUT_SEC`: maximum seconds per replayed page evidence capture, default `20`
 - `BROWSER_USE_PAGE_EVIDENCE_MAX_HTML_CHARS`: maximum saved HTML characters per page, default `2000000`
+- `BROWSER_USE_DISCOVER_ALL_PAGES`: enable deterministic same-origin page discovery after browser-use, default `false`
+- `BROWSER_USE_DISCOVERY_MAX_PAGES`: maximum discovered pages to visit, default `50`
+- `BROWSER_USE_DISCOVERY_MAX_DEPTH`: maximum discovery link depth, default `3`
+- `BROWSER_USE_DISCOVERY_TIMEOUT_SEC`: maximum seconds per discovered page navigation, default `20`
+- `BROWSER_USE_DISCOVERY_ALLOWED_DOMAINS`: optional extra discovery domains; by default discovery stays on the product URL host
+- `BROWSER_USE_DISCOVERY_ALLOWED_PATH_PREFIXES`: comma-separated route prefixes to include, for example `/analytics,/settings,#/settings`
+- `BROWSER_USE_DISCOVERY_EXCLUDE_PATTERNS`: comma-separated regular expressions for routes to skip
+- `BROWSER_USE_DISCOVERY_MAX_CLICKS_PER_PAGE`: maximum safe navigation controls to try per page, default `20`
+- `BROWSER_USE_DISCOVERY_CLICK_NAVIGATION`: click safe menu/tab/navigation controls during discovery, default `true`
+- `BROWSER_USE_DISCOVERY_KEEP_QUERY_KEYS`: comma-separated query keys to preserve in discovered URLs, default `tab,view,section,mode,type,status`
 - `PRODWALK_CREDENTIAL_STORE`: local credential store path, default `.prodwalk/credentials.json`
 
 ## Verification Options

@@ -205,6 +205,9 @@ class _FakeBrowserUseWalker:
         run_timeout_sec: float | None = None,
         user_data_dir: str | None = None,
         storage_state: str | None = None,
+        discover_all_pages: bool | None = None,
+        discovery_max_pages: int | None = None,
+        discovery_max_depth: int | None = None,
     ) -> None:
         self.page_evidence = self.__class__.page_evidence
         self.__class__.page_evidence = None
@@ -214,6 +217,9 @@ class _FakeBrowserUseWalker:
             "run_timeout_sec": run_timeout_sec,
             "user_data_dir": user_data_dir,
             "storage_state": storage_state,
+            "discover_all_pages": discover_all_pages,
+            "discovery_max_pages": discovery_max_pages,
+            "discovery_max_depth": discovery_max_depth,
         }
 
     async def walk(self, product: ProductTarget, scenario: Scenario) -> WalkthroughResult:
@@ -447,6 +453,14 @@ def test_browser_use_parameter_validation_rejects_bad_values(tmp_path: Path) -> 
             "/api/runs",
             json={"plan_name": "smoke_plan.json", "mode": "browser-use", "verification_mode": "sometimes"},
         )
+        discovery_pages_response = client.post(
+            "/api/runs",
+            json={"plan_name": "smoke_plan.json", "mode": "browser-use", "browser_discovery_max_pages": 0},
+        )
+        discovery_depth_response = client.post(
+            "/api/runs",
+            json={"plan_name": "smoke_plan.json", "mode": "browser-use", "browser_discovery_max_depth": 11},
+        )
 
     assert concurrency_response.status_code == 400
     assert "concurrency 1" in concurrency_response.json()["error"]["message"]
@@ -456,6 +470,10 @@ def test_browser_use_parameter_validation_rejects_bad_values(tmp_path: Path) -> 
     assert "browser_user_data_dir" in path_response.json()["error"]["message"]
     assert verification_response.status_code == 400
     assert "verification_mode" in verification_response.json()["error"]["message"]
+    assert discovery_pages_response.status_code == 400
+    assert "browser_discovery_max_pages" in discovery_pages_response.json()["error"]["message"]
+    assert discovery_depth_response.status_code == 400
+    assert "browser_discovery_max_depth" in discovery_depth_response.json()["error"]["message"]
 
 
 def test_browser_use_local_run_uses_walker_and_exposes_artifacts(tmp_path: Path, monkeypatch) -> None:
@@ -529,6 +547,9 @@ def test_browser_use_local_run_uses_walker_and_exposes_artifacts(tmp_path: Path,
                 "browser_model": "gpt-test",
                 "browser_max_steps": 7,
                 "browser_timeout_sec": 12,
+                "browser_discover_all_pages": True,
+                "browser_discovery_max_pages": 33,
+                "browser_discovery_max_depth": 4,
                 "browser_user_data_dir": ".prodwalk/browser-profiles/test",
                 "browser_storage_state": ".prodwalk/browser-profiles/test/state.json",
                 "verification_mode": "manual",
@@ -560,7 +581,13 @@ def test_browser_use_local_run_uses_walker_and_exposes_artifacts(tmp_path: Path,
         "run_timeout_sec": 12.0,
         "user_data_dir": str((tmp_path / ".prodwalk/browser-profiles/test").resolve()),
         "storage_state": str((tmp_path / ".prodwalk/browser-profiles/test/state.json").resolve()),
+        "discover_all_pages": True,
+        "discovery_max_pages": 33,
+        "discovery_max_depth": 4,
     }
+    assert detail["params"]["browser_discover_all_pages"] is True
+    assert detail["params"]["browser_discovery_max_pages"] == 33
+    assert detail["params"]["browser_discovery_max_depth"] == 4
     assert artifacts.status_code == 200
     assert {item["type"] for item in artifact_items} >= {
         "report_markdown",

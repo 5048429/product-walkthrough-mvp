@@ -370,6 +370,16 @@ function normalizeRunParams(value: unknown): RunParams {
     browser_model: asNullableString(raw.browser_model),
     browser_max_steps: asNumber(raw.browser_max_steps, 25),
     browser_timeout_sec: asNumber(raw.browser_timeout_sec, 600),
+    browser_discover_all_pages:
+      typeof raw.browser_discover_all_pages === "boolean" ? asBoolean(raw.browser_discover_all_pages) : null,
+    browser_discovery_max_pages:
+      raw.browser_discovery_max_pages === null || raw.browser_discovery_max_pages === undefined
+        ? null
+        : asNumber(raw.browser_discovery_max_pages),
+    browser_discovery_max_depth:
+      raw.browser_discovery_max_depth === null || raw.browser_discovery_max_depth === undefined
+        ? null
+        : asNumber(raw.browser_discovery_max_depth),
     browser_user_data_dir: asNullableString(raw.browser_user_data_dir),
     browser_storage_state: asNullableString(raw.browser_storage_state),
     auth_session_id: asNullableString(raw.auth_session_id),

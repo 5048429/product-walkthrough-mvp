@@ -341,6 +341,54 @@ def test_build_map_works_without_browser_history() -> None:
     assert any(warning["code"] == "MAP_NO_BROWSER_HISTORY" for warning in walkthrough_map["warnings"])
 
 
+def test_build_map_marks_crawler_only_pages_as_discovered() -> None:
+    payload = {
+        "plan": {"products": [{"name": "Example", "kind": "owned", "url": "https://example.test/dashboard"}]},
+        "results": [
+            {
+                "product": "Example",
+                "product_kind": "owned",
+                "scenario_id": "full-crawl",
+                "status": "completed",
+                "steps": [
+                    {
+                        "index": 1,
+                        "action": "discover_page",
+                        "status": "passed",
+                        "observation": "Discovered page during full same-origin crawl.",
+                        "url": "https://example.test/settings/team",
+                        "evidence_ids": ["ev-discovered-settings"],
+                    }
+                ],
+            }
+        ],
+        "evidence": [
+            {
+                "id": "ev-discovered-settings",
+                "product": "Example",
+                "scenario_id": "full-crawl",
+                "kind": "browser_step",
+                "title": "Browser step 1",
+                "summary": "Discovered page during full same-origin crawl.",
+                "url": "https://example.test/settings/team",
+                "data": {"page_discovery": {"depth": 1, "source_url": "https://example.test/dashboard"}},
+            }
+        ],
+    }
+
+    walkthrough_map = build_walkthrough_map(
+        run_id="run-discovered",
+        evidence_payload=payload,
+        artifacts=[],
+        browser_histories=[],
+        generated_at="2026-06-24T00:00:00Z",
+    )
+
+    node = next(item for item in walkthrough_map["nodes"] if item["route"] == "/settings/team")
+    assert node["status"] == "discovered"
+    assert walkthrough_map["summary"]["discovered_count"] == 1
+
+
 def test_top_level_routes_share_layout_depth_instead_of_visit_order_chain() -> None:
     payload = {
         "plan": {"products": [{"name": "Example", "kind": "owned", "url": "https://example.test/analytics"}]},

@@ -140,6 +140,9 @@ export interface RunParams {
   browser_model?: string | null;
   browser_max_steps?: number;
   browser_timeout_sec?: number;
+  browser_discover_all_pages?: boolean | null;
+  browser_discovery_max_pages?: number | null;
+  browser_discovery_max_depth?: number | null;
   browser_user_data_dir?: string | null;
   browser_storage_state?: string | null;
   auth_session_id?: string | null;
@@ -184,6 +187,9 @@ export interface RunCreateRequest {
   browser_model: string | null;
   browser_max_steps: number;
   browser_timeout_sec: number;
+  browser_discover_all_pages?: boolean | null;
+  browser_discovery_max_pages?: number | null;
+  browser_discovery_max_depth?: number | null;
   browser_user_data_dir: string | null;
   browser_storage_state: string | null;
   auth_session_id?: string | null;

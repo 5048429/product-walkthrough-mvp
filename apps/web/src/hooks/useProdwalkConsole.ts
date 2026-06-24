@@ -70,6 +70,9 @@ export interface StartRunOptions {
   reportLanguage: string;
   browserMaxSteps?: number;
   browserTimeoutSec?: number;
+  browserDiscoverAllPages?: boolean | null;
+  browserDiscoveryMaxPages?: number | null;
+  browserDiscoveryMaxDepth?: number | null;
   browserUserDataDir?: string | null;
   browserStorageState?: string | null;
   authSessionId?: string | null;
@@ -1148,6 +1151,9 @@ export function useProdwalkConsole() {
       const isBrowserUse = options.mode === "browser-use";
       const browserMaxSteps = options.browserMaxSteps ?? 25;
       const browserTimeoutSec = options.browserTimeoutSec ?? 600;
+      const browserDiscoverAllPages = isBrowserUse ? options.browserDiscoverAllPages ?? null : null;
+      const browserDiscoveryMaxPages = isBrowserUse ? options.browserDiscoveryMaxPages ?? null : null;
+      const browserDiscoveryMaxDepth = isBrowserUse ? options.browserDiscoveryMaxDepth ?? null : null;
       const verificationMode = isBrowserUse ? options.verificationMode ?? "off" : "off";
       const verificationTimeoutSec = options.verificationTimeoutSec ?? 300;
       const verificationSuccessUrlContains = options.verificationSuccessUrlContains ?? [];
@@ -1164,6 +1170,9 @@ export function useProdwalkConsole() {
         browser_model: null,
         browser_max_steps: browserMaxSteps,
         browser_timeout_sec: browserTimeoutSec,
+        browser_discover_all_pages: browserDiscoverAllPages,
+        browser_discovery_max_pages: browserDiscoveryMaxPages,
+        browser_discovery_max_depth: browserDiscoveryMaxDepth,
         browser_user_data_dir: options.browserUserDataDir?.trim() || null,
         browser_storage_state: options.browserStorageState?.trim() || null,
         auth_session_id: isBrowserUse ? options.authSessionId?.trim() || null : null,
@@ -1192,6 +1201,9 @@ export function useProdwalkConsole() {
             browser_model: null,
             browser_max_steps: browserMaxSteps,
             browser_timeout_sec: browserTimeoutSec,
+            browser_discover_all_pages: browserDiscoverAllPages,
+            browser_discovery_max_pages: browserDiscoveryMaxPages,
+            browser_discovery_max_depth: browserDiscoveryMaxDepth,
             browser_user_data_dir: request.browser_user_data_dir,
             browser_storage_state: request.browser_storage_state,
             auth_session_id: request.auth_session_id,
@@ -1314,6 +1326,9 @@ export function useProdwalkConsole() {
       reportLanguage: selectedPlan?.report_language ?? "zh",
       browserMaxSteps: 60,
       browserTimeoutSec: 1200,
+      browserDiscoverAllPages: true,
+      browserDiscoveryMaxPages: 120,
+      browserDiscoveryMaxDepth: 4,
       authSessionId: loginSession.session_id,
       verificationMode: "auto",
       verificationTimeoutSec: loginSession.timeout_sec || 300,

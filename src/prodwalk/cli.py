@@ -59,6 +59,24 @@ def main() -> None:
         help="Storage state JSON file for reusing authenticated sessions.",
     )
     run_parser.add_argument(
+        "--browser-discover-all-pages",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="After browser-use finishes, crawl same-origin pages and collect page evidence for discovered pages.",
+    )
+    run_parser.add_argument(
+        "--browser-discovery-max-pages",
+        type=int,
+        default=None,
+        help="Maximum same-origin pages to discover when full-page discovery is enabled.",
+    )
+    run_parser.add_argument(
+        "--browser-discovery-max-depth",
+        type=int,
+        default=None,
+        help="Maximum link depth for same-origin page discovery.",
+    )
+    run_parser.add_argument(
         "--verification-mode",
         choices=["auto", "off"],
         default="auto",
@@ -105,6 +123,9 @@ async def _run(args: argparse.Namespace) -> None:
             run_timeout_sec=args.browser_timeout_sec,
             user_data_dir=browser_user_data_dir,
             storage_state=browser_storage_state,
+            discover_all_pages=args.browser_discover_all_pages,
+            discovery_max_pages=args.browser_discovery_max_pages,
+            discovery_max_depth=args.browser_discovery_max_depth,
         )
         if is_browser_use
         else MockBrowserWalker()
