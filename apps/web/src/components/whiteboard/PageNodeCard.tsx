@@ -1,4 +1,4 @@
-import type { Node, NodeProps } from "@xyflow/react";
+import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import type { PageNode } from "../../types/contracts";
 
 export interface PageNodeCardData extends Record<string, unknown> {
@@ -40,30 +40,59 @@ function shortUrl(url: string | null): string {
   }
 }
 
+function compactPurpose(page: PageNode): string {
+  if (page.purpose) {
+    return page.purpose;
+  }
+
+  if (page.key_functions.length) {
+    return page.key_functions[0];
+  }
+
+  return "页面结构已记录，等待更多 walkthrough 证据补全。";
+}
+
 export function PageNodeCard({ data, selected }: NodeProps<PageMapFlowNode>) {
   const page = data.node;
   const evidenceCount = page.evidence_ids.length;
   const issueCount = page.issues.length;
   const screenshotCount = page.screenshot_evidence.length;
   const subtitle = page.route ?? page.metadata.normalized_route ?? shortUrl(page.url);
+  const controls = page.key_controls.slice(0, 2);
+  const hasVisualEvidence = screenshotCount > 0 || Boolean(page.primary_screenshot_artifact_id);
 
   return (
     <article className={`page-node-card page-node-card-${page.status} ${selected ? "page-node-card-selected" : ""}`.trim()}>
-      <div className="page-node-status-row">
-        <span className={`page-status-dot page-status-dot-${page.status}`} aria-hidden="true" />
-        <span>{statusLabels[page.status]}</span>
-        <span>{typeLabels[page.page_type]}</span>
+      <Handle type="target" position={Position.Left} className="page-node-handle page-node-handle-target" />
+      <Handle type="source" position={Position.Right} className="page-node-handle page-node-handle-source" />
+      <div className="page-node-browser-bar">
+        <span className="page-node-window-dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
+        <span className="page-node-url" title={subtitle}>
+          {subtitle}
+        </span>
       </div>
-      <strong title={page.name}>{page.name}</strong>
-      <span className="page-node-route" title={subtitle}>
-        {subtitle}
-      </span>
+      <div className="page-node-viewport">
+        <div className="page-node-status-row">
+          <span className={`page-status-dot page-status-dot-${page.status}`} aria-hidden="true" />
+          <span>{statusLabels[page.status]}</span>
+          <span>{typeLabels[page.page_type]}</span>
+        </div>
+        <strong title={page.name}>{page.name}</strong>
+        <p title={compactPurpose(page)}>{compactPurpose(page)}</p>
+        <div className="page-node-control-row" aria-label="关键控件">
+          {controls.length ? controls.map((control) => <span key={control}>{control}</span>) : <span>{typeLabels[page.page_type]}</span>}
+        </div>
+      </div>
       <div className="page-node-meta">
         <span>{page.visit_count || 0} 次访问</span>
         <span>{evidenceCount} 条证据</span>
-        {screenshotCount ? <span>{screenshotCount} 张截图</span> : null}
+        {hasVisualEvidence ? <span>{screenshotCount || 1} 张截图</span> : null}
+        {issueCount ? <span className="page-node-issue">{issueCount} 个问题</span> : null}
       </div>
-      {issueCount ? <span className="page-node-issue">{issueCount} 个问题</span> : null}
     </article>
   );
 }

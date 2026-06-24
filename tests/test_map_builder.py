@@ -184,6 +184,111 @@ def test_build_map_works_without_browser_history() -> None:
     assert any(warning["code"] == "MAP_NO_BROWSER_HISTORY" for warning in walkthrough_map["warnings"])
 
 
+def test_top_level_routes_share_layout_depth_instead_of_visit_order_chain() -> None:
+    payload = {
+        "plan": {"products": [{"name": "Example", "kind": "owned", "url": "https://example.test/analytics"}]},
+        "results": [
+            {
+                "product": "Example",
+                "product_kind": "owned",
+                "scenario_id": "sidebar",
+                "status": "completed",
+                "steps": [
+                    {"index": 1, "action": "navigate", "status": "passed", "observation": "Home", "url": "https://example.test/analytics"},
+                    {
+                        "index": 2,
+                        "action": "click",
+                        "status": "passed",
+                        "observation": 'Clicked a role=menuitem "Transactions"',
+                        "url": "https://example.test/transactions",
+                    },
+                    {
+                        "index": 3,
+                        "action": "click",
+                        "status": "passed",
+                        "observation": 'Clicked a role=menuitem "Customers"',
+                        "url": "https://example.test/customers",
+                    },
+                    {
+                        "index": 4,
+                        "action": "click",
+                        "status": "passed",
+                        "observation": 'Clicked a role=menuitem "Settings"',
+                        "url": "https://example.test/settings/merchant",
+                    },
+                ],
+            }
+        ],
+        "evidence": [],
+    }
+
+    walkthrough_map = build_walkthrough_map(
+        run_id="run-sidebar",
+        evidence_payload=payload,
+        artifacts=[],
+        browser_histories=[],
+        generated_at="2026-06-24T00:00:00Z",
+    )
+
+    nodes_by_route = {node["route"]: node for node in walkthrough_map["nodes"]}
+    positions = walkthrough_map["layout"]["nodes"]
+
+    entry_position = positions[nodes_by_route["/analytics"]["id"]]
+    sibling_routes = ["/transactions", "/customers", "/settings/merchant"]
+    sibling_positions = [positions[nodes_by_route[route]["id"]] for route in sibling_routes]
+
+    assert walkthrough_map["layout"]["algorithm"] == "prototype_map"
+    assert entry_position["depth"] == 0
+    assert {position["depth"] for position in sibling_positions} == {1}
+    assert {position["x"] for position in sibling_positions} == {sibling_positions[0]["x"]}
+    assert sibling_positions[0]["x"] > entry_position["x"]
+    assert len({position["y"] for position in sibling_positions}) == len(sibling_routes)
+
+
+def test_detail_route_hangs_from_nearest_parent_route_even_when_visit_order_differs() -> None:
+    payload = {
+        "plan": {"products": [{"name": "Example", "kind": "owned", "url": "https://example.test/customers"}]},
+        "results": [
+            {
+                "product": "Example",
+                "product_kind": "owned",
+                "scenario_id": "detail",
+                "status": "completed",
+                "steps": [
+                    {"index": 1, "action": "navigate", "status": "passed", "observation": "Customer list", "url": "https://example.test/customers"},
+                    {"index": 2, "action": "click", "status": "passed", "observation": "Back home", "url": "https://example.test/dashboard"},
+                    {"index": 3, "action": "click", "status": "passed", "observation": "Open customer record", "url": "https://example.test/customers/123"},
+                ],
+            }
+        ],
+        "evidence": [],
+    }
+
+    walkthrough_map = build_walkthrough_map(
+        run_id="run-detail",
+        evidence_payload=payload,
+        artifacts=[],
+        browser_histories=[],
+        generated_at="2026-06-24T00:00:00Z",
+    )
+
+    nodes_by_route = {node["route"]: node for node in walkthrough_map["nodes"]}
+    customer_list = nodes_by_route["/customers"]
+    customer_detail = nodes_by_route["/customers/:id"]
+    list_position = walkthrough_map["layout"]["nodes"][customer_list["id"]]
+    detail_position = walkthrough_map["layout"]["nodes"][customer_detail["id"]]
+    structural_edges = [
+        edge
+        for edge in walkthrough_map["edges"]
+        if edge["source"] == customer_list["id"] and edge["target"] == customer_detail["id"]
+    ]
+
+    assert customer_detail["metadata"]["structural_parent_node_id"] == customer_list["id"]
+    assert detail_position["depth"] == list_position["depth"] + 1
+    assert detail_position["x"] > list_position["x"]
+    assert any(edge["kind"] == "inferred" and edge["metadata"].get("structural_relation") == "detail_parent" for edge in structural_edges)
+
+
 def test_build_map_layout_handles_cyclic_navigation() -> None:
     payload = {
         "plan": {"products": [{"name": "Example", "kind": "owned", "url": "https://example.test/a"}]},
@@ -214,6 +319,7 @@ def test_build_map_layout_handles_cyclic_navigation() -> None:
     assert walkthrough_map["summary"]["node_count"] == 2
     assert walkthrough_map["summary"]["edge_count"] == 2
     assert set(walkthrough_map["layout"]["nodes"]) == {node["id"] for node in walkthrough_map["nodes"]}
+    assert all(isinstance(position["depth"], int) for position in walkthrough_map["layout"]["nodes"].values())
 
 
 def test_real_sample_builds_clear_nodes_edges_and_safe_screenshots() -> None:
@@ -247,10 +353,33 @@ def test_real_sample_builds_clear_nodes_edges_and_safe_screenshots() -> None:
     assert any(node["route"] == "/analytics" for node in walkthrough_map["nodes"])
     assert any(node["route"] == "/settings/merchant/:id" for node in walkthrough_map["nodes"])
     names_by_route = {node["route"]: node["name"] for node in walkthrough_map["nodes"]}
+    nodes_by_route = {node["route"]: node for node in walkthrough_map["nodes"]}
+    positions = walkthrough_map["layout"]["nodes"]
     assert names_by_route["/data-insights/core-metrics"] == "Core Metrics"
     assert names_by_route["/transactions"] == "Transactions"
     assert names_by_route["/balances"] == "Balances"
     assert names_by_route["/settings/merchant"] == "Merchant Settings"
+    dashboard_sidebar_routes = [
+        "/analytics",
+        "/data-insights/core-metrics",
+        "/transactions",
+        "/balances",
+        "/customers",
+        "/subscriptions",
+        "/products",
+        "/developers",
+        "/settings/merchant",
+    ]
+    entry_position = positions[nodes_by_route["/analytics"]["id"]]
+    sidebar_routes = [route for route in dashboard_sidebar_routes if route != "/analytics"]
+    sidebar_positions = [positions[nodes_by_route[route]["id"]] for route in sidebar_routes]
+    assert walkthrough_map["layout"]["algorithm"] == "prototype_map"
+    assert entry_position["depth"] == 0
+    assert {position["depth"] for position in sidebar_positions} == {1}
+    assert {position["x"] for position in sidebar_positions} == {sidebar_positions[0]["x"]}
+    assert sidebar_positions[0]["x"] > entry_position["x"]
+    assert len({position["y"] for position in sidebar_positions}) == len(sidebar_routes)
+    assert positions[nodes_by_route["/settings/merchant/:id"]["id"]]["x"] > positions[nodes_by_route["/settings/merchant"]["id"]]["x"]
     assert all(
         screenshot["path"].startswith("screenshots/")
         for node in walkthrough_map["nodes"]

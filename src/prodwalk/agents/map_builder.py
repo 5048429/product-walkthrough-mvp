@@ -205,8 +205,9 @@ def build_walkthrough_map(
     _attach_finding_insights(nodes_by_id, evidence_payload.get("analyses"))
     for node in nodes_by_id.values():
         _finalize_node(node)
+    _annotate_route_structure(nodes_by_id)
 
-    edges = _build_edges(step_nodes, nodes_by_id)
+    edges = _with_structural_edges(_build_edges(step_nodes, nodes_by_id), nodes_by_id)
     if any(edge.get("kind") == "inferred" or edge.get("metadata", {}).get("inferred_reason") for edge in edges):
         warnings.append(
             {
@@ -595,6 +596,45 @@ def _finalize_node(node: dict[str, Any]) -> None:
     node["scenario_ids"] = [item for item in node["scenario_ids"] if item != "__browser_history__"]
 
 
+def _annotate_route_structure(nodes_by_id: dict[str, dict[str, Any]]) -> None:
+    nodes_by_route: dict[str, dict[str, Any]] = {}
+    for node in nodes_by_id.values():
+        route = str(node.get("metadata", {}).get("normalized_route") or node.get("route") or "")
+        if route:
+            nodes_by_route[route] = node
+
+    for node in nodes_by_id.values():
+        metadata = node.setdefault("metadata", {})
+        route = str(metadata.get("normalized_route") or node.get("route") or "")
+        segments = _route_segments(route)
+        section = segments[0] if segments else "home"
+        parent = _route_parent_node(route, nodes_by_route)
+        parent_id = parent.get("id") if parent else None
+
+        metadata["route_segments"] = segments
+        metadata["route_section"] = section
+        metadata["route_depth"] = len(segments)
+        metadata["structural_parent_node_id"] = parent_id
+        metadata["structural_parent_route"] = parent.get("route") if parent else None
+        metadata["layout_group"] = _layout_group_for_node(node, section)
+        metadata["layout_role"] = _layout_role_for_node(node, parent_id)
+
+    for product, product_nodes in _nodes_by_product(nodes_by_id.values()).items():
+        entry = _entry_node_for_product(product_nodes)
+        if entry is None:
+            continue
+        entry_metadata = entry.setdefault("metadata", {})
+        entry_metadata["layout_role"] = "entry"
+        entry_metadata["layout_group"] = "entry"
+        for node in product_nodes:
+            metadata = node.setdefault("metadata", {})
+            metadata["entry_node_id"] = entry["id"]
+            if node is not entry and metadata.get("layout_role") == "primary":
+                metadata["structural_parent_node_id"] = entry["id"]
+                metadata["structural_parent_route"] = entry.get("route")
+                metadata["layout_role"] = "main_section"
+
+
 def _build_edges(step_nodes: list[tuple[StepRecord, str]], nodes_by_id: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[tuple[int, str, str], list[tuple[StepRecord, str]]] = {}
     for record, node_id in step_nodes:
@@ -624,6 +664,78 @@ def _build_edges(step_nodes: list[tuple[StepRecord, str]], nodes_by_id: dict[str
     return sorted(edges_by_key.values(), key=lambda item: (item.get("from_step_index") is None, item.get("from_step_index") or 0, item["id"]))
 
 
+def _with_structural_edges(edges: list[dict[str, Any]], nodes_by_id: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    edges_by_pair = {(str(edge.get("source")), str(edge.get("target"))): edge for edge in edges}
+    for node in nodes_by_id.values():
+        metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+        parent_id = str(metadata.get("structural_parent_node_id") or "")
+        if not parent_id or parent_id == node.get("id") or parent_id not in nodes_by_id:
+            continue
+        source = nodes_by_id[parent_id]
+        relation = _structural_relation_for_node(node, source)
+        pair = (parent_id, str(node["id"]))
+        existing = edges_by_pair.get(pair)
+        if existing is not None:
+            existing.setdefault("metadata", {})["structural_relation"] = relation
+            existing["metadata"]["inferred_reason"] = (
+                f"{existing['metadata'].get('inferred_reason', '').rstrip()} "
+                f"Route hierarchy also groups this node under {source.get('name') or 'its parent'}."
+            ).strip()
+            existing["metadata"]["map_relation"] = relation
+            existing["confidence"] = round(max(float(existing.get("confidence") or 0), 0.68), 2)
+            continue
+        edge = _structural_edge(source, node, relation)
+        edges_by_pair[pair] = edge
+        edges.append(edge)
+    return sorted(
+        edges,
+        key=lambda item: (
+            item.get("from_step_index") is None,
+            item.get("from_step_index") if item.get("from_step_index") is not None else 10**9,
+            item.get("metadata", {}).get("structural_relation") is not None,
+            item["id"],
+        ),
+    )
+
+
+def _structural_edge(source: dict[str, Any], target: dict[str, Any], relation: str) -> dict[str, Any]:
+    source_id = str(source["id"])
+    target_id = str(target["id"])
+    if relation == "app_navigation":
+        label = "Open from navigation"
+        confidence = 0.62
+        reason = "This page is a peer product surface reached from the shared navigation shell."
+    elif relation == "detail_parent":
+        label = str(target.get("name") or "Detail page")
+        confidence = 0.64
+        reason = "Route hierarchy groups this detail page under its nearest visited parent route."
+    else:
+        label = str(target.get("name") or "Child page")
+        confidence = 0.58
+        reason = "Route hierarchy groups this page under its nearest visited parent route."
+    return {
+        "id": f"edge_struct_{source_id}__{target_id}"[:180],
+        "source": source_id,
+        "target": target_id,
+        "label": label,
+        "kind": "inferred",
+        "action": None,
+        "from_step_index": None,
+        "to_step_index": target.get("first_seen_step"),
+        "evidence_ids": list(target.get("evidence_ids") or []),
+        "event_ids": list(target.get("event_ids") or []),
+        "confidence": confidence,
+        "metadata": {
+            "source_url": source.get("canonical_url"),
+            "target_url": target.get("canonical_url"),
+            "inferred_reason": reason,
+            "occurrence_count": 0,
+            "structural_relation": relation,
+            "map_relation": relation,
+        },
+    }
+
+
 def _edge_from_transition(
     previous: StepRecord | None,
     current: StepRecord,
@@ -645,6 +757,7 @@ def _edge_from_transition(
     )
     action = current.action or (previous.action if previous else None)
     kind, confidence = _edge_kind_and_confidence(action, trigger_text)
+    relation = _transition_relation(source, target, kind)
     inferred_reason = "Adjacent walkthrough steps changed URL"
     if action:
         inferred_reason += f" after action: {action}"
@@ -675,6 +788,7 @@ def _edge_from_transition(
             "target_url": target.get("canonical_url"),
             "inferred_reason": inferred_reason,
             "occurrence_count": 1,
+            "map_relation": relation,
         },
     }
 
@@ -725,43 +839,238 @@ def _summary(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> dict[s
 
 
 def _layout(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> dict[str, Any]:
-    node_ids = [str(node["id"]) for node in nodes]
-    node_id_set = set(node_ids)
-    incoming = {node_id: 0 for node_id in node_ids}
-    outgoing: dict[str, list[str]] = {node_id: [] for node_id in node_ids}
-    for edge in edges:
-        source = str(edge.get("source") or "")
-        target = str(edge.get("target") or "")
-        if source not in node_id_set or target not in node_id_set or source == target:
-            continue
-        outgoing[source].append(target)
-        incoming[target] += 1
-
-    depths: dict[str, int] = {}
-    queue = [node_id for node_id in node_ids if incoming[node_id] == 0]
-    if not queue and node_ids:
-        queue = [node_ids[0]]
-
-    while queue:
-        node_id = queue.pop(0)
-        current_depth = depths.setdefault(node_id, 0)
-        for target in outgoing.get(node_id, []):
-            depths[target] = max(depths.get(target, 0), current_depth + 1)
-            incoming[target] -= 1
-            if incoming[target] == 0:
-                queue.append(target)
-
-    for index, node_id in enumerate(node_ids):
-        depths.setdefault(node_id, index)
-
-    by_depth: dict[int, list[str]] = {}
+    nodes_by_id = {str(node["id"]): node for node in nodes}
+    children_by_parent: dict[str, list[dict[str, Any]]] = {}
     for node in nodes:
-        by_depth.setdefault(depths.get(node["id"], 0), []).append(node["id"])
+        parent_id = str(node.get("metadata", {}).get("structural_parent_node_id") or "")
+        if parent_id and parent_id in nodes_by_id and parent_id != node["id"]:
+            children_by_parent.setdefault(parent_id, []).append(node)
+
     positions: dict[str, dict[str, int]] = {}
-    for depth, node_ids in by_depth.items():
-        for row, node_id in enumerate(node_ids):
-            positions[node_id] = {"x": depth * 320, "y": row * 180, "depth": depth}
-    return {"algorithm": "layered", "nodes": positions}
+    x_gap = 430
+    y_gap = 246
+    child_y_gap = 220
+    product_gap = 1500
+    product_groups = _nodes_by_product(nodes)
+    if not product_groups:
+        product_groups = {"Product": nodes}
+
+    for product_index, product_nodes in enumerate(product_groups.values()):
+        product_y = product_index * product_gap
+        entry_nodes = _sorted_layout_nodes([node for node in product_nodes if node.get("metadata", {}).get("layout_role") == "entry"])
+        if not entry_nodes:
+            fallback_entry = _entry_node_for_product(product_nodes)
+            entry_nodes = [fallback_entry] if fallback_entry is not None else []
+        main_nodes = _sorted_layout_nodes([node for node in product_nodes if node.get("metadata", {}).get("layout_role") == "main_section"])
+
+        for row, node in enumerate(entry_nodes):
+            positions[str(node["id"])] = {"x": 0, "y": product_y + row * y_gap, "depth": 0}
+
+        if not entry_nodes and main_nodes:
+            first = main_nodes.pop(0)
+            positions[str(first["id"])] = {"x": 0, "y": product_y, "depth": 0}
+
+        main_midpoint = (len(main_nodes) - 1) / 2
+        for row, node in enumerate(main_nodes):
+            positions[str(node["id"])] = {
+                "x": x_gap,
+                "y": product_y + int(round((row - main_midpoint) * y_gap)),
+                "depth": 1,
+            }
+
+        for node in [*entry_nodes, *main_nodes]:
+            _place_route_children(node, children_by_parent, positions, x_gap=x_gap, child_y_gap=child_y_gap, seen=set())
+
+    unplaced_regular = [
+        node
+        for node in nodes
+        if str(node["id"]) not in positions and node.get("metadata", {}).get("layout_role") in {"detail", "subroute", "primary"}
+    ]
+    regular_start_y = max((item["y"] for item in positions.values()), default=0) + y_gap
+    for row, node in enumerate(_sorted_layout_nodes(unplaced_regular)):
+        positions[str(node["id"])] = {"x": x_gap, "y": regular_start_y + row * y_gap, "depth": 1}
+
+    max_depth = max((item["depth"] for item in positions.values()), default=0)
+    partition_x = (max_depth + 2) * x_gap
+    partition_nodes = [
+        node
+        for node in nodes
+        if str(node["id"]) not in positions and node.get("metadata", {}).get("layout_role") in {"auth", "error", "external"}
+    ]
+    for row, node in enumerate(_sorted_layout_nodes(partition_nodes)):
+        positions[str(node["id"])] = {"x": partition_x, "y": row * y_gap, "depth": max_depth + 2}
+
+    remaining = [node for node in nodes if str(node["id"]) not in positions]
+    remaining_start_y = max((item["y"] for item in positions.values()), default=0) + y_gap
+    for row, node in enumerate(_sorted_layout_nodes(remaining)):
+        positions[str(node["id"])] = {"x": 0, "y": remaining_start_y + row * y_gap, "depth": 0}
+    return {"algorithm": "prototype_map", "nodes": positions}
+
+
+def _place_route_children(
+    node: dict[str, Any],
+    children_by_parent: dict[str, list[dict[str, Any]]],
+    positions: dict[str, dict[str, int]],
+    *,
+    x_gap: int,
+    child_y_gap: int,
+    seen: set[str],
+) -> None:
+    node_id = str(node["id"])
+    if node_id in seen or node_id not in positions:
+        return
+    seen.add(node_id)
+    children = _sorted_layout_nodes(children_by_parent.get(node_id, []))
+    if not children:
+        return
+    parent_position = positions[node_id]
+    midpoint = (len(children) - 1) / 2
+    for index, child in enumerate(children):
+        child_id = str(child["id"])
+        if child_id in positions:
+            continue
+        y_offset = int(round((index - midpoint) * child_y_gap))
+        depth = int(parent_position["depth"]) + 1
+        positions[child_id] = {
+            "x": depth * x_gap,
+            "y": int(parent_position["y"]) + y_offset,
+            "depth": depth,
+        }
+        _place_route_children(child, children_by_parent, positions, x_gap=x_gap, child_y_gap=child_y_gap, seen=seen)
+
+
+def _sorted_layout_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        nodes,
+        key=lambda node: (
+            node.get("first_seen_step") is None,
+            node.get("first_seen_step") if node.get("first_seen_step") is not None else 10**9,
+            str(node.get("metadata", {}).get("route_section") or ""),
+            str(node.get("route") or ""),
+            str(node.get("id") or ""),
+        ),
+    )
+
+
+def _nodes_by_product(nodes: Any) -> dict[str, list[dict[str, Any]]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        groups.setdefault(str(node.get("product") or "Product"), []).append(node)
+    return groups
+
+
+def _entry_node_for_product(nodes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates = [node for node in nodes if str(node.get("status") or "") not in {"external", "error"}]
+    if not candidates:
+        candidates = list(nodes)
+    if not candidates:
+        return None
+    return sorted(
+        candidates,
+        key=lambda node: (
+            node.get("first_seen_step") is None,
+            node.get("first_seen_step") if node.get("first_seen_step") is not None else 10**9,
+            0 if node.get("page_type") == "dashboard" else 1,
+            str(node.get("route") or ""),
+        ),
+    )[0]
+
+
+def _structural_relation_for_node(node: dict[str, Any], source: dict[str, Any]) -> str:
+    metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+    source_metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    if node.get("page_type") == "detail":
+        return "detail_parent"
+    if metadata.get("entry_node_id") == source.get("id") and source_metadata.get("layout_role") == "entry":
+        return "app_navigation"
+    return "route_parent"
+
+
+def _transition_relation(source: dict[str, Any], target: dict[str, Any], kind: str) -> str:
+    source_metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    target_metadata = target.get("metadata") if isinstance(target.get("metadata"), dict) else {}
+    if target.get("status") == "external" or target.get("page_type") == "external":
+        return "external"
+    if target.get("status") in {"blocked", "error"} or target.get("page_type") in {"auth", "error"}:
+        return "blocked"
+    if target_metadata.get("structural_parent_node_id") == source.get("id"):
+        return _structural_relation_for_node(target, source)
+    if source_metadata.get("layout_role") == "entry" and target_metadata.get("entry_node_id") == source.get("id"):
+        return "app_navigation"
+    return "walkthrough_path"
+
+
+def _route_parent_node(route: str, nodes_by_route: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    for candidate in _parent_route_candidates(route):
+        parent = nodes_by_route.get(candidate)
+        if parent is not None:
+            return parent
+    return None
+
+
+def _parent_route_candidates(route: str) -> list[str]:
+    segments = _route_segments(route)
+    if len(segments) < 2:
+        return []
+    candidates: list[str] = []
+    for length in range(len(segments) - 1, 0, -1):
+        candidates.append(_route_from_segments(route, segments[:length]))
+    return candidates
+
+
+def _route_segments(route: str) -> list[str]:
+    body = _route_body(route)
+    if not body or body == "/":
+        return []
+    return [segment for segment in body.split("/") if segment]
+
+
+def _route_body(route: str) -> str:
+    body = str(route or "").split("?", 1)[0]
+    if "#" in body:
+        body = body.split("#", 1)[1]
+    if body.startswith("!"):
+        body = body[1:]
+    return body if body.startswith("/") else f"/{body}" if body else "/"
+
+
+def _route_from_segments(original_route: str, segments: list[str]) -> str:
+    prefix = ""
+    if str(original_route).startswith("#!/"):
+        prefix = "#!"
+    elif str(original_route).startswith("#/"):
+        prefix = "#"
+    return f"{prefix}/{'/'.join(segments)}" if segments else f"{prefix}/"
+
+
+def _layout_group_for_node(node: dict[str, Any], section: str) -> str:
+    status = str(node.get("status") or "")
+    page_type = str(node.get("page_type") or "")
+    if status == "external" or page_type == "external":
+        return "external"
+    if status == "error" or page_type == "error":
+        return "error"
+    if page_type == "auth":
+        return "auth"
+    if section == "settings":
+        return "settings"
+    return "primary"
+
+
+def _layout_role_for_node(node: dict[str, Any], parent_id: str | None) -> str:
+    status = str(node.get("status") or "")
+    page_type = str(node.get("page_type") or "")
+    if status == "external" or page_type == "external":
+        return "external"
+    if status == "error" or page_type == "error":
+        return "error"
+    if page_type == "auth" and not parent_id:
+        return "auth"
+    if parent_id:
+        return "detail" if page_type == "detail" else "subroute"
+    return "primary"
 
 
 def _products_from_payload(payload: dict[str, Any]) -> list[dict[str, str]]:
@@ -1019,14 +1328,17 @@ def _titleize(value: str) -> str:
 
 def _page_type(route: str, title: str | None, observation: str | None) -> str:
     text = f"{route} {title or ''} {observation or ''}".lower()
-    if any(marker in text for marker in ("login", "signin", "sign-in", "/auth")):
+    route_l = route.lower()
+    if any(marker in route_l for marker in ("login", "signin", "sign-in", "/auth")):
         return "auth"
     if any(marker in text for marker in ("404", "not found", " error")):
         return "error"
-    if "settings" in text or "merchant setting" in text:
-        return "settings"
     if any(marker in route for marker in (":id", "/detail", "/details")):
         return "detail"
+    if "settings" in text or "merchant setting" in text:
+        return "settings"
+    if any(marker in text for marker in ("login", "signin", "sign-in")):
+        return "auth"
     if any(marker in text for marker in ("form", "create", "edit", "new ")):
         return "form"
     if any(marker in text for marker in ("analytics", "dashboard", "overview", "home")):

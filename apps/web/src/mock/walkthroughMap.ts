@@ -368,14 +368,14 @@ export const mockWalkthroughMap: WalkthroughMapResponse = {
     },
   ],
   layout: {
-    algorithm: "layered",
+    algorithm: "prototype_whiteboard",
     nodes: {
       page_our_product_onboarding: { x: 0, y: 0, depth: 0 },
-      page_competitor_project_new: { x: 0, y: 180, depth: 0 },
-      page_our_product_analytics: { x: 280, y: 0, depth: 1 },
-      page_docs_external: { x: 280, y: 180, depth: 1 },
-      page_competitor_checkout_retry: { x: 280, y: 360, depth: 1 },
-      page_legacy_settings: { x: 560, y: 80, depth: 2 },
+      page_our_product_analytics: { x: 430, y: -136, depth: 1 },
+      page_legacy_settings: { x: 860, y: -20, depth: 2 },
+      page_docs_external: { x: 1290, y: -220, depth: 3 },
+      page_competitor_project_new: { x: 0, y: 390, depth: 0 },
+      page_competitor_checkout_retry: { x: 430, y: 390, depth: 1 },
     },
   },
   warnings: [

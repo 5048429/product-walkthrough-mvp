@@ -3,6 +3,7 @@ import {
   Background,
   Controls,
   MarkerType,
+  Position,
   ReactFlow,
   type Edge,
   type NodeTypes,
@@ -12,6 +13,7 @@ import { EmptyState } from "../common/EmptyState";
 import type { PageEdge, PageNode, WalkthroughMapResponse } from "../../types/contracts";
 import { PageNodeCard, type PageMapFlowNode } from "./PageNodeCard";
 import { getPageMapLayout } from "./pageMapLayout";
+import { getPageEdgeRelation, pageEdgeRelationColors, pageEdgeRelationLabels } from "./pageMapRelations";
 
 interface WhiteboardCanvasProps {
   map: WalkthroughMapResponse;
@@ -24,41 +26,36 @@ const nodeTypes: NodeTypes = {
   pageNode: PageNodeCard,
 };
 
-const edgeColorByKind: Record<PageEdge["kind"], string> = {
-  navigation: "#56708d",
-  menu: "#1f5ed2",
-  button: "#087657",
-  link: "#6b7280",
-  redirect: "#946100",
-  form_submit: "#8b5cf6",
-  inferred: "#9aa8ba",
-};
-
-function makeFlowEdges(edges: PageEdge[], visibleIds: Set<string>): Edge[] {
+function makeFlowEdges(edges: PageEdge[], visibleIds: Set<string>, nodesById: Map<string, PageNode>): Edge[] {
   return edges
     .filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target))
     .map((edge) => {
-      const color = edge.confidence < 0.5 ? "#9aa8ba" : edgeColorByKind[edge.kind];
+      const target = nodesById.get(edge.target);
+      const relation = getPageEdgeRelation(edge, target);
+      const color = pageEdgeRelationColors[relation];
+      const lowConfidence = edge.kind === "inferred" || edge.confidence < 0.5;
 
       return {
         id: edge.id,
         source: edge.source,
         target: edge.target,
-        label: edge.label || edge.kind.replaceAll("_", " "),
+        label: edge.label || pageEdgeRelationLabels[relation],
         type: "smoothstep",
+        className: `page-map-edge page-map-edge-${relation}`,
+        interactionWidth: 18,
         markerEnd: {
           type: MarkerType.ArrowClosed,
           color,
         },
         style: {
           stroke: color,
-          strokeWidth: edge.confidence < 0.5 ? 1.4 : 1.8,
-          strokeDasharray: edge.kind === "inferred" || edge.confidence < 0.5 ? "6 5" : undefined,
+          strokeWidth: relation === "blocked" ? 2.7 : 2.25,
+          strokeDasharray: lowConfidence || relation === "external" ? "8 6" : undefined,
         },
         labelStyle: {
-          fill: "#344256",
+          fill: color,
           fontSize: 11,
-          fontWeight: 650,
+          fontWeight: 760,
         },
         labelBgStyle: {
           fill: "#ffffff",
@@ -72,6 +69,7 @@ function makeFlowEdges(edges: PageEdge[], visibleIds: Set<string>): Edge[] {
 
 export function WhiteboardCanvas({ map, nodes, selectedNodeId, onSelectNode }: WhiteboardCanvasProps) {
   const visibleIds = useMemo(() => new Set(nodes.map((node) => node.id)), [nodes]);
+  const nodesById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
   const positions = useMemo(() => getPageMapLayout(nodes, map.edges, map.layout), [map.edges, map.layout, nodes]);
   const flowNodes = useMemo<PageMapFlowNode[]>(
     () =>
@@ -79,13 +77,15 @@ export function WhiteboardCanvas({ map, nodes, selectedNodeId, onSelectNode }: W
         id: node.id,
         type: "pageNode",
         position: positions[node.id] ?? { x: 0, y: 0 },
+        sourcePosition: Position.Right,
+        targetPosition: Position.Left,
         data: { node },
         selected: node.id === selectedNodeId,
         draggable: false,
       })),
     [nodes, positions, selectedNodeId],
   );
-  const flowEdges = useMemo(() => makeFlowEdges(map.edges, visibleIds), [map.edges, visibleIds]);
+  const flowEdges = useMemo(() => makeFlowEdges(map.edges, visibleIds, nodesById), [map.edges, nodesById, visibleIds]);
 
   if (!nodes.length) {
     return (
@@ -111,7 +111,7 @@ export function WhiteboardCanvas({ map, nodes, selectedNodeId, onSelectNode }: W
         onNodeClick={(_, node) => onSelectNode(node.id)}
         proOptions={{ hideAttribution: true }}
       >
-        <Background color="#d6dee9" gap={24} size={1} />
+        <Background color="#d6dee9" gap={28} size={1} />
         <Controls showInteractive={false} position="bottom-left" />
       </ReactFlow>
     </div>
