@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..events import RunEvent, RunEventCallback, dispatch_run_event
-from ..models import ResearchPlan, Scenario, WalkthroughResult, normalize_report_language, to_jsonable, utc_now
+from ..models import ChecklistItem, ResearchPlan, Scenario, WalkthroughResult, normalize_report_language, to_jsonable, utc_now
 from .analyst import CompetitiveAnalyst, ProductAnalyst
 from .evaluator import Evaluator
 from .evidence import EvidenceExtractor
@@ -44,6 +44,8 @@ class ResearchDirector:
         output_dir = Path(run_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         report_language = self.report_language or normalize_report_language(plan.report_language)
+        if not plan.checklist:
+            plan.checklist = self._default_checklist(report_language)
         previous_run_id = self._active_run_id
         self._active_run_id = self._run_id_from_dir(output_dir)
 
@@ -139,8 +141,10 @@ class ResearchDirector:
             )
 
             evidence_path = output_dir / "evidence.json"
+            issues_path = output_dir / "issues.json"
             report_path = output_dir / "report.md"
             evaluation_path = output_dir / "evaluation.json"
+            issues_payload = self._issues_payload(plan, analyses, review_notes, report_language)
 
             payload = {
                 "created_at": utc_now(),
@@ -156,6 +160,9 @@ class ResearchDirector:
             evidence_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
             await self._emit_artifact_written("evidence_json", evidence_path)
 
+            issues_path.write_text(json.dumps(to_jsonable(issues_payload), indent=2, ensure_ascii=False), encoding="utf-8")
+            await self._emit_artifact_written("issues_json", issues_path)
+
             report_path.write_text(markdown, encoding="utf-8")
             await self._emit_artifact_written("report_markdown", report_path)
 
@@ -168,9 +175,10 @@ class ResearchDirector:
             await self._emit_agent_finished(
                 "ResearchDirector",
                 data={
-                    "artifact_count": 3,
+                    "artifact_count": 4,
                     "result_count": len(results),
                     "evidence_count": len(evidence),
+                    "issue_count": len(issues_payload["issues"]),
                 },
             )
             await self._emit_event(
@@ -180,7 +188,8 @@ class ResearchDirector:
                 message="Research run completed",
                 data={
                     "result_count": len(results),
-                    "artifact_count": 3,
+                    "artifact_count": 4,
+                    "issue_count": len(issues_payload["issues"]),
                     "overall_score": evaluation.overall_score,
                 },
             )
@@ -188,6 +197,7 @@ class ResearchDirector:
             return {
                 "run_dir": output_dir,
                 "evidence": evidence_path,
+                "issues": issues_path,
                 "report": report_path,
                 "evaluation": evaluation_path,
             }
@@ -353,3 +363,72 @@ class ResearchDirector:
             "metrics": to_jsonable(result.metrics),
             "errors": to_jsonable(result.errors),
         }
+
+    def _issues_payload(
+        self,
+        plan: ResearchPlan,
+        analyses: list[Any],
+        review_notes: list[Any],
+        language: str,
+    ) -> dict[str, Any]:
+        issues = [
+            finding
+            for analysis in analyses
+            for finding in analysis.findings
+            if getattr(finding, "issue_type", "product") != "positive"
+        ]
+        priority_counts: dict[str, int] = {}
+        type_counts: dict[str, int] = {}
+        severity_counts: dict[str, int] = {}
+        for issue in issues:
+            priority_counts[issue.priority] = priority_counts.get(issue.priority, 0) + 1
+            type_counts[issue.issue_type] = type_counts.get(issue.issue_type, 0) + 1
+            severity_counts[issue.severity] = severity_counts.get(issue.severity, 0) + 1
+
+        return {
+            "created_at": utc_now(),
+            "report_language": language,
+            "schema_version": "1.0",
+            "summary": {
+                "issue_count": len(issues),
+                "product_issue_count": type_counts.get("product", 0),
+                "coverage_gap_count": type_counts.get("coverage", 0),
+                "system_reliability_issue_count": type_counts.get("system_reliability", 0),
+                "priority_counts": priority_counts,
+                "severity_counts": severity_counts,
+                "type_counts": type_counts,
+            },
+            "issues": issues,
+            "checklist": plan.checklist,
+            "review_notes": review_notes,
+        }
+
+    def _default_checklist(self, language: str) -> list[ChecklistItem]:
+        if language == "zh":
+            titles = [
+                "关键页面可以正常加载并保留可读截图证据",
+                "核心路径有明确下一步、成功反馈和失败反馈",
+                "空状态解释原因并提供安全下一步",
+                "敏感信息默认隐藏，查看动作可审计",
+                "高风险操作按角色、状态和确认机制隔离",
+                "发现的高风险入口有安全探测策略或明确覆盖缺口",
+            ]
+        else:
+            titles = [
+                "Critical pages load and retain readable screenshot evidence",
+                "Core journeys expose clear next steps, success feedback, and failure feedback",
+                "Empty states explain the cause and provide a safe next step",
+                "Sensitive information is masked by default and reveal actions are auditable",
+                "High-risk actions are gated by role, state, and confirmation",
+                "Discovered high-risk entries have safe probing strategies or explicit coverage gaps",
+            ]
+        return [
+            ChecklistItem(
+                id=f"pm-check-{index}",
+                title=title,
+                status="untested",
+                source="default_pm_review",
+                severity="high" if index in {1, 4, 5} else "medium",
+            )
+            for index, title in enumerate(titles, start=1)
+        ]

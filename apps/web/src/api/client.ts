@@ -17,7 +17,9 @@ import type {
   EventLevel,
   EventListResponse,
   HealthResponse,
+  IssuesResponse,
   ListResponse,
+  PageEntry,
   PageEvidence,
   PlanDetailResponse,
   PlanSummary,
@@ -75,6 +77,7 @@ const artifactTypes = new Set<ArtifactType>([
   "agents_json",
   "artifacts_json",
   "evidence_json",
+  "issues_json",
   "report_markdown",
   "evaluation_json",
   "walkthrough_map",
@@ -350,6 +353,22 @@ function normalizeRunSummary(value: unknown): RunSummary {
       total_scenarios: asNumber(progress.total_scenarios),
       completed_scenarios: asNumber(progress.completed_scenarios),
       failed_scenarios: asNumber(progress.failed_scenarios),
+      current_stage: asNullableString(progress.current_stage),
+      current_stage_label: asNullableString(progress.current_stage_label),
+      current_stage_status: asNullableString(progress.current_stage_status),
+      stage_started_at: asNullableString(progress.stage_started_at),
+      elapsed_ms: asNumber(progress.elapsed_ms),
+      elapsed_sec: asNumber(progress.elapsed_sec),
+      stage_elapsed_ms: asNumber(progress.stage_elapsed_ms),
+      stage_elapsed_sec: asNumber(progress.stage_elapsed_sec),
+      completed_stage_count: asNumber(progress.completed_stage_count),
+      total_stage_count: asNumber(progress.total_stage_count),
+      evidence_count: asNumber(progress.evidence_count),
+      issue_count: asNumber(progress.issue_count),
+      high_issue_count: asNumber(progress.high_issue_count),
+      artifact_count: asNumber(progress.artifact_count),
+      screenshot_count: asNumber(progress.screenshot_count),
+      browser_history_count: asNumber(progress.browser_history_count),
     },
     report_exists: asBoolean(raw.report_exists),
     evidence_exists: asBoolean(raw.evidence_exists),
@@ -627,20 +646,96 @@ function normalizeEvaluation(value: unknown): EvaluationResponse {
       Object.entries(asRecord(raw.scores)).filter((entry): entry is [string, number] => typeof entry[1] === "number"),
     ),
     notes: asStringArray(raw.notes),
+    quality_gate_status: asNullableString(raw.quality_gate_status) ?? undefined,
+  };
+}
+
+function normalizeStructuredIssue(value: unknown): IssuesResponse["issues"][number] {
+  const raw = asRecord(value);
+
+  return {
+    id: asString(raw.id),
+    product: asString(raw.product, "Unknown product"),
+    scenario_id: asString(raw.scenario_id, "unknown_scenario"),
+    severity: asString(raw.severity, "medium"),
+    theme: asString(raw.theme),
+    claim: asString(raw.claim),
+    evidence_ids: asStringArray(raw.evidence_ids),
+    recommendation: asString(raw.recommendation),
+    confidence: asNumber(raw.confidence),
+    issue_type: asString(raw.issue_type, "product"),
+    priority: asString(raw.priority, "P2"),
+    page: asString(raw.page),
+    current_behavior: asString(raw.current_behavior),
+    expected_behavior: asString(raw.expected_behavior),
+    repro_steps: asStringArray(raw.repro_steps),
+    acceptance_criteria: asStringArray(raw.acceptance_criteria),
+    screenshot_refs: asStringArray(raw.screenshot_refs),
+    source: asString(raw.source),
+    confidence_reason: asString(raw.confidence_reason),
+  };
+}
+
+function normalizeChecklistItem(value: unknown): IssuesResponse["checklist"][number] {
+  const raw = asRecord(value);
+
+  return {
+    id: asString(raw.id),
+    title: asString(raw.title),
+    status: asString(raw.status, "untested"),
+    source: asString(raw.source, "plan"),
+    severity: asString(raw.severity, "medium"),
+    evidence_ids: asStringArray(raw.evidence_ids),
+    notes: asString(raw.notes),
+  };
+}
+
+function numberRecord(value: unknown): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(asRecord(value)).map(([key, item]) => [key, asNumber(item)]),
+  );
+}
+
+function normalizeIssues(value: unknown): IssuesResponse {
+  const raw = asRecord(value);
+  const summary = asRecord(raw.summary);
+
+  return {
+    run_id: asNullableString(raw.run_id) ?? undefined,
+    artifact_id: asNullableString(raw.artifact_id) ?? undefined,
+    created_at: asNullableString(raw.created_at),
+    report_language: asNullableString(raw.report_language),
+    schema_version: asString(raw.schema_version, "1.0"),
+    summary: {
+      ...summary,
+      issue_count: asNumber(summary.issue_count),
+      product_issue_count: asNumber(summary.product_issue_count),
+      coverage_gap_count: asNumber(summary.coverage_gap_count),
+      system_reliability_issue_count: asNumber(summary.system_reliability_issue_count),
+      priority_counts: numberRecord(summary.priority_counts),
+      severity_counts: numberRecord(summary.severity_counts),
+      type_counts: numberRecord(summary.type_counts),
+    },
+    issues: Array.isArray(raw.issues) ? raw.issues.map(normalizeStructuredIssue) : [],
+    checklist: Array.isArray(raw.checklist) ? raw.checklist.map(normalizeChecklistItem) : [],
+    review_notes: asRecordArray(raw.review_notes),
   };
 }
 
 function normalizeReport(value: unknown): ReportResponse {
   const raw = asRecord(value);
   const evaluation = raw.evaluation ? normalizeEvaluation({ ...asRecord(raw.evaluation), run_id: raw.run_id, artifact_id: raw.evaluation_artifact_id }) : null;
+  const issues = raw.issues ? normalizeIssues({ ...asRecord(raw.issues), run_id: raw.run_id, artifact_id: raw.issues_artifact_id }) : null;
 
   return {
     run_id: asString(raw.run_id),
     language: asNullableString(raw.language),
     markdown_artifact_id: asString(raw.markdown_artifact_id, "art_report_md"),
     evaluation_artifact_id: asNullableString(raw.evaluation_artifact_id),
+    issues_artifact_id: asNullableString(raw.issues_artifact_id),
     markdown: asString(raw.markdown),
     evaluation,
+    issues,
     generated_at: asNullableString(raw.generated_at),
     artifacts: Array.isArray(raw.artifacts) ? raw.artifacts.map(normalizeArtifact) : undefined,
   };
@@ -657,6 +752,7 @@ function normalizeEvidence(value: unknown): EvidenceResponse {
     report_language: asNullableString(raw.report_language),
     results: Array.isArray(raw.results) ? raw.results.map(normalizeWalkthroughResult) : [],
     evidence: Array.isArray(raw.evidence) ? raw.evidence.map((item) => normalizeEvidenceItem(item, createdAt)) : [],
+    issues: raw.issues ? normalizeIssues(raw.issues) : null,
     artifacts: Array.isArray(raw.artifacts) ? raw.artifacts.map(normalizeArtifact) : undefined,
     plan: raw.plan,
     scenarios: Array.isArray(raw.scenarios)
@@ -761,6 +857,29 @@ function pageEvidenceArtifacts(raw: Record<string, unknown>): PageEvidence["arti
   return artifacts;
 }
 
+function normalizePageEntry(value: unknown, index: number): PageEntry {
+  const raw = asRecord(value);
+
+  return {
+    id: asString(raw.id, `entry-${index + 1}`),
+    label: asString(raw.label, asString(raw.text, "Untitled entry")),
+    role: asString(raw.role, "unknown"),
+    kind: asString(raw.kind, "unknown"),
+    status: asString(raw.status, "unvisited"),
+    source_node_id: asNullableString(raw.source_node_id),
+    target_node_id: asNullableString(raw.target_node_id),
+    target_url: asNullableString(raw.target_url),
+    source: asString(raw.source, "page_evidence"),
+    evidence_ids: asStringArray(raw.evidence_ids),
+    artifact_ids: asStringArray(raw.artifact_ids),
+    confidence: asNumber(raw.confidence, 0),
+  };
+}
+
+function normalizePageEntries(value: unknown): PageEntry[] {
+  return asRecordArray(value).map(normalizePageEntry).filter((entry) => entry.label || entry.target_url);
+}
+
 function normalizePageEvidence(value: unknown, index: number): PageEvidence {
   const raw = asRecord(value);
   const controls = [
@@ -826,6 +945,7 @@ function normalizePageEvidence(value: unknown, index: number): PageEvidence {
     summary: firstString(raw, ["summary", "page_summary", "description"]),
     captured_at: asNullableString(raw.captured_at),
     controls,
+    entries: normalizePageEntries(raw.entries),
     text_observations: textObservations,
     dom_observations: domObservations,
     screenshot_artifact_ids: screenshotArtifactIds.filter((item, itemIndex, array) => array.indexOf(item) === itemIndex),
@@ -922,6 +1042,7 @@ function normalizePageNode(value: unknown): WalkthroughMapResponse["nodes"][numb
     purpose: asString(raw.purpose),
     key_functions: asStringArray(raw.key_functions),
     key_controls: asStringArray(raw.key_controls),
+    entries: normalizePageEntries(raw.entries),
     issues: Array.isArray(raw.issues) ? raw.issues.map(normalizePageInsight) : [],
     observations: Array.isArray(raw.observations) ? raw.observations.map(normalizePageInsight) : [],
     page_evidence: normalizePageEvidenceList(raw, metadata),
@@ -971,6 +1092,26 @@ function normalizePageEdge(value: unknown): WalkthroughMapResponse["edges"][numb
   };
 }
 
+function countUniqueMapScreenshots(nodes: WalkthroughMapResponse["nodes"]): number {
+  const keys = new Set<string>();
+
+  for (const node of nodes) {
+    for (const shot of node.screenshot_evidence) {
+      const key = shot.artifact_id ?? shot.path ?? shot.id;
+      if (key) {
+        keys.add(key);
+      }
+    }
+
+    for (const evidence of node.page_evidence) {
+      evidence.screenshot_artifact_ids.forEach((artifactId) => keys.add(artifactId));
+      evidence.screenshot_paths.forEach((path) => keys.add(path));
+    }
+  }
+
+  return keys.size;
+}
+
 export function normalizeWalkthroughMap(value: unknown): WalkthroughMapResponse {
   const raw = asRecord(value);
   const nodes = Array.isArray(raw.nodes) ? raw.nodes.map(normalizePageNode) : [];
@@ -1002,15 +1143,11 @@ export function normalizeWalkthroughMap(value: unknown): WalkthroughMapResponse 
       blocked_count: asNumber(summary.blocked_count, nodes.filter((node) => node.status === "blocked").length),
       discovered_count: asNumber(summary.discovered_count, nodes.filter((node) => node.status === "discovered").length),
       external_count: asNumber(summary.external_count, nodes.filter((node) => node.status === "external").length),
-      screenshot_count: asNumber(
-        summary.screenshot_count,
-        nodes.reduce(
-          (count, node) =>
-            count +
-            node.screenshot_evidence.length +
-            node.page_evidence.reduce((evidenceCount, evidence) => evidenceCount + evidence.screenshot_artifact_ids.length + evidence.screenshot_paths.length, 0),
-          0,
-        ),
+      screenshot_count: asNumber(summary.screenshot_count, countUniqueMapScreenshots(nodes)),
+      entry_count: asNumber(summary.entry_count, nodes.reduce((count, node) => count + node.entries.length, 0)),
+      unvisited_entry_count: asNumber(
+        summary.unvisited_entry_count,
+        nodes.reduce((count, node) => count + node.entries.filter((entry) => ["unvisited", "unsafe"].includes(entry.status)).length, 0),
       ),
       confidence: asNumber(summary.confidence),
     },
@@ -1145,6 +1282,8 @@ export const prodwalkApi = {
   getEvidence: async (runId: string) => normalizeEvidence(await requestJson<unknown>(runApiPath(runId, "/evidence"))),
 
   getEvaluation: async (runId: string) => normalizeEvaluation(await requestJson<unknown>(runApiPath(runId, "/evaluation"))),
+
+  getIssues: async (runId: string) => normalizeIssues(await requestJson<unknown>(runApiPath(runId, "/issues"))),
 
   getWalkthroughMap: async (runId: string) => normalizeWalkthroughMap(await requestJson<unknown>(runApiPath(runId, "/map"))),
 };

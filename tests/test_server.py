@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from prodwalk.models import EvidenceItem, ProductTarget, Scenario, WalkStep, WalkthroughResult, utc_now
+from prodwalk.agents.map_builder import BUILD_VERSION as WALKTHROUGH_MAP_BUILD_VERSION
 from prodwalk.server import runtime as runtime_module
 from prodwalk.server.app import create_app
 
@@ -365,6 +366,7 @@ def test_post_runs_starts_mock_run_and_artifacts_are_readable(tmp_path: Path) ->
 
         report = client.get(f"/api/runs/{run_id}/report")
         evidence = client.get(f"/api/runs/{run_id}/evidence")
+        issues = client.get(f"/api/runs/{run_id}/issues")
         evaluation = client.get(f"/api/runs/{run_id}/evaluation")
         walkthrough_map = client.get(f"/api/runs/{run_id}/map")
         events = client.get(f"/api/runs/{run_id}/events")
@@ -374,12 +376,16 @@ def test_post_runs_starts_mock_run_and_artifacts_are_readable(tmp_path: Path) ->
         runs = client.get("/api/runs")
 
         assert report.status_code == 200
-        assert "# Product Walkthrough Research Report" in report.json()["markdown"]
+        assert "# Product Walkthrough Issue Report" in report.json()["markdown"]
+        assert report.json()["issues"]["summary"]["issue_count"] >= 0
         assert evidence.status_code == 200
         evidence_items = evidence.json()["evidence"]
         assert evidence_items
         assert "screenshot" not in evidence_items[0]
         assert "screenshot_artifact_id" in evidence_items[0]
+        assert issues.status_code == 200
+        assert issues.json()["artifact_id"] == "art_issues_json"
+        assert "issues" in issues.json()
         assert evaluation.status_code == 200
         assert "overall_score" in evaluation.json()
         assert walkthrough_map.status_code == 200
@@ -395,9 +401,11 @@ def test_post_runs_starts_mock_run_and_artifacts_are_readable(tmp_path: Path) ->
         assert agents.status_code == 200
         assert any(agent["type"] == "walker" for agent in agents.json()["items"])
         assert report_artifact.status_code == 200
-        assert "# Product Walkthrough Research Report" in report_artifact.text
+        assert "# Product Walkthrough Issue Report" in report_artifact.text
         assert artifacts.status_code == 200
-        assert "walkthrough_map" in {item["type"] for item in artifacts.json()["items"]}
+        artifact_types = {item["type"] for item in artifacts.json()["items"]}
+        assert "issues_json" in artifact_types
+        assert "walkthrough_map" in artifact_types
         assert runs.status_code == 200
         run_items = runs.json()["items"]
         listed = next(item for item in run_items if item["run_id"] == run_id)
@@ -1308,6 +1316,33 @@ def test_walkthrough_map_endpoint_rebuilds_historical_run_and_artifacts_include_
     map_artifact = next(item for item in artifacts_response.json()["items"] if item["type"] == "walkthrough_map")
     assert map_artifact["id"] == "art_walkthrough_map"
     assert map_artifact["metadata"]["content_url"] == f"/api/runs/{run_dir.name}/artifacts/art_walkthrough_map/content"
+
+
+def test_walkthrough_map_endpoint_rebuilds_stale_existing_map(tmp_path: Path) -> None:
+    _write_plan(tmp_path)
+    run_dir = _write_historical_map_run(tmp_path)
+    stale_payload = {
+        "run_id": run_dir.name,
+        "artifact_id": "art_walkthrough_map",
+        "schema_version": "1.0",
+        "summary": {"node_count": 1, "edge_count": 0},
+        "nodes": [{"id": "stale", "name": "Clink", "route": "/customers/123", "status": "error"}],
+        "edges": [],
+        "layout": {"algorithm": "stale", "nodes": {}},
+        "warnings": [],
+    }
+    (run_dir / "walkthrough_map.json").write_text(json.dumps(stale_payload), encoding="utf-8")
+
+    with _client(tmp_path) as client:
+        response = client.get(f"/api/runs/{run_dir.name}/map")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["build_version"] == WALKTHROUGH_MAP_BUILD_VERSION
+    assert payload["summary"]["node_count"] > 1
+    assert all(node["id"] != "stale" for node in payload["nodes"])
+    customer_node = next(node for node in payload["nodes"] if node["route"] == "/customers/:id")
+    assert customer_node["name"] == "Customer Profile"
 
 
 def test_walkthrough_map_endpoint_returns_404_without_evidence(tmp_path: Path) -> None:

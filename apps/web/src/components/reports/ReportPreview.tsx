@@ -4,7 +4,15 @@ import { EmptyState } from "../common/EmptyState";
 import { ErrorState } from "../common/ErrorState";
 import { ReportMarkdown, extractHeadings } from "./ReportMarkdown";
 import { ReportToolbar } from "./ReportToolbar";
-import type { Artifact, ConsoleStatus, EvidenceItem, EvidenceResponse, ReportResponse } from "../../types/contracts";
+import type {
+  Artifact,
+  ConsoleStatus,
+  EvidenceItem,
+  EvidenceResponse,
+  IssuesResponse,
+  ReportResponse,
+  StructuredIssue,
+} from "../../types/contracts";
 
 interface ReportPreviewProps {
   report: ReportResponse | null;
@@ -56,6 +64,26 @@ function scoreLabel(key: string): string | null {
     overall_score: "总体评分",
     relevance: "相关性",
     usefulness: "可执行性",
+    task_completion_rate: "场景完成率",
+    evidence_coverage_rate: "证据覆盖率",
+    finding_grounding_rate: "问题证据关联率",
+    recommendation_actionability_rate: "建议可执行率",
+    issue_schema_completeness_rate: "问题字段完整率",
+    screenshot_grounding_rate: "截图佐证率",
+    checklist_coverage_rate: "清单覆盖率",
+    checklist_pass_rate: "清单通过率",
+    page_evidence_success_rate: "页面证据成功率",
+    page_evidence_partial_rate: "页面证据部分失败率",
+    page_evidence_failed_rate: "页面证据失败率",
+    timeout_rate: "超时率",
+    invalid_summary_rate: "无效摘要率",
+    evidence_quality_score: "证据质量",
+    quality_gate_passed: "质量门禁",
+    issues: "问题数",
+    product_issues: "产品问题数",
+    coverage_gaps: "覆盖缺口数",
+    system_reliability_issues: "可靠性限制数",
+    critical_issues: "关键问题数",
   };
 
   if (/scenario_id|artifact|markdown|report\.md|evaluation\.json|run_id|evidence_count/.test(normalized)) {
@@ -480,6 +508,122 @@ function renderInsightList(items: string[], fallback: string) {
   );
 }
 
+function issueTypeLabel(type: string): string {
+  if (type === "coverage") {
+    return "覆盖缺口";
+  }
+  if (type === "system_reliability") {
+    return "走查可靠性";
+  }
+  return "产品问题";
+}
+
+function severityLabel(severity: string): string {
+  return (
+    {
+      high: "高",
+      medium: "中",
+      low: "低",
+      info: "信息",
+    }[severity.toLowerCase()] ?? severity
+  );
+}
+
+function priorityRank(priority: string): number {
+  return { P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 }[priority.toUpperCase() as "P0" | "P1" | "P2" | "P3" | "P4"] ?? 9;
+}
+
+function sortedIssues(issues: StructuredIssue[]): StructuredIssue[] {
+  return [...issues].sort((left, right) => {
+    const priorityDelta = priorityRank(left.priority) - priorityRank(right.priority);
+    if (priorityDelta !== 0) {
+      return priorityDelta;
+    }
+
+    return right.confidence - left.confidence;
+  });
+}
+
+function issueSummary(issues: IssuesResponse | null | undefined) {
+  const items = issues?.issues ?? [];
+
+  return {
+    product: items.filter((issue) => issue.issue_type === "product").length,
+    coverage: items.filter((issue) => issue.issue_type === "coverage").length,
+    reliability: items.filter((issue) => issue.issue_type === "system_reliability").length,
+    high: items.filter((issue) => issue.priority === "P0" || issue.priority === "P1" || issue.severity === "high").length,
+  };
+}
+
+function StructuredIssueBoard({ issues }: { issues: IssuesResponse | null | undefined }) {
+  const issueItems = sortedIssues((issues?.issues ?? []).filter((issue) => issue.issue_type !== "positive"));
+  const counts = issueSummary(issues);
+
+  if (!issueItems.length) {
+    return (
+      <section className="report-issue-board" aria-label="结构化问题板">
+        <div className="report-section-heading">
+          <div>
+            <div className="section-title">结构化问题板</div>
+            <strong>本次未生成结构化问题</strong>
+          </div>
+        </div>
+        <p className="empty-copy">可以在原始报告和证据附录中继续复核结论。</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="report-issue-board" aria-label="结构化问题板">
+      <div className="report-section-heading">
+        <div>
+          <div className="section-title">结构化问题板</div>
+          <strong>优先处理 P0/P1 和高严重度问题</strong>
+        </div>
+        <span>{issueItems.length} 项</span>
+      </div>
+
+      <div className="report-issue-stats" aria-label="问题分布">
+        <span>产品问题 {counts.product}</span>
+        <span>覆盖缺口 {counts.coverage}</span>
+        <span>可靠性限制 {counts.reliability}</span>
+        <span>高优先级 {counts.high}</span>
+      </div>
+
+      <div className="report-issue-table-wrap">
+        <table className="report-issue-table">
+          <thead>
+            <tr>
+              <th>优先级</th>
+              <th>类型</th>
+              <th>问题</th>
+              <th>证据</th>
+              <th>建议</th>
+            </tr>
+          </thead>
+          <tbody>
+            {issueItems.slice(0, 8).map((issue) => (
+              <tr key={issue.id}>
+                <td>
+                  <strong>{issue.priority}</strong>
+                  <span>{severityLabel(issue.severity)}</span>
+                </td>
+                <td>{issueTypeLabel(issue.issue_type)}</td>
+                <td>
+                  <strong>{truncateText(cleanUserFacingText(issue.claim), 120)}</strong>
+                  <span>{truncateText(cleanUserFacingText(issue.page || issue.theme), 80)}</span>
+                </td>
+                <td>{issue.evidence_ids.length ? `${issue.evidence_ids.length} 条` : "未关联"}</td>
+                <td>{truncateText(cleanUserFacingText(issue.recommendation), 120)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 function getReportState(
   status: ConsoleStatus,
   hasMarkdown: boolean,
@@ -703,6 +847,8 @@ export function ReportPreview({
                 <h3>{insights.summary}</h3>
               </div>
             </section>
+
+            <StructuredIssueBoard issues={report?.issues ?? evidence?.issues} />
 
             <section className="report-insight-grid" aria-label="关键结论">
               <article className="report-insight-card">

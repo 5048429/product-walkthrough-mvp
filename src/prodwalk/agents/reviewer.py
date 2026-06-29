@@ -25,75 +25,110 @@ class Reviewer:
 
         for result in results:
             if not result.evidence:
-                message = (
-                    "该走查结果没有采集到证据。"
-                    if language == "zh"
-                    else "No evidence was captured for this walkthrough result."
-                )
                 notes.append(
                     ReviewNote(
                         severity="high",
                         target=f"{result.product}/{result.scenario_id}",
-                        message=message,
+                        message=(
+                            "该走查结果没有采集到证据。"
+                            if language == "zh"
+                            else "No evidence was captured for this walkthrough result."
+                        ),
                     )
                 )
 
         for analysis in analyses:
             for finding in analysis.findings:
+                issue_type = getattr(finding, "issue_type", "product")
+                if issue_type == "positive":
+                    continue
                 missing = [item for item in finding.evidence_ids if item not in evidence_ids]
                 if missing:
-                    message = (
-                        f"该发现引用了不存在的证据 ID：{', '.join(missing)}"
-                        if language == "zh"
-                        else f"Finding references missing evidence IDs: {', '.join(missing)}"
-                    )
                     notes.append(
                         ReviewNote(
                             severity="high",
                             target=finding.id,
-                            message=message,
+                            message=(
+                                f"该问题引用了不存在的证据 ID：{', '.join(missing)}"
+                                if language == "zh"
+                                else f"Issue references missing evidence IDs: {', '.join(missing)}"
+                            ),
                         )
                     )
                 if not finding.recommendation.strip():
-                    message = (
-                        "该发现缺少可执行建议。"
-                        if language == "zh"
-                        else "Finding has no actionable recommendation."
-                    )
                     notes.append(
                         ReviewNote(
                             severity="medium",
                             target=finding.id,
-                            message=message,
+                            message=(
+                                "该问题缺少可执行建议。"
+                                if language == "zh"
+                                else "Issue has no actionable recommendation."
+                            ),
+                        )
+                    )
+                if finding.priority in {"P0", "P1"} or finding.severity == "high":
+                    if not finding.repro_steps:
+                        notes.append(
+                            ReviewNote(
+                                severity="high",
+                                target=finding.id,
+                                message=(
+                                    "高优先级问题缺少复现步骤。"
+                                    if language == "zh"
+                                    else "High-priority issue is missing repro steps."
+                                ),
+                            )
+                        )
+                    if not finding.acceptance_criteria:
+                        notes.append(
+                            ReviewNote(
+                                severity="high",
+                                target=finding.id,
+                                message=(
+                                    "高优先级问题缺少验收标准。"
+                                    if language == "zh"
+                                    else "High-priority issue is missing acceptance criteria."
+                                ),
+                            )
+                        )
+                if issue_type == "system_reliability":
+                    notes.append(
+                        ReviewNote(
+                            severity="medium",
+                            target=finding.id,
+                            message=(
+                                "该项已归类为走查可靠性限制，不应直接当作产品缺陷。"
+                                if language == "zh"
+                                else "This item is classified as a walkthrough reliability limit, not a direct product defect."
+                            ),
                         )
                     )
 
         for insight in insights:
             if not insight.evidence_ids:
-                message = (
-                    "该竞品洞察没有关联证据。"
-                    if language == "zh"
-                    else "Competitive insight has no evidence references."
-                )
                 notes.append(
                     ReviewNote(
                         severity="medium",
                         target=insight.theme,
-                        message=message,
+                        message=(
+                            "该竞品洞察没有关联证据。"
+                            if language == "zh"
+                            else "Competitive insight has no evidence references."
+                        ),
                     )
                 )
 
         if not notes:
-            message = (
-                "所有发现和洞察都已经关联到已采集证据。"
-                if language == "zh"
-                else "All findings and insights are linked to captured evidence."
-            )
             notes.append(
                 ReviewNote(
                     severity="info",
                     target="report",
-                    message=message,
+                    message=(
+                        "所有问题和洞察都已关联到已采集证据。"
+                        if language == "zh"
+                        else "All issues and insights are linked to captured evidence."
+                    ),
                 )
             )
         return notes

@@ -1151,9 +1151,9 @@ export function useProdwalkConsole() {
       const isBrowserUse = options.mode === "browser-use";
       const browserMaxSteps = options.browserMaxSteps ?? 25;
       const browserTimeoutSec = options.browserTimeoutSec ?? 600;
-      const browserDiscoverAllPages = isBrowserUse ? options.browserDiscoverAllPages ?? null : null;
-      const browserDiscoveryMaxPages = isBrowserUse ? options.browserDiscoveryMaxPages ?? null : null;
-      const browserDiscoveryMaxDepth = isBrowserUse ? options.browserDiscoveryMaxDepth ?? null : null;
+      const browserDiscoverAllPages = isBrowserUse ? options.browserDiscoverAllPages ?? true : null;
+      const browserDiscoveryMaxPages = isBrowserUse ? options.browserDiscoveryMaxPages ?? 120 : null;
+      const browserDiscoveryMaxDepth = isBrowserUse ? options.browserDiscoveryMaxDepth ?? 4 : null;
       const verificationMode = isBrowserUse ? options.verificationMode ?? "off" : "off";
       const verificationTimeoutSec = options.verificationTimeoutSec ?? 300;
       const verificationSuccessUrlContains = options.verificationSuccessUrlContains ?? [];

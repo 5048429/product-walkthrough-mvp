@@ -39,6 +39,7 @@ export type ArtifactType =
   | "agents_json"
   | "artifacts_json"
   | "evidence_json"
+  | "issues_json"
   | "report_markdown"
   | "evaluation_json"
   | "walkthrough_map"
@@ -128,6 +129,8 @@ export interface RunProgress {
   completed_stage_count?: number;
   total_stage_count?: number;
   evidence_count?: number;
+  issue_count?: number;
+  high_issue_count?: number;
   artifact_count?: number;
   screenshot_count?: number;
   browser_history_count?: number;
@@ -311,6 +314,7 @@ export interface EvidenceResponse {
   report_language: string | null;
   results: WalkthroughResult[];
   evidence: EvidenceItem[];
+  issues?: IssuesResponse | null;
   artifacts?: Artifact[];
   plan?: unknown;
   scenarios?: Array<Record<string, unknown>>;
@@ -364,6 +368,21 @@ export interface PageEvidenceArtifactRef {
   content_url: string | null;
 }
 
+export interface PageEntry {
+  id: string;
+  label: string;
+  role: "button" | "link" | "menuitem" | "tab" | "form" | "input" | "unknown" | string;
+  kind: "navigation" | "action" | "filter" | "external" | "destructive" | "unknown" | string;
+  status: "visited" | "unvisited" | "discovered" | "blocked" | "unsafe" | string;
+  source_node_id: string | null;
+  target_node_id: string | null;
+  target_url: string | null;
+  source: "page_evidence" | "page_elements" | "accessibility_tree" | "page_discovery" | "browser_step" | string;
+  evidence_ids: string[];
+  artifact_ids: string[];
+  confidence: number;
+}
+
 export interface PageEvidence {
   id: string;
   status: "completed" | "partial" | "failed" | string;
@@ -372,6 +391,7 @@ export interface PageEvidence {
   summary: string | null;
   captured_at: string | null;
   controls: string[];
+  entries: PageEntry[];
   text_observations: string[];
   dom_observations: string[];
   screenshot_artifact_ids: string[];
@@ -398,6 +418,7 @@ export interface PageNode {
   purpose: string;
   key_functions: string[];
   key_controls: string[];
+  entries: PageEntry[];
   issues: PageInsight[];
   observations: PageInsight[];
   page_evidence: PageEvidence[];
@@ -460,6 +481,8 @@ export interface WalkthroughMapResponse {
     discovered_count: number;
     external_count: number;
     screenshot_count: number;
+    entry_count: number;
+    unvisited_entry_count: number;
     confidence: number;
   };
   nodes: PageNode[];
@@ -479,6 +502,7 @@ export interface Evaluation {
   overall_score: number;
   scores: Record<string, number>;
   notes: string[];
+  quality_gate_status?: "pass" | "warn" | "fail" | string;
 }
 
 export interface EvaluationResponse extends Evaluation {
@@ -491,10 +515,67 @@ export interface ReportResponse {
   language: string | null;
   markdown_artifact_id: string;
   evaluation_artifact_id: string | null;
+  issues_artifact_id?: string | null;
   markdown: string;
   evaluation: Evaluation | null;
+  issues?: IssuesResponse | null;
   generated_at: string | null;
   artifacts?: Artifact[];
+}
+
+export type IssueType = "product" | "coverage" | "system_reliability" | "positive" | string;
+
+export interface StructuredIssue {
+  id: string;
+  product: string;
+  scenario_id: string;
+  severity: "high" | "medium" | "low" | "info" | string;
+  theme: string;
+  claim: string;
+  evidence_ids: string[];
+  recommendation: string;
+  confidence: number;
+  issue_type: IssueType;
+  priority: "P0" | "P1" | "P2" | "P3" | "P4" | string;
+  page: string;
+  current_behavior: string;
+  expected_behavior: string;
+  repro_steps: string[];
+  acceptance_criteria: string[];
+  screenshot_refs: string[];
+  source: string;
+  confidence_reason: string;
+}
+
+export interface ChecklistItem {
+  id: string;
+  title: string;
+  status: string;
+  source: string;
+  severity: string;
+  evidence_ids: string[];
+  notes: string;
+}
+
+export interface IssuesResponse {
+  run_id?: string;
+  artifact_id?: string;
+  created_at: string | null;
+  report_language: string | null;
+  schema_version: string;
+  summary: {
+    issue_count: number;
+    product_issue_count: number;
+    coverage_gap_count: number;
+    system_reliability_issue_count: number;
+    priority_counts: Record<string, number>;
+    severity_counts: Record<string, number>;
+    type_counts: Record<string, number>;
+    [key: string]: unknown;
+  };
+  issues: StructuredIssue[];
+  checklist: ChecklistItem[];
+  review_notes?: Array<Record<string, unknown>>;
 }
 
 export interface ApiErrorPayload {

@@ -23,9 +23,17 @@ from prodwalk.auth_session import (
     open_manual_auth_session,
 )
 from prodwalk.agents.director import ResearchDirector
+from prodwalk.agents.map_builder import BUILD_VERSION as WALKTHROUGH_MAP_BUILD_VERSION
 from prodwalk.agents.map_builder import WALKTHROUGH_MAP_ARTIFACT_ID, build_walkthrough_map
 from prodwalk.agents.planner import ScenarioPlanner
-from prodwalk.agents.walker import BrowserUseLocalWalker, BrowserWalker, MockBrowserWalker
+from prodwalk.agents.walker import (
+    DEFAULT_DISCOVER_ALL_PAGES,
+    DEFAULT_DISCOVERY_MAX_DEPTH,
+    DEFAULT_DISCOVERY_MAX_PAGES,
+    BrowserUseLocalWalker,
+    BrowserWalker,
+    MockBrowserWalker,
+)
 from prodwalk.config_loader import ConfigError, parse_research_plan
 from prodwalk.credentials import normalize_ref
 from prodwalk.events import RunEvent as PipelineRunEvent
@@ -102,6 +110,7 @@ PIPELINE_AGENT_TYPES = {
 
 PIPELINE_ARTIFACT_IDS = {
     "evidence_json": "art_evidence_json",
+    "issues_json": "art_issues_json",
     "report_markdown": "art_report_md",
     "evaluation_json": "art_evaluation_json",
 }
@@ -1530,13 +1539,19 @@ class RunRuntime:
         evaluation_path = run_dir / "evaluation.json"
         if evaluation_path.exists():
             evaluation = self._read_json(evaluation_path)
+        issues = None
+        issues_path = run_dir / "issues.json"
+        if issues_path.exists():
+            issues = self._read_json(issues_path)
         return {
             "run_id": run_id,
             "language": self._record_for_run(run_id).get("params", {}).get("report_language"),
             "markdown_artifact_id": "art_report_md",
             "evaluation_artifact_id": "art_evaluation_json" if evaluation_path.exists() else None,
+            "issues_artifact_id": "art_issues_json" if issues_path.exists() else None,
             "markdown": path.read_text(encoding="utf-8"),
             "evaluation": evaluation,
+            "issues": issues,
             "generated_at": self._mtime_iso(path),
         }
 
@@ -1552,6 +1567,8 @@ class RunRuntime:
         raw_results = payload.get("results", [])
         raw_evidence = payload.get("evidence", [])
         evidence_context = self._evidence_context(raw_results)
+        issues_path = run_dir / "issues.json"
+        issues = self._read_json(issues_path) if issues_path.exists() else None
         return {
             "run_id": run_id,
             "artifact_id": "art_evidence_json",
@@ -1559,6 +1576,7 @@ class RunRuntime:
             "report_language": payload.get("report_language"),
             "results": self._normalize_results(raw_results, screenshot_map),
             "evidence": self._normalize_evidence_items(raw_evidence, evidence_context, screenshot_map, artifact_map),
+            "issues": issues,
             "plan": payload.get("plan"),
             "scenarios": payload.get("scenarios", []),
         }
@@ -1587,13 +1605,16 @@ class RunRuntime:
         payload = self._read_json(path)
         return {"run_id": run_id, "artifact_id": "art_evaluation_json", **payload}
 
+    def read_issues(self, run_id: str) -> dict[str, Any]:
+        run_dir = self._run_dir_for_id(run_id)
+        path = run_dir / "issues.json"
+        if not path.exists():
+            raise ApiError(404, "ARTIFACT_NOT_FOUND", "issues.json is not available yet.", {"run_id": run_id})
+        payload = self._read_json(path)
+        return {"run_id": run_id, "artifact_id": "art_issues_json", **payload}
+
     def read_map(self, run_id: str) -> dict[str, Any]:
         run_dir = self._run_dir_for_id(run_id)
-        path = run_dir / "walkthrough_map.json"
-        if path.exists():
-            payload = self._read_json(path)
-            if isinstance(payload, dict):
-                return payload
         payload = self._ensure_walkthrough_map(run_id, run_dir, raise_on_missing_evidence=True)
         if payload is None:
             raise ApiError(404, "ARTIFACT_NOT_FOUND", "walkthrough_map.json is not available yet.", {"run_id": run_id})
@@ -2849,6 +2870,7 @@ class RunRuntime:
         return f"run-{timestamp}-{uuid.uuid4().hex[:6]}"
 
     def _request_params(self, request: RunStartRequest, *, options: RunExecutionOptions) -> dict[str, Any]:
+        is_browser_use = options.mode in BROWSER_USE_MODES
         return {
             "mode": options.mode,
             "concurrency": options.concurrency,
@@ -2856,9 +2878,21 @@ class RunRuntime:
             "browser_model": request.browser_model,
             "browser_max_steps": request.browser_max_steps,
             "browser_timeout_sec": request.browser_timeout_sec,
-            "browser_discover_all_pages": request.browser_discover_all_pages,
-            "browser_discovery_max_pages": request.browser_discovery_max_pages,
-            "browser_discovery_max_depth": request.browser_discovery_max_depth,
+            "browser_discover_all_pages": (
+                request.browser_discover_all_pages
+                if request.browser_discover_all_pages is not None
+                else DEFAULT_DISCOVER_ALL_PAGES if is_browser_use else None
+            ),
+            "browser_discovery_max_pages": (
+                request.browser_discovery_max_pages
+                if request.browser_discovery_max_pages is not None
+                else DEFAULT_DISCOVERY_MAX_PAGES if is_browser_use else None
+            ),
+            "browser_discovery_max_depth": (
+                request.browser_discovery_max_depth
+                if request.browser_discovery_max_depth is not None
+                else DEFAULT_DISCOVERY_MAX_DEPTH if is_browser_use else None
+            ),
             "browser_user_data_dir_configured": options.browser_user_data_dir is not None,
             "browser_storage_state_configured": options.browser_storage_state is not None,
             "auth_session_id": options.auth_session_id,
@@ -2981,6 +3015,7 @@ class RunRuntime:
                 "total_scenarios": len(results),
                 "completed_scenarios": completed,
                 "failed_scenarios": failed,
+                **self._issue_count_fields(run_dir / "issues.json"),
             },
             "params": {"mode": "unknown", "report_language": evidence.get("report_language")},
             "artifact_ids": [artifact["id"] for artifact in self._build_artifacts(run_dir.name, run_dir)],
@@ -3260,6 +3295,8 @@ class RunRuntime:
             "completed_stage_count": progress.get("completed_stage_count", 0),
             "total_stage_count": progress.get("total_stage_count", 0),
             "evidence_count": progress.get("evidence_count", 0),
+            "issue_count": progress.get("issue_count", 0),
+            "high_issue_count": progress.get("high_issue_count", 0),
             "artifact_count": progress.get("artifact_count", 0),
             "screenshot_count": progress.get("screenshot_count", 0),
             "browser_history_count": progress.get("browser_history_count", 0),
@@ -3386,16 +3423,38 @@ class RunRuntime:
         try:
             path = self._run_dir_for_id(run_id) / "evidence.json"
         except ApiError:
-            return {"evidence_count": 0, "result_count": 0}
+            return {"evidence_count": 0, "result_count": 0, "issue_count": 0, "high_issue_count": 0}
         if not path.exists():
-            return {"evidence_count": 0, "result_count": 0}
+            return {"evidence_count": 0, "result_count": 0, "issue_count": 0, "high_issue_count": 0}
         try:
             payload = self._read_json(path)
         except Exception:
-            return {"evidence_count": 0, "result_count": 0}
+            return {"evidence_count": 0, "result_count": 0, "issue_count": 0, "high_issue_count": 0}
         evidence = payload.get("evidence") if isinstance(payload.get("evidence"), list) else []
         results = payload.get("results") if isinstance(payload.get("results"), list) else []
-        return {"evidence_count": len(evidence), "result_count": len(results)}
+        issue_counts = self._issue_count_fields(path.with_name("issues.json"))
+        return {"evidence_count": len(evidence), "result_count": len(results), **issue_counts}
+
+    def _issue_count_fields(self, path: Path) -> dict[str, int]:
+        if not path.exists():
+            return {"issue_count": 0, "high_issue_count": 0}
+        try:
+            payload = self._read_json(path)
+        except Exception:
+            return {"issue_count": 0, "high_issue_count": 0}
+        issues = payload.get("issues") if isinstance(payload, dict) and isinstance(payload.get("issues"), list) else []
+        return {
+            "issue_count": len(issues),
+            "high_issue_count": sum(
+                1
+                for issue in issues
+                if isinstance(issue, dict)
+                and (
+                    str(issue.get("severity") or "").lower() == "high"
+                    or str(issue.get("priority") or "").upper() in {"P0", "P1"}
+                )
+            ),
+        }
 
     def _elapsed_ms(self, started_at: str | None, ended_at: str | None = None) -> int:
         start = self._parse_iso_datetime(started_at)
@@ -3421,11 +3480,23 @@ class RunRuntime:
 
     def _progress_from_evidence(self, path: Path) -> dict[str, int]:
         if not path.exists():
-            return {"total_scenarios": 0, "completed_scenarios": 0, "failed_scenarios": 0}
+            return {
+                "total_scenarios": 0,
+                "completed_scenarios": 0,
+                "failed_scenarios": 0,
+                "issue_count": 0,
+                "high_issue_count": 0,
+            }
         try:
             payload = self._read_json(path)
         except Exception:
-            return {"total_scenarios": 0, "completed_scenarios": 0, "failed_scenarios": 0}
+            return {
+                "total_scenarios": 0,
+                "completed_scenarios": 0,
+                "failed_scenarios": 0,
+                "issue_count": 0,
+                "high_issue_count": 0,
+            }
         results = payload.get("results") if isinstance(payload.get("results"), list) else []
         return {
             "total_scenarios": len(results),
@@ -3435,6 +3506,7 @@ class RunRuntime:
             "failed_scenarios": sum(
                 1 for result in results if isinstance(result, dict) and result.get("status") != "completed"
             ),
+            **self._issue_count_fields(path.with_name("issues.json")),
         }
 
     def _progress_for_awaiting_verification(self, progress: dict[str, Any]) -> dict[str, Any]:
@@ -3477,7 +3549,7 @@ class RunRuntime:
                 payload = self._read_json(map_path)
             except Exception:
                 payload = None
-            if isinstance(payload, dict):
+            if isinstance(payload, dict) and payload.get("build_version") == WALKTHROUGH_MAP_BUILD_VERSION:
                 return payload
 
         evidence_path = run_dir / "evidence.json"
@@ -4057,6 +4129,7 @@ class RunRuntime:
             ("art_agents_json", "agents_json", "agents.json", "agents.json", "application/json"),
             ("art_artifacts_json", "artifacts_json", "artifacts.json", "artifacts.json", "application/json"),
             ("art_evidence_json", "evidence_json", "evidence.json", "evidence.json", "application/json"),
+            ("art_issues_json", "issues_json", "issues.json", "issues.json", "application/json"),
             ("art_report_md", "report_markdown", "report.md", "report.md", "text/markdown; charset=utf-8"),
             ("art_evaluation_json", "evaluation_json", "evaluation.json", "evaluation.json", "application/json"),
             (

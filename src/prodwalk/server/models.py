@@ -55,6 +55,7 @@ ArtifactType = Literal[
     "agents_json",
     "artifacts_json",
     "evidence_json",
+    "issues_json",
     "report_markdown",
     "evaluation_json",
     "walkthrough_map",
@@ -126,6 +127,8 @@ class Progress(BaseModel):
     completed_stage_count: int = 0
     total_stage_count: int = 0
     evidence_count: int = 0
+    issue_count: int = 0
+    high_issue_count: int = 0
     artifact_count: int = 0
     screenshot_count: int = 0
     browser_history_count: int = 0

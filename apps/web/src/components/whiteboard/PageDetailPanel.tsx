@@ -3,6 +3,7 @@ import { EmptyState } from "../common/EmptyState";
 import { ScreenshotPreview } from "../evidence/ScreenshotPreview";
 import type {
   Artifact,
+  PageEntry,
   PageEvidence,
   PageEvidenceArtifactRef,
   PageInsight,
@@ -38,8 +39,20 @@ const insightLabels: Record<PageInsight["kind"], string> = {
   observation: "观察",
 };
 
+const entryStatusLabels: Record<string, string> = {
+  visited: "已访问",
+  discovered: "已发现",
+  unvisited: "未访问",
+  blocked: "受阻",
+  unsafe: "高风险",
+};
+
 function unique(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean)));
+}
+
+function normalizeArtifactPath(path: string | null): string | null {
+  return path ? path.replace(/\\/g, "/") : null;
 }
 
 function screenshotToArtifact(runId: string, shot: ScreenshotEvidence, artifacts: Artifact[]): Artifact | null {
@@ -68,10 +81,6 @@ function screenshotToArtifact(runId: string, shot: ScreenshotEvidence, artifacts
       screenshot_url: shot.screenshot_url ?? undefined,
     },
   };
-}
-
-function normalizeArtifactPath(path: string | null): string | null {
-  return path ? path.replace(/\\/g, "/") : null;
 }
 
 function artifactForRef(runId: string, ref: PageEvidenceArtifactRef, artifacts: Artifact[]): Artifact | null {
@@ -128,7 +137,54 @@ function artifactIdsForPaths(paths: string[], artifacts: Artifact[]): string[] {
   return unique(paths.map((path) => artifactIdForPath(path, artifacts)).filter((artifactId): artifactId is string => Boolean(artifactId)));
 }
 
-function InsightList({ title, insights, onFocusEvidence }: {
+function TagList({ title, items, empty }: { title: string; items: string[]; empty: string }) {
+  return (
+    <section className="page-detail-section">
+      <div className="section-title">{title}</div>
+      {items.length ? (
+        <div className="page-tag-list">
+          {items.map((item) => (
+            <span key={item}>{item}</span>
+          ))}
+        </div>
+      ) : (
+        <p className="empty-copy">{empty}</p>
+      )}
+    </section>
+  );
+}
+
+function EntryList({ entries }: { entries: PageEntry[] }) {
+  return (
+    <section className="page-detail-section">
+      <div className="section-title">页面内入口</div>
+      {entries.length ? (
+        <div className="page-entry-list">
+          {entries.slice(0, 24).map((entry) => (
+            <article key={entry.id} className={`page-entry-card page-entry-card-${entry.status}`}>
+              <div>
+                <strong>{entry.label}</strong>
+                <span>{entryStatusLabels[entry.status] ?? entry.status}</span>
+              </div>
+              <p>
+                {[entry.role, entry.kind].filter(Boolean).join(" / ")}
+                {entry.target_url ? ` -> ${entry.target_url}` : ""}
+              </p>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="empty-copy">暂无结构化入口信息。</p>
+      )}
+    </section>
+  );
+}
+
+function InsightList({
+  title,
+  insights,
+  onFocusEvidence,
+}: {
   title: string;
   insights: PageInsight[];
   onFocusEvidence: (evidenceId: string) => void;
@@ -145,7 +201,7 @@ function InsightList({ title, insights, onFocusEvidence }: {
           <article key={insight.id} className={`page-insight-card page-insight-${insight.severity ?? insight.kind}`}>
             <div>
               <strong>{insight.title || insightLabels[insight.kind]}</strong>
-              <span>{Math.round(insight.confidence * 100)}% confidence</span>
+              <span>{Math.round(insight.confidence * 100)}%</span>
             </div>
             <p>{insight.summary || "暂无摘要。"}</p>
             {insight.evidence_ids.length ? (
@@ -160,23 +216,6 @@ function InsightList({ title, insights, onFocusEvidence }: {
           </article>
         ))}
       </div>
-    </section>
-  );
-}
-
-function TagList({ title, items, empty }: { title: string; items: string[]; empty: string }) {
-  return (
-    <section className="page-detail-section">
-      <div className="section-title">{title}</div>
-      {items.length ? (
-        <div className="page-tag-list">
-          {items.map((item) => (
-            <span key={item}>{item}</span>
-          ))}
-        </div>
-      ) : (
-        <p className="empty-copy">{empty}</p>
-      )}
     </section>
   );
 }
@@ -198,15 +237,7 @@ function ObservationList({ title, items }: { title: string; items: string[] }) {
   );
 }
 
-function PageEvidenceCard({
-  runId,
-  evidence,
-  artifacts,
-}: {
-  runId: string;
-  evidence: PageEvidence;
-  artifacts: Artifact[];
-}) {
+function PageEvidenceCard({ runId, evidence, artifacts }: { runId: string; evidence: PageEvidence; artifacts: Artifact[] }) {
   const screenshotArtifactIds = unique([
     ...evidence.screenshot_artifact_ids,
     ...artifactIdsForPaths(evidence.screenshot_paths, artifacts),
@@ -223,9 +254,10 @@ function PageEvidenceCard({
   ];
   const metrics = [
     evidence.controls.length ? `${evidence.controls.length} 个控件` : null,
+    evidence.entries.length ? `${evidence.entries.length} 个入口` : null,
     evidence.text_observations.length ? `${evidence.text_observations.length} 条文本观察` : null,
     evidence.dom_observations.length ? `${evidence.dom_observations.length} 条 DOM 观察` : null,
-    screenshotArtifactIds.length || evidence.screenshot_paths.length ? `${screenshotArtifactIds.length || evidence.screenshot_paths.length} 张采集截图` : null,
+    screenshotArtifactIds.length ? `${screenshotArtifactIds.length} 张采集截图` : null,
     evidence.network_event_count ? `${evidence.network_event_count} 个网络事件` : null,
     evidence.console_message_count ? `${evidence.console_message_count} 条 console` : null,
     evidence.page_error_count ? `${evidence.page_error_count} 个页面错误` : null,
@@ -242,7 +274,7 @@ function PageEvidenceCard({
       </div>
       <p>
         {evidence.summary ??
-          (evidence.url ? `采集器重新打开页面并记录了可见内容、控件、DOM 线索和截图来源：${evidence.url}` : "采集器记录了页面内容、控件、DOM 线索和截图来源。")}
+          (evidence.url ? `采集器重新打开页面并记录可见内容、控件、入口、DOM 线索和截图来源：${evidence.url}` : "采集器记录了页面内容、控件、入口、DOM 线索和截图来源。")}
       </p>
       {metrics.length ? (
         <div className="page-evidence-metric-row">
@@ -255,6 +287,18 @@ function PageEvidenceCard({
         <div className="page-tag-list page-evidence-controls">
           {evidence.controls.slice(0, 8).map((control) => (
             <span key={control}>{control}</span>
+          ))}
+        </div>
+      ) : null}
+      {evidence.entries.length ? (
+        <div className="page-entry-list page-entry-list-compact">
+          {evidence.entries.slice(0, 6).map((entry) => (
+            <article key={entry.id} className={`page-entry-card page-entry-card-${entry.status}`}>
+              <div>
+                <strong>{entry.label}</strong>
+                <span>{entryStatusLabels[entry.status] ?? entry.status}</span>
+              </div>
+            </article>
           ))}
         </div>
       ) : null}
@@ -302,7 +346,7 @@ export function PageDetailPanel({ map, node, artifacts, onFocusEvidence }: PageD
   if (!node) {
     return (
       <aside className="page-detail-panel">
-        <EmptyState title="选择一个页面" message="点击地图中的页面节点后，这里会显示用途、功能、控件、问题和证据。" compact />
+        <EmptyState title="选择一个页面" message="点击地图中的页面节点后，这里会显示用途、功能、入口、问题和证据。" compact />
       </aside>
     );
   }
@@ -312,6 +356,7 @@ export function PageDetailPanel({ map, node, artifacts, onFocusEvidence }: PageD
     ...node.issues.flatMap((insight) => insight.evidence_ids),
     ...node.observations.flatMap((insight) => insight.evidence_ids),
     ...node.screenshot_evidence.map((shot) => shot.evidence_id ?? ""),
+    ...node.entries.flatMap((entry) => entry.evidence_ids),
   ]);
   const screenshots = node.screenshot_evidence;
   const pageEvidenceScreenshotIds = unique(
@@ -368,9 +413,10 @@ export function PageDetailPanel({ map, node, artifacts, onFocusEvidence }: PageD
       <TagList title="关键功能" items={node.key_functions} empty="暂无关键功能摘要。" />
       <TagList
         title="主要控件"
-        items={unique([...node.key_controls, ...node.page_evidence.flatMap((evidence) => evidence.controls)]).slice(0, 12)}
+        items={unique([...node.key_controls, ...node.entries.map((entry) => entry.label), ...node.page_evidence.flatMap((evidence) => evidence.controls)]).slice(0, 16)}
         empty="暂无控件信息。"
       />
+      <EntryList entries={node.entries} />
 
       {node.page_evidence.length ? (
         <section className="page-detail-section">
@@ -446,11 +492,7 @@ export function PageDetailPanel({ map, node, artifacts, onFocusEvidence }: PageD
         {evidenceIds.length ? (
           <div className="page-evidence-links">
             {evidenceIds.map((evidenceId) => (
-              <button
-                key={evidenceId}
-                type="button"
-                onClick={() => onFocusEvidence(evidenceId, node.primary_screenshot_artifact_id)}
-              >
+              <button key={evidenceId} type="button" onClick={() => onFocusEvidence(evidenceId, node.primary_screenshot_artifact_id)}>
                 {evidenceId}
               </button>
             ))}

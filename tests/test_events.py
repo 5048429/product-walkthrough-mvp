@@ -97,7 +97,7 @@ class RunEventInstrumentationTest(unittest.IsolatedAsyncioTestCase):
             artifact_events = [event for event in sink.events if event.event_type == "artifact_written"]
             self.assertEqual(
                 [event.artifact_type for event in artifact_events],
-                ["evidence_json", "report_markdown", "evaluation_json"],
+                ["evidence_json", "issues_json", "report_markdown", "evaluation_json"],
             )
             for event in artifact_events:
                 self.assertIsNotNone(event.artifact_path)

@@ -33,7 +33,20 @@ const defaultFilters: PageMapFiltersState = {
   pageType: "all",
   issuesOnly: false,
   screenshotsOnly: false,
+  showUncoveredEntries: false,
 };
+
+const mapWarningLabels: Record<string, string> = {
+  EDGE_INFERRED_FROM_ADJACENT_STEPS: "部分连线由相邻页面访问推断，表示可能存在跳转关系，不等同于精确点击路径。",
+  URL_DYNAMIC_SEGMENTS_NORMALIZED: "部分详情页 ID 已被归并为同一类页面，避免同类详情页重复铺满白板。",
+  MAP_NO_BROWSER_HISTORY: "当前地图缺少 browser-use 历史，只能根据证据记录补建页面关系。",
+  BROWSER_HISTORY_EMPTY: "browser-use 历史存在但没有可读取步骤，地图会退回使用证据记录。",
+  SCREENSHOT_ARTIFACT_MISSING: "少量截图引用没有匹配到文件，其他报告和证据不受影响。",
+};
+
+function mapWarningText(warning: WalkthroughMapResponse["warnings"][number]): string {
+  return mapWarningLabels[warning.code] ?? warning.message;
+}
 
 function nodeMatchesQuery(node: PageNode, query: string): boolean {
   const normalized = query.trim().toLowerCase();
@@ -51,11 +64,13 @@ function nodeMatchesQuery(node: PageNode, query: string): boolean {
     node.purpose,
     ...node.key_functions,
     ...node.key_controls,
+    ...node.entries.flatMap((entry) => [entry.label, entry.target_url, entry.role, entry.kind, entry.status]),
     ...node.page_evidence.flatMap((evidence) => [
       evidence.title,
       evidence.summary,
       evidence.url,
       ...evidence.controls,
+      ...evidence.entries.flatMap((entry) => [entry.label, entry.target_url, entry.role, entry.kind, entry.status]),
       ...evidence.text_observations,
       ...evidence.dom_observations,
     ]),
@@ -228,22 +243,29 @@ export function WalkthroughMapView({
       ) : null}
 
       <div className="whiteboard-summary-row">
-        <PageMapLegend map={map} visibleNodes={visibleNodes} />
+        <PageMapLegend map={map} visibleNodes={visibleNodes} showUncoveredEntries={filters.showUncoveredEntries} />
         <PageMapFilters filters={filters} pageTypes={pageTypes} onChange={setFilters} onReset={() => setFilters(defaultFilters)} />
       </div>
 
       {map.warnings.length ? (
-        <div className="page-map-warning-strip">
+        <div className="page-map-note-strip" aria-label="地图生成说明">
+          <strong>地图生成说明</strong>
           {map.warnings.slice(0, 2).map((warning) => (
             <span key={warning.code}>
-              <strong>{warning.code}</strong> {warning.message}
+              {mapWarningText(warning)}
             </span>
           ))}
         </div>
       ) : null}
 
       <div className="whiteboard-shell">
-        <WhiteboardCanvas map={map} nodes={visibleNodes} selectedNodeId={selectedNodeId} onSelectNode={setSelectedNodeId} />
+        <WhiteboardCanvas
+          map={map}
+          nodes={visibleNodes}
+          selectedNodeId={selectedNodeId}
+          showUncoveredEntries={filters.showUncoveredEntries}
+          onSelectNode={setSelectedNodeId}
+        />
         <PageDetailPanel map={map} node={selectedNode} artifacts={artifacts} onFocusEvidence={focusEvidence} />
       </div>
     </section>

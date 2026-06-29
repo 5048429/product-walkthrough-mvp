@@ -32,7 +32,16 @@ class PageEvidenceCollector:
         self.user_data_dir = user_data_dir
         self.storage_state = storage_state
         self.timeout_ms = timeout_ms or int(float(os.getenv("BROWSER_USE_PAGE_EVIDENCE_TIMEOUT_SEC", "20")) * 1000)
+        self.settle_ms = int(float(os.getenv("BROWSER_USE_PAGE_EVIDENCE_SETTLE_MS", "700")))
+        self.wait_for_network_idle = self._bool_env(
+            "BROWSER_USE_PAGE_EVIDENCE_WAIT_FOR_NETWORK_IDLE",
+            default=False,
+        )
         self.max_html_chars = max_html_chars or int(os.getenv("BROWSER_USE_PAGE_EVIDENCE_MAX_HTML_CHARS", "2000000"))
+        self.capture_viewport_screenshot = self._bool_env(
+            "BROWSER_USE_PAGE_EVIDENCE_CAPTURE_VIEWPORT",
+            default=False,
+        )
         self._ephemeral_browser: Any | None = None
         self.redaction_values = sorted([value for value in redaction_values or [] if value], key=len, reverse=True)
 
@@ -154,8 +163,11 @@ class PageEvidenceCollector:
         started_at = utc_now()
         try:
             await page.goto(target["url"], wait_until="domcontentloaded", timeout=self.timeout_ms)
-            with suppress_timeout():
-                await page.wait_for_load_state("networkidle", timeout=min(self.timeout_ms, 5000))
+            if self.settle_ms > 0:
+                await page.wait_for_timeout(min(self.settle_ms, self.timeout_ms))
+            if self.wait_for_network_idle:
+                with suppress_timeout():
+                    await page.wait_for_load_state("networkidle", timeout=min(self.timeout_ms, 5000))
         except Exception as exc:  # noqa: BLE001
             errors.append(f"Navigation/capture load issue: {exc}")
 
@@ -181,7 +193,11 @@ class PageEvidenceCollector:
         files.update(await self._write_json_artifact(capture_dir, "dom_snapshot.json", await self._safe_dom_snapshot(page)))
         files.update(await self._write_json_artifact(capture_dir, "accessibility_tree.json", await self._safe_accessibility_tree(page)))
 
-        screenshot_path = await self._safe_screenshot(page, capture_dir / "viewport.png", full_page=False)
+        screenshot_path = (
+            await self._safe_screenshot(page, capture_dir / "viewport.png", full_page=False)
+            if self.capture_viewport_screenshot
+            else None
+        )
         full_page_screenshot_path = await self._safe_screenshot(page, capture_dir / "full_page.png", full_page=True)
         if screenshot_path:
             files["viewport_screenshot"] = screenshot_path.name
@@ -270,6 +286,11 @@ class PageEvidenceCollector:
       name: el.getAttribute('name') || '',
       type: el.getAttribute('type') || '',
       href: el instanceof HTMLAnchorElement ? el.href : '',
+      to: el.getAttribute('to') || '',
+      data_href: el.getAttribute('data-href') || '',
+      data_url: el.getAttribute('data-url') || '',
+      data_route: el.getAttribute('data-route') || '',
+      data_path: el.getAttribute('data-path') || '',
       disabled: Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true'),
       visible: rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none',
       rect: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }
@@ -413,6 +434,12 @@ class PageEvidenceCollector:
             return value
         except TypeError:
             return str(value)
+
+    def _bool_env(self, name: str, default: bool) -> bool:
+        value = os.getenv(name)
+        if value is None or value == "":
+            return default
+        return value.lower() in {"1", "true", "yes", "on"}
 
 
 class suppress_timeout:

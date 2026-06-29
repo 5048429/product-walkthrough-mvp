@@ -6,12 +6,13 @@ import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 from ..models import slugify, utc_now
 
 
 SCHEMA_VERSION = "1.0"
+BUILD_VERSION = "2026-06-26-real-screenshot-v3"
 WALKTHROUGH_MAP_ARTIFACT_ID = "art_walkthrough_map"
 
 TRACKING_QUERY_KEYS = {
@@ -59,7 +60,13 @@ SENSITIVE_TEXT_PATTERNS = (
     re.compile(r"\b(?:sk|pk)_(?:live|test|prod|uat)?_?[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b", re.IGNORECASE),
     re.compile(r"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b"),
 )
-GENERIC_TITLES = {"", "clink", "initial actions", "new tab"}
+GENERIC_TITLES = {"", "clink", "home", "initial actions", "new tab"}
+ENTRY_ROLE_VALUES = {"button", "link", "menuitem", "tab", "form", "input", "unknown"}
+ENTRY_KIND_VALUES = {"navigation", "action", "filter", "external", "destructive", "unknown"}
+ENTRY_STATUS_VALUES = {"visited", "unvisited", "discovered", "blocked", "unsafe"}
+DESTRUCTIVE_ENTRY_RE = re.compile(
+    r"(?i)\b(delete|remove|archive|refund|void|payout|pay|transfer|submit|save|confirm|disable|revoke|logout|sign\s*out)\b"
+)
 
 
 @dataclass(slots=True)
@@ -90,6 +97,7 @@ class StepRecord:
     event_ids: list[str] = field(default_factory=list)
     history_artifact_ids: list[str] = field(default_factory=list)
     page_evidence: dict[str, Any] = field(default_factory=dict)
+    page_discovery: dict[str, Any] = field(default_factory=dict)
     captured_at: str | None = None
 
 
@@ -209,11 +217,13 @@ def build_walkthrough_map(
         step_nodes.append((record, node_id))
 
     _attach_finding_insights(nodes_by_id, evidence_payload.get("analyses"))
+    _resolve_discovered_sources(nodes_by_id)
     for node in nodes_by_id.values():
         _finalize_node(node)
     _annotate_route_structure(nodes_by_id)
+    _resolve_entry_targets(nodes_by_id)
 
-    edges = _with_structural_edges(_build_edges(step_nodes, nodes_by_id), nodes_by_id)
+    edges = _with_entry_edges(_with_structural_edges(_build_edges(step_nodes, nodes_by_id), nodes_by_id), nodes_by_id)
     if any(edge.get("kind") == "inferred" or edge.get("metadata", {}).get("inferred_reason") for edge in edges):
         warnings.append(
             {
@@ -247,6 +257,7 @@ def build_walkthrough_map(
         "artifact_id": WALKTHROUGH_MAP_ARTIFACT_ID,
         "generated_at": generated_at or utc_now(),
         "schema_version": SCHEMA_VERSION,
+        "build_version": BUILD_VERSION,
         "source_artifact_ids": _source_artifact_ids(artifacts),
         "products": products,
         "summary": summary,
@@ -377,6 +388,7 @@ def _step_records_from_evidence(
             if history:
                 screenshot_refs.extend(history.screenshot_refs)
             page_evidence = _page_evidence_summary(evidence_items, page_evidence_artifacts)
+            page_discovery = data.get("page_discovery") if isinstance(data.get("page_discovery"), dict) else {}
             records.append(
                 StepRecord(
                     product=product,
@@ -396,6 +408,7 @@ def _step_records_from_evidence(
                     evidence_ids=evidence_ids,
                     history_artifact_ids=list(history.history_artifact_ids) if history else [],
                     page_evidence=page_evidence,
+                    page_discovery=page_discovery,
                 )
             )
     return records
@@ -424,6 +437,7 @@ def _new_node(
         "purpose": "",
         "key_functions": [],
         "key_controls": [],
+        "entries": [],
         "issues": [],
         "observations": [],
         "page_evidence": [],
@@ -472,8 +486,8 @@ def _update_node_from_step(node: dict[str, Any], record: StepRecord, canonical: 
 
     status = str(record.status or "").lower()
     is_discovery_step = "discover_page" in str(record.action or "").lower()
-    text = f"{record.observation} {record.title or ''} {canonical.normalized_route}".lower()
-    if "404" in text or "not found" in text or "error" in text:
+    text = f"{record.observation} {record.title or ''} {canonical.normalized_route}"
+    if _has_page_error_text(text):
         node["status"] = "error"
         node["page_type"] = "error"
     elif status in {"blocked", "failed", "friction"} and node.get("status") not in {"error", "external"}:
@@ -488,6 +502,22 @@ def _update_node_from_step(node: dict[str, Any], record: StepRecord, canonical: 
     controls = _extract_controls(f"{record.action or ''} {record.observation}")
     for control in controls:
         _append_unique(node["key_controls"], control, limit=12)
+
+    if record.page_discovery:
+        metadata = node.setdefault("metadata", {})
+        source_url = _safe_text(record.page_discovery.get("source_url"), limit=260)
+        source_label = _safe_text(record.page_discovery.get("source_label"), limit=120)
+        if source_url:
+            metadata["discovery_source_url"] = source_url
+        if source_label:
+            metadata["discovery_source_label"] = source_label
+        depth = _int_or_none(record.page_discovery.get("depth"))
+        if depth is not None:
+            metadata["discovery_depth"] = depth
+        for entry in _entries_from_page_discovery(record.page_discovery, source_url=record.url):
+            entry["source_node_id"] = node.get("id")
+            entry["evidence_ids"] = list(record.evidence_ids)
+            _append_entry(node.setdefault("entries", []), entry, limit=32)
 
 
 def _attach_screenshots(
@@ -523,6 +553,7 @@ def _attach_screenshots(
                 "path": path,
                 "content_url": _safe_api_url(metadata.get("content_url")),
                 "screenshot_url": _safe_api_url(metadata.get("screenshot_url")),
+                "size_bytes": _int_or_none(artifact.get("size_bytes")) or 0,
                 "evidence_id": evidence_id,
                 "step_index": step_index,
                 "captured_at": artifact.get("created_at"),
@@ -568,7 +599,7 @@ def _apply_page_evidence(node: dict[str, Any], record: StepRecord, canonical: Ca
     metadata["page_evidence_capture_count"] = int(metadata.get("page_evidence_capture_count") or 0) + 1
 
     title = _clean_title(evidence.get("title"), canonical.host)
-    page_name = _safe_text(evidence.get("page_name"), limit=120)
+    page_name = _clean_title(evidence.get("page_name"), canonical.host)
     preferred_name = page_name or title
     if title:
         _append_unique(metadata.setdefault("raw_titles", []), title)
@@ -594,6 +625,12 @@ def _apply_page_evidence(node: dict[str, Any], record: StepRecord, canonical: Ca
     for control in evidence.get("key_controls") or []:
         _append_unique(node["key_controls"], control, limit=12)
         _append_unique(page_meta.setdefault("controls", []), control, limit=12)
+    for entry in evidence.get("entries") or []:
+        normalized_entry = _entry_for_node(entry, node, record, evidence)
+        if not normalized_entry:
+            continue
+        _append_entry(node.setdefault("entries", []), normalized_entry, limit=32)
+        _append_entry(page_meta.setdefault("entries", []), normalized_entry, limit=32)
 
     for key in ("status", "captured_at"):
         value = _safe_text(evidence.get(key), limit=80)
@@ -657,6 +694,7 @@ def _append_page_evidence_capture(node: dict[str, Any], record: StepRecord, evid
         "summary": _safe_text(evidence.get("purpose") or evidence.get("text_excerpt"), limit=420) or None,
         "captured_at": _safe_text(evidence.get("captured_at"), limit=80) or None,
         "controls": _unique_list(_string_list(evidence.get("key_controls")))[:12],
+        "entries": [_entry_for_capture(entry) for entry in evidence.get("entries") or [] if _entry_for_capture(entry)][:24],
         "text_observations": [_safe_text(evidence.get("text_excerpt"), limit=420)] if evidence.get("text_excerpt") else [],
         "dom_observations": [_safe_text(evidence.get("dom_summary"), limit=260)] if evidence.get("dom_summary") else [],
         "screenshot_artifact_ids": screenshot_artifact_ids,
@@ -718,6 +756,8 @@ def _merge_page_evidence_capture(target: dict[str, Any], source: dict[str, Any])
     for key in ("controls", "text_observations", "dom_observations", "screenshot_artifact_ids", "screenshot_paths", "artifact_ids", "errors"):
         for value in source.get(key) or []:
             _append_unique(target.setdefault(key, []), value, limit=24)
+    for entry in source.get("entries") or []:
+        _append_entry(target.setdefault("entries", []), entry, limit=32)
     for artifact in source.get("artifacts") or []:
         existing_keys = {item.get("artifact_id") or item.get("path") for item in target.setdefault("artifacts", []) if isinstance(item, dict)}
         artifact_key = artifact.get("artifact_id") or artifact.get("path")
@@ -787,8 +827,117 @@ def _attach_finding_insights(nodes_by_id: dict[str, dict[str, Any]], raw_analyse
                 )
 
 
+def _resolve_discovered_sources(nodes_by_id: dict[str, dict[str, Any]]) -> None:
+    for node in nodes_by_id.values():
+        metadata = node.setdefault("metadata", {})
+        source_id = _node_id_for_url(metadata.get("discovery_source_url"), nodes_by_id)
+        if source_id and source_id != node.get("id"):
+            metadata["discovered_from_node_id"] = source_id
+
+
+def _resolve_entry_targets(nodes_by_id: dict[str, dict[str, Any]]) -> None:
+    for node in nodes_by_id.values():
+        source_id = str(node.get("id") or "")
+        for entry in node.get("entries") or []:
+            if not isinstance(entry, dict):
+                continue
+            if not entry.get("source_node_id"):
+                entry["source_node_id"] = source_id
+            target_id = _node_id_for_url(entry.get("target_url"), nodes_by_id)
+            if not target_id:
+                target_id = _node_id_for_entry_label(entry, nodes_by_id, source_id)
+            if target_id and target_id != source_id:
+                entry["target_node_id"] = target_id
+                target = nodes_by_id[target_id]
+                if entry.get("status") != "unsafe":
+                    target_status = str(target.get("status") or "")
+                    entry["status"] = "blocked" if target_status in {"blocked", "error"} else "visited" if target_status == "visited" else "discovered"
+            elif entry.get("status") not in ENTRY_STATUS_VALUES:
+                entry["status"] = "unvisited"
+
+
+def _node_id_for_url(value: Any, nodes_by_id: dict[str, dict[str, Any]]) -> str | None:
+    canonical = canonicalize_url(_safe_text(value, limit=300))
+    if canonical is None:
+        return None
+    node_id = page_node_id(canonical.host, canonical.normalized_route)
+    if node_id in nodes_by_id:
+        return node_id
+    for node in nodes_by_id.values():
+        if node.get("canonical_url") == canonical.canonical_url:
+            return str(node.get("id"))
+        raw_urls = node.get("metadata", {}).get("raw_urls")
+        if isinstance(raw_urls, list) and canonical.raw_url in raw_urls:
+            return str(node.get("id"))
+    return None
+
+
+def _node_id_for_entry_label(entry: dict[str, Any], nodes_by_id: dict[str, dict[str, Any]], source_id: str) -> str | None:
+    label = _safe_text(entry.get("label"), limit=100)
+    if not _is_conservative_navigation_label(label, entry):
+        return None
+    label_key = _entry_match_key(label)
+    matches: list[str] = []
+    for node in nodes_by_id.values():
+        node_id = str(node.get("id") or "")
+        if not node_id or node_id == source_id:
+            continue
+        keys = {
+            _entry_match_key(str(node.get("name") or "")),
+            _entry_match_key(_name_from_route(str(node.get("route") or ""), "")),
+        }
+        route = str(node.get("route") or "")
+        if route:
+            keys.add(_entry_match_key(route.strip("/").split("/")[-1]))
+        if label_key and label_key in keys:
+            matches.append(node_id)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _is_conservative_navigation_label(label: str, entry: dict[str, Any]) -> bool:
+    if not label or label.startswith("+"):
+        return False
+    words = [word for word in re.split(r"[^A-Za-z0-9]+", label) if word]
+    if not words or len(words) > 3:
+        return False
+    if len(words) == 1 and (len(words[0]) <= 2 or words[0].isupper()):
+        return False
+    lowered = {word.lower() for word in words}
+    action_words = {
+        "add",
+        "apply",
+        "cancel",
+        "clear",
+        "copy",
+        "create",
+        "download",
+        "edit",
+        "export",
+        "filter",
+        "invite",
+        "new",
+        "open",
+        "reset",
+        "save",
+        "search",
+        "submit",
+        "upload",
+    }
+    if lowered.intersection(action_words):
+        return False
+    if str(entry.get("status") or "") == "unsafe" or str(entry.get("kind") or "") in {"destructive", "filter"}:
+        return False
+    role = _safe_entry_role(entry.get("role"))
+    return role in {"link", "menuitem", "tab", "unknown"}
+
+
+def _entry_match_key(value: str) -> str:
+    return "".join(re.findall(r"[a-z0-9]+", value.lower()))
+
+
 def _finalize_node(node: dict[str, Any]) -> None:
-    screenshots = node["screenshot_evidence"]
+    screenshots = _dedupe_screenshots_for_map(node["screenshot_evidence"])
+    node["screenshot_evidence"] = screenshots
     screenshots.sort(key=lambda item: (item.get("step_index") is None, item.get("step_index") or -1, item.get("path") or ""))
     if screenshots:
         for item in screenshots:
@@ -799,6 +948,19 @@ def _finalize_node(node: dict[str, Any]) -> None:
         route_control = _name_from_route(str(node.get("route") or ""), "")
         if route_control and route_control != "Home":
             node["key_controls"].append(route_control)
+    if not node.get("entries") and node.get("key_controls"):
+        for control in node["key_controls"][:8]:
+            entry = _new_entry(
+                label=_safe_text(control, limit=100),
+                role="unknown",
+                kind="unknown",
+                status="unvisited",
+                target_url=None,
+                source="heuristic_controls",
+                confidence=0.38,
+            )
+            entry["source_node_id"] = node.get("id")
+            _append_entry(node.setdefault("entries", []), entry, limit=8)
     node["key_functions"] = _key_functions(node)
     node["purpose"] = _purpose(node)
     confidence = 0.58
@@ -812,6 +974,41 @@ def _finalize_node(node: dict[str, Any]) -> None:
         confidence += 0.06
     node["confidence"] = round(min(confidence, 0.92), 2)
     node["scenario_ids"] = [item for item in node["scenario_ids"] if item != "__browser_history__"]
+
+
+def _dedupe_screenshots_for_map(screenshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[Any, list[dict[str, Any]]] = {}
+    for screenshot in screenshots:
+        if not isinstance(screenshot, dict):
+            continue
+        key = screenshot.get("step_index")
+        if key is None:
+            key = screenshot.get("artifact_id") or screenshot.get("path") or screenshot.get("id")
+        grouped.setdefault(key, []).append(screenshot)
+    return [_best_screenshot_for_map(items) for items in grouped.values() if items]
+
+
+def _best_screenshot_for_map(items: list[dict[str, Any]]) -> dict[str, Any]:
+    return sorted(items, key=_screenshot_preference_key)[-1]
+
+
+def _screenshot_preference_key(item: dict[str, Any]) -> tuple[int, int, str]:
+    path = str(item.get("path") or item.get("title") or "").lower()
+    size = _int_or_none(item.get("size_bytes")) or 0
+    rank = 0
+    if "full" in path or "full_page" in path or "full-page" in path:
+        rank = 5
+    elif re.search(r"-step-\d+\.png$", path):
+        rank = 4
+    elif "page-shot-2" in path or "shot-2" in path:
+        rank = 3
+    elif "page-shot" in path:
+        rank = 2
+    elif "-shot-" in path:
+        rank = 1
+    elif path:
+        rank = 2
+    return rank, size, path
 
 
 def _annotate_route_structure(nodes_by_id: dict[str, dict[str, Any]]) -> None:
@@ -828,6 +1025,10 @@ def _annotate_route_structure(nodes_by_id: dict[str, dict[str, Any]]) -> None:
         section = segments[0] if segments else "home"
         parent = _route_parent_node(route, nodes_by_route)
         parent_id = parent.get("id") if parent else None
+        discovered_from = str(metadata.get("discovered_from_node_id") or "")
+        if not parent_id and discovered_from in nodes_by_id and discovered_from != node.get("id"):
+            parent = nodes_by_id[discovered_from]
+            parent_id = discovered_from
 
         metadata["route_segments"] = segments
         metadata["route_section"] = section
@@ -916,6 +1117,83 @@ def _with_structural_edges(edges: list[dict[str, Any]], nodes_by_id: dict[str, d
     )
 
 
+def _with_entry_edges(edges: list[dict[str, Any]], nodes_by_id: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    edges_by_pair = {(str(edge.get("source")), str(edge.get("target"))): edge for edge in edges}
+    for source in nodes_by_id.values():
+        source_id = str(source.get("id") or "")
+        for entry in source.get("entries") or []:
+            if not isinstance(entry, dict) or entry.get("status") == "unsafe":
+                continue
+            target_id = str(entry.get("target_node_id") or "")
+            if not source_id or not target_id or target_id == source_id or target_id not in nodes_by_id:
+                continue
+            pair = (source_id, target_id)
+            existing = edges_by_pair.get(pair)
+            if existing is not None:
+                metadata = existing.setdefault("metadata", {})
+                _append_unique(metadata.setdefault("entry_ids", []), entry.get("id"), limit=12)
+                _append_unique(metadata.setdefault("entry_labels", []), entry.get("label"), limit=12)
+                metadata.setdefault("map_relation", "entry_link")
+                existing["confidence"] = round(max(float(existing.get("confidence") or 0), _float_between(entry.get("confidence"), default=0.62)), 2)
+                if not existing.get("label"):
+                    existing["label"] = _safe_text(entry.get("label"), limit=80) or existing.get("label")
+                continue
+            target = nodes_by_id[target_id]
+            edge = _entry_edge(source, target, entry)
+            edges_by_pair[pair] = edge
+            edges.append(edge)
+    return sorted(
+        edges,
+        key=lambda item: (
+            item.get("from_step_index") is None,
+            item.get("from_step_index") if item.get("from_step_index") is not None else 10**9,
+            item.get("metadata", {}).get("map_relation") in {"entry_link", "discovered_from"},
+            item["id"],
+        ),
+    )
+
+
+def _entry_edge(source: dict[str, Any], target: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
+    source_id = str(source["id"])
+    target_id = str(target["id"])
+    label = _safe_text(entry.get("label"), limit=80) or str(target.get("name") or "Open page")
+    entry_id = _safe_text(entry.get("id"), limit=120)
+    return {
+        "id": f"edge_entry_{source_id}__{target_id}__{entry_id}"[:180],
+        "source": source_id,
+        "target": target_id,
+        "label": label,
+        "kind": _entry_edge_kind(entry),
+        "action": label,
+        "from_step_index": source.get("last_seen_step"),
+        "to_step_index": target.get("first_seen_step"),
+        "evidence_ids": _unique_list(_string_list(entry.get("evidence_ids"))),
+        "event_ids": [],
+        "confidence": _float_between(entry.get("confidence"), default=0.62),
+        "metadata": {
+            "source_url": source.get("canonical_url"),
+            "target_url": entry.get("target_url") or target.get("canonical_url"),
+            "inferred_reason": "Interactive page evidence exposed an entry that targets this page.",
+            "occurrence_count": 0,
+            "entry_ids": [entry_id] if entry_id else [],
+            "entry_labels": [label] if label else [],
+            "map_relation": "entry_link",
+        },
+    }
+
+
+def _entry_edge_kind(entry: dict[str, Any]) -> str:
+    role = str(entry.get("role") or "")
+    kind = str(entry.get("kind") or "")
+    if role == "menuitem":
+        return "menu"
+    if role == "link" or kind in {"navigation", "external"}:
+        return "link"
+    if role == "button":
+        return "button"
+    return "inferred"
+
+
 def _structural_edge(source: dict[str, Any], target: dict[str, Any], relation: str) -> dict[str, Any]:
     source_id = str(source["id"])
     target_id = str(target["id"])
@@ -923,6 +1201,10 @@ def _structural_edge(source: dict[str, Any], target: dict[str, Any], relation: s
         label = "Open from navigation"
         confidence = 0.62
         reason = "This page is a peer product surface reached from the shared navigation shell."
+    elif relation == "discovered_from":
+        label = _safe_text(target.get("metadata", {}).get("discovery_source_label"), limit=80) or str(target.get("name") or "Discovered page")
+        confidence = 0.7
+        reason = "Page discovery found this route from an interactive element or link on the source page."
     elif relation == "detail_parent":
         label = str(target.get("name") or "Detail page")
         confidence = 0.64
@@ -1041,6 +1323,13 @@ def _edge_label(text: str, target: dict[str, Any]) -> str:
 
 def _summary(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> dict[str, Any]:
     screenshot_count = sum(len(node.get("screenshot_evidence") or []) for node in nodes)
+    entry_count = sum(len(node.get("entries") or []) for node in nodes)
+    unvisited_entry_count = sum(
+        1
+        for node in nodes
+        for entry in node.get("entries") or []
+        if isinstance(entry, dict) and entry.get("status") in {"unvisited", "unsafe"}
+    )
     node_conf = [float(node.get("confidence") or 0) for node in nodes]
     edge_conf = [float(edge.get("confidence") or 0) for edge in edges]
     confidence_values = node_conf + edge_conf
@@ -1052,6 +1341,8 @@ def _summary(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> dict[s
         "discovered_count": sum(1 for node in nodes if node.get("status") == "discovered"),
         "external_count": sum(1 for node in nodes if node.get("status") == "external"),
         "screenshot_count": screenshot_count,
+        "entry_count": entry_count,
+        "unvisited_entry_count": unvisited_entry_count,
         "confidence": round(sum(confidence_values) / len(confidence_values), 2) if confidence_values else 0.0,
     }
 
@@ -1199,6 +1490,8 @@ def _entry_node_for_product(nodes: list[dict[str, Any]]) -> dict[str, Any] | Non
 def _structural_relation_for_node(node: dict[str, Any], source: dict[str, Any]) -> str:
     metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
     source_metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    if metadata.get("discovered_from_node_id") == source.get("id"):
+        return "discovered_from"
     if node.get("page_type") == "detail":
         return "detail_parent"
     if metadata.get("entry_node_id") == source.get("id") and source_metadata.get("layout_role") == "entry":
@@ -1449,7 +1742,14 @@ def _page_evidence_summary(
     if not summaries:
         return {}
 
-    merged: dict[str, Any] = {"artifact_ids": [], "key_controls": [], "artifacts": [], "screenshot_paths": [], "errors": []}
+    merged: dict[str, Any] = {
+        "artifact_ids": [],
+        "key_controls": [],
+        "entries": [],
+        "artifacts": [],
+        "screenshot_paths": [],
+        "errors": [],
+    }
     for summary in summaries:
         for key in (
             "status",
@@ -1471,6 +1771,8 @@ def _page_evidence_summary(
             _append_unique(merged["artifact_ids"], artifact_id, limit=24)
         for control in summary.get("key_controls") or []:
             _append_unique(merged["key_controls"], control, limit=12)
+        for entry in summary.get("entries") or []:
+            _append_entry(merged["entries"], entry, limit=32)
         for path in summary.get("screenshot_paths") or []:
             _append_unique(merged["screenshot_paths"], path, limit=8)
         for error in summary.get("errors") or []:
@@ -1525,6 +1827,7 @@ def _page_evidence_summary_from_data(
     )
     text_excerpt = _text_excerpt_from_page_evidence(page_evidence, text_payload)
     key_controls = _controls_from_page_evidence(page_evidence, elements_payload, accessibility_payload)
+    entries = _entries_from_page_evidence(page_evidence, elements_payload, accessibility_payload)
     dom_summary = _dom_summary(dom_payload, elements_payload, accessibility_payload)
     page_type = _safe_page_type(page_evidence.get("page_type") or page_evidence.get("type"))
     if page_type is None:
@@ -1545,6 +1848,7 @@ def _page_evidence_summary_from_data(
         "text_excerpt": text_excerpt,
         "dom_summary": dom_summary,
         "key_controls": key_controls,
+        "entries": entries,
         "artifact_ids": artifact_ids,
         "artifacts": _page_evidence_artifact_ref_items(artifact_refs, page_evidence_artifacts),
         "screenshot_paths": _page_evidence_screenshot_paths(page_evidence),
@@ -1696,6 +2000,371 @@ def _text_excerpt_from_page_evidence(page_evidence: dict[str, Any], text_payload
         if text:
             return text
     return ""
+
+
+def _entries_from_page_discovery(page_discovery: dict[str, Any], *, source_url: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    links = page_discovery.get("links") if isinstance(page_discovery.get("links"), list) else []
+    for link in links:
+        target_url = _safe_entry_target_url(link, source_url)
+        if not target_url:
+            continue
+        _append_entry(
+            entries,
+            _new_entry(
+                label=_label_from_target_url(target_url),
+                role="link",
+                kind=_infer_entry_kind("", "link", target_url),
+                status="unvisited",
+                target_url=target_url,
+                source="page_discovery",
+                confidence=0.66,
+            ),
+            limit=32,
+        )
+
+    candidates = page_discovery.get("click_candidates") if isinstance(page_discovery.get("click_candidates"), list) else []
+    for candidate in candidates:
+        entry = _entry_from_discovery_candidate(candidate, source_url)
+        if entry:
+            _append_entry(entries, entry, limit=32)
+    return entries[:32]
+
+
+def _entry_from_discovery_candidate(value: Any, source_url: str) -> dict[str, Any] | None:
+    candidate: dict[str, Any] | None = None
+    if isinstance(value, dict):
+        candidate = value
+    elif isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            candidate = parsed
+    if not candidate:
+        return None
+
+    label = (
+        _safe_text(candidate.get("label"), limit=100)
+        or _safe_text(candidate.get("text"), limit=100)
+        or _safe_text(candidate.get("aria_label"), limit=100)
+    )
+    target_url = None
+    for key in ("target_url", "url", "href", "to", "data_route", "data_path"):
+        target_url = _safe_entry_target_url(candidate.get(key), source_url)
+        if target_url:
+            break
+    if not label and not target_url:
+        return None
+    role = _entry_role_from_element(
+        tag=str(candidate.get("tag") or "").lower(),
+        role=str(candidate.get("role") or "").lower(),
+        input_type=str(candidate.get("type") or "").lower(),
+    )
+    status = "unsafe" if label and DESTRUCTIVE_ENTRY_RE.search(label) else "unvisited"
+    kind = "destructive" if status == "unsafe" else _infer_entry_kind(label, role, target_url, input_type=str(candidate.get("type") or ""))
+    return _new_entry(
+        label=label or _label_from_target_url(target_url),
+        role=role,
+        kind=kind,
+        status=status,
+        target_url=target_url,
+        source="page_discovery",
+        confidence=0.62 if target_url else 0.5,
+    )
+
+
+def _entries_from_page_evidence(
+    page_evidence: dict[str, Any],
+    elements_payload: dict[str, Any] | None,
+    accessibility_payload: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for key in ("entries", "entry_points"):
+        values = page_evidence.get(key)
+        if isinstance(values, list):
+            for value in values:
+                entry = _entry_from_raw(value, source="page_evidence")
+                if entry:
+                    _append_entry(entries, entry, limit=32)
+
+    source_url = _safe_text(page_evidence.get("url"), limit=260)
+    items = elements_payload.get("items") if elements_payload else None
+    if isinstance(items, list):
+        for item in items:
+            entry = _entry_from_element(item, source_url=source_url, source="page_elements")
+            if entry:
+                _append_entry(entries, entry, limit=32)
+
+    ax_nodes = accessibility_payload.get("nodes") if accessibility_payload else None
+    if isinstance(ax_nodes, list):
+        for node in ax_nodes:
+            entry = _entry_from_accessibility_node(node)
+            if entry:
+                _append_entry(entries, entry, limit=32)
+    return entries[:32]
+
+
+def _entry_from_raw(value: Any, *, source: str) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    label = _safe_text(
+        value.get("label")
+        or value.get("text")
+        or value.get("name")
+        or value.get("aria_label")
+        or value.get("title"),
+        limit=100,
+    )
+    target_url = _safe_entry_target_url(value.get("target_url") or value.get("url") or value.get("href"), "")
+    if not label and not target_url:
+        return None
+    role = _safe_entry_role(value.get("role") or value.get("tag") or value.get("type"))
+    status = _safe_entry_status(value.get("status"))
+    kind = _safe_entry_kind(value.get("kind"))
+    if status == "unvisited" and label and DESTRUCTIVE_ENTRY_RE.search(label):
+        status = "unsafe"
+        kind = "destructive"
+    elif kind == "unknown":
+        kind = _infer_entry_kind(label, role, target_url)
+    return _new_entry(
+        label=label or _label_from_target_url(target_url),
+        role=role,
+        kind=kind,
+        status=status,
+        target_url=target_url,
+        source=_safe_text(value.get("source"), limit=40) or source,
+        confidence=_float_between(value.get("confidence"), default=0.58),
+    )
+
+
+def _entry_from_element(item: Any, *, source_url: str, source: str) -> dict[str, Any] | None:
+    if not isinstance(item, dict) or item.get("visible") is False or item.get("disabled") is True:
+        return None
+    tag = str(item.get("tag") or "").lower()
+    role = str(item.get("role") or "").lower()
+    input_type = str(item.get("type") or "").lower()
+    if tag not in {"a", "button", "input", "select", "textarea", "summary"} and role not in {
+        "button",
+        "link",
+        "menuitem",
+        "tab",
+        "checkbox",
+        "combobox",
+        "searchbox",
+        "textbox",
+    }:
+        return None
+    if input_type in {"hidden", "password"}:
+        return None
+
+    label = (
+        _safe_text(item.get("text"), limit=100)
+        or _safe_text(item.get("aria_label"), limit=100)
+        or _safe_text(item.get("placeholder"), limit=100)
+        or _safe_text(item.get("name"), limit=100)
+    )
+    target_url = _entry_target_url_from_element(item, source_url)
+    if not label and not target_url:
+        return None
+
+    safe_role = _entry_role_from_element(tag=tag, role=role, input_type=input_type)
+    status = "unsafe" if label and DESTRUCTIVE_ENTRY_RE.search(label) else "unvisited"
+    kind = "destructive" if status == "unsafe" else _infer_entry_kind(label, safe_role, target_url, input_type=input_type)
+    return _new_entry(
+        label=label or _label_from_target_url(target_url),
+        role=safe_role,
+        kind=kind,
+        status=status,
+        target_url=target_url,
+        source=source,
+        confidence=0.7 if target_url else 0.56,
+    )
+
+
+def _entry_from_accessibility_node(node: Any) -> dict[str, Any] | None:
+    if not isinstance(node, dict):
+        return None
+    role = _ax_value(node.get("role")).lower()
+    if role not in {"button", "link", "menuitem", "tab", "checkbox", "combobox", "searchbox", "textbox"}:
+        return None
+    label = _safe_text(_ax_value(node.get("name")), limit=100)
+    if not label:
+        return None
+    safe_role = _safe_entry_role(role)
+    status = "unsafe" if DESTRUCTIVE_ENTRY_RE.search(label) else "unvisited"
+    return _new_entry(
+        label=label,
+        role=safe_role,
+        kind="destructive" if status == "unsafe" else _infer_entry_kind(label, safe_role, None),
+        status=status,
+        target_url=None,
+        source="accessibility_tree",
+        confidence=0.5,
+    )
+
+
+def _entry_target_url_from_element(item: dict[str, Any], source_url: str) -> str | None:
+    for key in ("href", "to", "data_href", "data_url", "data_route", "data_path"):
+        target_url = _safe_entry_target_url(item.get(key), source_url)
+        if target_url:
+            return target_url
+    return None
+
+
+def _safe_entry_target_url(value: Any, source_url: str) -> str | None:
+    raw = _safe_text(value, limit=260)
+    if not raw or raw.startswith(("javascript:", "mailto:", "tel:", "data:")):
+        return None
+    if raw.startswith("#") and not raw.startswith(("#/", "#!/")):
+        return None
+    joined = urljoin(source_url, raw) if source_url else raw
+    canonical = canonicalize_url(joined)
+    return canonical.canonical_url if canonical else None
+
+
+def _entry_role_from_element(*, tag: str, role: str, input_type: str) -> str:
+    if role in ENTRY_ROLE_VALUES and role != "unknown":
+        return "input" if role in {"checkbox", "combobox", "searchbox", "textbox"} else role
+    if tag == "a":
+        return "link"
+    if tag == "button":
+        return "button"
+    if tag in {"input", "select", "textarea"}:
+        return "input"
+    if tag == "summary":
+        return "button"
+    if input_type:
+        return "input"
+    return "unknown"
+
+
+def _safe_entry_role(value: Any) -> str:
+    text = _safe_text(value, limit=40).lower().replace("_", "-")
+    if text in {"a", "anchor"}:
+        return "link"
+    if text in {"input", "select", "textarea", "checkbox", "combobox", "searchbox", "textbox"}:
+        return "input"
+    return text if text in ENTRY_ROLE_VALUES else "unknown"
+
+
+def _safe_entry_kind(value: Any) -> str:
+    text = _safe_text(value, limit=40).lower().replace("_", "-")
+    return text if text in ENTRY_KIND_VALUES else "unknown"
+
+
+def _safe_entry_status(value: Any) -> str:
+    text = _safe_text(value, limit=40).lower().replace("_", "-")
+    return text if text in ENTRY_STATUS_VALUES else "unvisited"
+
+
+def _infer_entry_kind(label: str, role: str, target_url: str | None, *, input_type: str = "") -> str:
+    if target_url:
+        return "external" if _is_external_target(target_url) else "navigation"
+    label_l = label.lower()
+    if role == "tab" or input_type in {"search", "text"} or any(token in label_l for token in ("filter", "search", "tab")):
+        return "filter"
+    if role in {"button", "menuitem"}:
+        return "action"
+    return "unknown"
+
+
+def _is_external_target(target_url: str) -> bool:
+    parsed = urlparse(target_url)
+    return bool(parsed.hostname and parsed.hostname.lower().startswith(("docs.", "help.", "support.")))
+
+
+def _label_from_target_url(target_url: str | None) -> str:
+    if not target_url:
+        return "Untitled entry"
+    canonical = canonicalize_url(target_url)
+    return _name_from_route(canonical.normalized_route, canonical.host) if canonical else "Untitled entry"
+
+
+def _new_entry(
+    *,
+    label: str,
+    role: str,
+    kind: str,
+    status: str,
+    target_url: str | None,
+    source: str,
+    confidence: float,
+) -> dict[str, Any]:
+    key = f"{label}|{role}|{kind}|{status}|{target_url or ''}|{source}"
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+    return {
+        "id": f"entry_{slugify(label)[:48]}_{digest}",
+        "label": label,
+        "role": role,
+        "kind": kind,
+        "status": status,
+        "source_node_id": None,
+        "target_node_id": None,
+        "target_url": target_url,
+        "source": source,
+        "evidence_ids": [],
+        "artifact_ids": [],
+        "confidence": round(min(max(confidence, 0.0), 1.0), 2),
+    }
+
+
+def _entry_for_node(
+    value: Any,
+    node: dict[str, Any],
+    record: StepRecord,
+    evidence: dict[str, Any],
+) -> dict[str, Any] | None:
+    entry = _entry_from_raw(value, source="page_evidence") if not isinstance(value, dict) else dict(value)
+    if not isinstance(entry, dict):
+        return None
+    label = _safe_text(entry.get("label"), limit=100)
+    target_url = _safe_entry_target_url(entry.get("target_url"), _safe_text(evidence.get("url") or node.get("canonical_url"), limit=260))
+    if not label and not target_url:
+        return None
+    role = _safe_entry_role(entry.get("role"))
+    kind = _safe_entry_kind(entry.get("kind"))
+    status = _safe_entry_status(entry.get("status"))
+    if status == "unvisited" and label and DESTRUCTIVE_ENTRY_RE.search(label):
+        status = "unsafe"
+        kind = "destructive"
+    elif kind == "unknown":
+        kind = _infer_entry_kind(label, role, target_url)
+    artifact_ids = _unique_list(_string_list(entry.get("artifact_ids")) + _string_list(evidence.get("artifact_ids")))
+    evidence_ids = _unique_list(_string_list(entry.get("evidence_ids")) + record.evidence_ids)
+    clean = _new_entry(
+        label=label or _label_from_target_url(target_url),
+        role=role,
+        kind=kind,
+        status=status,
+        target_url=target_url,
+        source=_safe_text(entry.get("source"), limit=40) or "page_evidence",
+        confidence=_float_between(entry.get("confidence"), default=0.58),
+    )
+    clean["source_node_id"] = node.get("id")
+    clean["evidence_ids"] = evidence_ids
+    clean["artifact_ids"] = artifact_ids
+    return clean
+
+
+def _entry_for_capture(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    clean = _entry_from_raw(value, source="page_evidence")
+    if not clean:
+        return None
+    return {
+        "id": clean["id"],
+        "label": clean["label"],
+        "role": clean["role"],
+        "kind": clean["kind"],
+        "status": clean["status"],
+        "target_node_id": clean.get("target_node_id"),
+        "target_url": clean.get("target_url"),
+        "source": clean["source"],
+        "confidence": clean["confidence"],
+    }
 
 
 def _controls_from_page_evidence(
@@ -2002,7 +2671,7 @@ def _page_type(route: str, title: str | None, observation: str | None) -> str:
     route_l = route.lower()
     if any(marker in route_l for marker in ("login", "signin", "sign-in", "/auth")):
         return "auth"
-    if any(marker in text for marker in ("404", "not found", " error")):
+    if _has_page_error_text(text):
         return "error"
     if any(marker in route for marker in (":id", "/detail", "/details")):
         return "detail"
@@ -2017,6 +2686,26 @@ def _page_type(route: str, title: str | None, observation: str | None) -> str:
     if any(marker in text for marker in ("transactions", "balances", "customers", "subscriptions", "products", "table", "list")):
         return "list"
     return "unknown"
+
+
+def _has_page_error_text(text: str) -> bool:
+    lowered = text.lower()
+    agent_error_markers = (
+        "llm call timed out",
+        "agent timed out",
+        "model call timed out",
+        "call timed out after",
+    )
+    if any(marker in lowered for marker in agent_error_markers):
+        return False
+    return bool(
+        re.search(r"\b(?:http\s*)?(?:404|403|500|502|503|504)\b", lowered)
+        or "not found" in lowered
+        or "page load failed" in lowered
+        or "capture failed" in lowered
+        or "dom error" in lowered
+        or "page error" in lowered
+    )
 
 
 def _extract_controls(text: str) -> list[str]:
@@ -2160,6 +2849,39 @@ def _append_unique(values: list[Any], value: Any, *, limit: int | None = None) -
     if limit is not None and len(values) >= limit:
         return
     values.append(value)
+
+
+def _append_entry(values: list[dict[str, Any]], entry: Any, *, limit: int | None = None) -> None:
+    if not isinstance(entry, dict):
+        return
+    label = _safe_text(entry.get("label"), limit=100)
+    target_url = _safe_text(entry.get("target_url"), limit=300)
+    role = _safe_entry_role(entry.get("role"))
+    if not label and not target_url:
+        return
+    key = (label.lower(), target_url, role)
+    for existing in values:
+        if not isinstance(existing, dict):
+            continue
+        existing_key = (
+            _safe_text(existing.get("label"), limit=100).lower(),
+            _safe_text(existing.get("target_url"), limit=300),
+            _safe_entry_role(existing.get("role")),
+        )
+        if existing_key != key:
+            continue
+        for merge_key in ("evidence_ids", "artifact_ids"):
+            for value in _string_list(entry.get(merge_key)):
+                _append_unique(existing.setdefault(merge_key, []), value, limit=24)
+        if not existing.get("target_node_id") and entry.get("target_node_id"):
+            existing["target_node_id"] = entry["target_node_id"]
+        if existing.get("status") == "unvisited" and entry.get("status") in {"visited", "discovered", "blocked", "unsafe"}:
+            existing["status"] = entry["status"]
+        existing["confidence"] = round(max(_float_between(existing.get("confidence"), default=0), _float_between(entry.get("confidence"), default=0)), 2)
+        return
+    if limit is not None and len(values) >= limit:
+        return
+    values.append(entry)
 
 
 def _float_between(value: Any, *, default: float) -> float:

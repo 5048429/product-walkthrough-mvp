@@ -30,6 +30,11 @@ from .page_discovery import PageDiscoveryCrawler, normalize_discovery_url
 from .page_evidence import PageEvidenceCollector
 
 
+DEFAULT_DISCOVER_ALL_PAGES = True
+DEFAULT_DISCOVERY_MAX_PAGES = 120
+DEFAULT_DISCOVERY_MAX_DEPTH = 4
+
+
 class BrowserWalker(ABC):
     @abstractmethod
     async def walk(self, product: ProductTarget, scenario: Scenario) -> WalkthroughResult:
@@ -173,6 +178,11 @@ class BrowserUseLocalWalker(BrowserWalker):
             "BROWSER_USE_RUN_TIMEOUT_SEC"
         )
         self.run_timeout_sec = configured_timeout if configured_timeout and configured_timeout > 0 else None
+        self.agent_llm_timeout_sec = self._int_env("BROWSER_USE_LLM_TIMEOUT_SEC") or 120
+        self.agent_step_timeout_sec = self._int_env("BROWSER_USE_STEP_TIMEOUT_SEC") or 180
+        self.agent_max_failures = self._int_env("BROWSER_USE_MAX_FAILURES") or 3
+        self.agent_flash_mode = self._bool_env("BROWSER_USE_FLASH_MODE", default=False)
+        self.agent_use_thinking = self._bool_env("BROWSER_USE_USE_THINKING", default=None)
         self.headless = self._bool_env("BROWSER_USE_HEADLESS", default=True)
         self.executable_path = os.getenv("BROWSER_USE_CHROME_PATH") or self._find_local_browser()
         self.user_data_dir = self._resolve_runtime_path(
@@ -190,13 +200,17 @@ class BrowserUseLocalWalker(BrowserWalker):
         self.discover_all_pages = (
             discover_all_pages
             if discover_all_pages is not None
-            else bool(self._bool_env("BROWSER_USE_DISCOVER_ALL_PAGES", default=False))
+            else bool(self._bool_env("BROWSER_USE_DISCOVER_ALL_PAGES", default=DEFAULT_DISCOVER_ALL_PAGES))
         )
-        self.discovery_max_pages = discovery_max_pages or self._int_env("BROWSER_USE_DISCOVERY_MAX_PAGES") or 50
+        self.discovery_max_pages = (
+            discovery_max_pages
+            or self._int_env("BROWSER_USE_DISCOVERY_MAX_PAGES")
+            or DEFAULT_DISCOVERY_MAX_PAGES
+        )
         self.discovery_max_depth = (
             discovery_max_depth
             if discovery_max_depth is not None
-            else self._int_env("BROWSER_USE_DISCOVERY_MAX_DEPTH") or 3
+            else self._int_env("BROWSER_USE_DISCOVERY_MAX_DEPTH") or DEFAULT_DISCOVERY_MAX_DEPTH
         )
         self.discovery_allowed_path_prefixes = self._csv_env("BROWSER_USE_DISCOVERY_ALLOWED_PATH_PREFIXES")
         self.discovery_exclude_patterns = self._csv_env("BROWSER_USE_DISCOVERY_EXCLUDE_PATTERNS")
@@ -253,6 +267,7 @@ class BrowserUseLocalWalker(BrowserWalker):
                     "task": task,
                     "mode": "browser-use-local",
                     "final_output": final_text,
+                    "invalid_agent_summary": bool(final_text and self._parse_first_json_object(final_text) is None),
                     "model": self.model,
                     "provider": self.provider,
                     "base_url": self.openai_base_url,
@@ -261,6 +276,9 @@ class BrowserUseLocalWalker(BrowserWalker):
                     "executable_path": self.executable_path,
                     "headless": self.headless,
                     "run_timeout_sec": self.run_timeout_sec,
+                    "llm_timeout_sec": self.agent_llm_timeout_sec,
+                    "step_timeout_sec": self.agent_step_timeout_sec,
+                    "max_failures": self.agent_max_failures,
                     "user_data_dir": self.user_data_dir,
                     "storage_state": self.storage_state,
                     "timed_out": run_data.get("timed_out", False),
@@ -346,6 +364,8 @@ class BrowserUseLocalWalker(BrowserWalker):
                 "discovered_page_count": run_data.get("discovered_page_count", 0),
                 "page_discovery_errors": run_data.get("page_discovery_errors", []),
                 "run_timeout_sec": self.run_timeout_sec,
+                "llm_timeout_sec": self.agent_llm_timeout_sec,
+                "step_timeout_sec": self.agent_step_timeout_sec,
                 "timed_out": run_data.get("timed_out", False),
             },
             errors=errors,
@@ -398,17 +418,48 @@ Success criteria:
 Observation points:
 {points}
 
-Return a concise JSON-like summary with: completed, blockers, friction_points,
-notable_copy, urls_seen, and evidence_needed. Do not perform destructive actions,
-payments, or irreversible account changes. Stay on the product's own allowed
-domains. Do not open external documentation, GitHub, support, or provider links;
-record visible link labels or URLs only when useful. If login verification,
-Altcha, CAPTCHA, or a manual challenge blocks progress after one login submit
-attempt, stop immediately and return a partial summary with
-manual_verification_required: true. Do not repeatedly retry human verification
-inside browser-use. If loading or an external-domain block prevents progress,
-stop and return a partial summary instead of retrying indefinitely. Keep the run
-focused and stop after roughly {self.max_steps} meaningful browser steps.
+Return exactly one valid JSON object and no prose outside it. Use this schema:
+{{
+  "completed": true,
+  "status": "completed|blocked|partial",
+  "manual_verification_required": false,
+  "blockers": [],
+  "friction_points": [],
+  "issues": [
+    {{
+      "issue_type": "product|coverage|system_reliability",
+      "priority": "P0|P1|P2|P3",
+      "severity": "high|medium|low|info",
+      "theme": "short product-quality theme",
+      "claim": "what is wrong",
+      "page": "affected URL or page name",
+      "current_behavior": "observed behavior",
+      "expected_behavior": "expected behavior",
+      "repro_steps": ["safe read-only steps"],
+      "recommendation": "specific change",
+      "acceptance_criteria": ["verifiable fixed state"],
+      "confidence": 0.0,
+      "confidence_reason": "why this is grounded"
+    }}
+  ],
+  "checklist": [
+    {{"id": "stable_check_id", "title": "check title", "status": "pass|fail|untested", "severity": "high|medium|low", "notes": "short evidence-based note"}}
+  ],
+  "notable_copy": [],
+  "urls_seen": [],
+  "top_recommendations": [],
+  "evidence_needed": []
+}}
+Do not perform destructive actions, payments, or irreversible account changes.
+Stay on the product's own allowed domains. Do not open external documentation,
+GitHub, support, or provider links; record visible link labels or URLs only when
+useful. If login verification, Altcha, CAPTCHA, or a manual challenge blocks
+progress after one login submit attempt, stop immediately and return a partial
+JSON summary with "manual_verification_required": true. Do not repeatedly retry
+human verification inside browser-use. If loading or an external-domain block
+prevents progress, stop and return a partial JSON summary instead of retrying
+indefinitely. Keep the run focused and stop after roughly {self.max_steps}
+meaningful browser steps.
 """.strip()
 
     async def _run_browser_use_local(self, task: str) -> dict[str, Any]:
@@ -438,14 +489,21 @@ focused and stop after roughly {self.max_steps} meaningful browser steps.
 
         browser_profile = BrowserProfile(**profile_kwargs)
         history_file = self._history_file_for_task(task)
-        agent = Agent(
-            task=task,
-            llm=llm,
-            browser_profile=browser_profile,
-            sensitive_data=sensitive_data or None,
-            save_conversation_path=None,
-            use_vision=True,
-        )
+        agent_kwargs: dict[str, Any] = {
+            "task": task,
+            "llm": llm,
+            "browser_profile": browser_profile,
+            "sensitive_data": sensitive_data or None,
+            "save_conversation_path": None,
+            "use_vision": True,
+            "llm_timeout": self.agent_llm_timeout_sec,
+            "step_timeout": self.agent_step_timeout_sec,
+            "max_failures": self.agent_max_failures,
+            "flash_mode": self.agent_flash_mode,
+        }
+        if self.agent_use_thinking is not None:
+            agent_kwargs["use_thinking"] = self.agent_use_thinking
+        agent = Agent(**self._supported_kwargs(Agent, agent_kwargs))
         try:
             history = await agent.run(max_steps=self.max_steps)
         except asyncio.CancelledError:
@@ -486,6 +544,15 @@ focused and stop after roughly {self.max_steps} meaningful browser steps.
             "observations": observations,
             "errors": errors,
         }
+
+    def _supported_kwargs(self, callable_obj: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+        try:
+            signature = inspect.signature(callable_obj)
+        except (TypeError, ValueError):
+            return kwargs
+        if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()):
+            return kwargs
+        return {key: value for key, value in kwargs.items() if key in signature.parameters}
 
     async def _close_agent_after_run(self, agent: Any) -> None:
         close = getattr(agent, "close", None)
@@ -603,6 +670,16 @@ focused and stop after roughly {self.max_steps} meaningful browser steps.
                         "depth": page.get("depth"),
                         "source_url": source_url,
                         "source_label": self._redact_sensitive_text(str(page.get("source_label") or ""), sensitive_data),
+                        "links": [
+                            self._redact_sensitive_text(str(link), sensitive_data)
+                            for link in page.get("links") or []
+                            if str(link).strip()
+                        ][:80],
+                        "click_candidates": [
+                            self._redact_sensitive_jsonish(candidate, sensitive_data)
+                            for candidate in page.get("click_candidates") or []
+                            if isinstance(candidate, dict)
+                        ][:80],
                     },
                 }
             )
@@ -750,6 +827,15 @@ focused and stop after roughly {self.max_steps} meaningful browser steps.
                     redacted = redacted.replace(secret, f"<secret>{key}</secret>")
         return self._redact_potential_secrets(redacted)
 
+    def _redact_sensitive_jsonish(self, value: Any, sensitive_data: dict[str, dict[str, str]]) -> Any:
+        if isinstance(value, dict):
+            return {str(key): self._redact_sensitive_jsonish(item, sensitive_data) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._redact_sensitive_jsonish(item, sensitive_data) for item in value]
+        if isinstance(value, str):
+            return self._redact_sensitive_text(value, sensitive_data)
+        return value
+
     def _redact_potential_secrets(self, text: str) -> str:
         redacted = text
         patterns = [
@@ -779,6 +865,19 @@ focused and stop after roughly {self.max_steps} meaningful browser steps.
     def _classify_run(self, final_text: str, run_data: dict[str, Any]) -> tuple[str, str]:
         final = final_text.strip()
         final_lower = final.lower()
+        payload = self._parse_first_json_object(final)
+        if payload:
+            if payload.get("manual_verification_required") is True:
+                return "blocked", "browser-use final result requires manual verification"
+            status = str(payload.get("status") or "").lower()
+            completed = payload.get("completed")
+            blockers = payload.get("blockers")
+            has_blockers = isinstance(blockers, list) and any(str(item).strip() for item in blockers)
+            if completed is False or status == "blocked" or has_blockers:
+                return "blocked", "browser-use final JSON reported an incomplete or blocked walkthrough"
+            if completed is True or status in {"completed", "passed"}:
+                return "completed", ""
+
         explicit_blocked_markers = [
             '"completed": false',
             "completed: false",
@@ -819,6 +918,40 @@ focused and stop after roughly {self.max_steps} meaningful browser steps.
         if not final:
             return "blocked", "browser-use finished without a final result; inspect the saved history file."
         return "completed", ""
+
+    def _parse_first_json_object(self, text: str) -> dict[str, Any] | None:
+        if not text:
+            return None
+        start = text.find("{")
+        if start < 0:
+            return None
+        depth = 0
+        in_string = False
+        escape = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+                continue
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        payload = json.loads(text[start : index + 1])
+                    except json.JSONDecodeError:
+                        return None
+                    return payload if isinstance(payload, dict) else None
+        return None
 
     def _history_file_for_task(self, task: str) -> str:
         digest = hashlib.sha1(task.encode("utf-8")).hexdigest()[:10]

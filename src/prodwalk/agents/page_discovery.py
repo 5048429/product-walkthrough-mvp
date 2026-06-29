@@ -60,6 +60,8 @@ class DiscoveryPage:
     depth: int = 0
     source_url: str = ""
     source_label: str = ""
+    links: list[str] = field(default_factory=list)
+    click_candidates: list[dict[str, Any]] = field(default_factory=list)
     discovered_at: str = field(default_factory=utc_now)
     errors: list[str] = field(default_factory=list)
 
@@ -78,6 +80,8 @@ class DiscoveryPage:
                 "depth": self.depth,
                 "source_url": self.source_url,
                 "source_label": self.source_label,
+                "links": list(self.links),
+                "click_candidates": list(self.click_candidates),
             },
         }
 
@@ -145,6 +149,8 @@ class PageDiscoveryCrawler:
         self.exclude_patterns = [re.compile(pattern) for pattern in (configured_excludes or DEFAULT_EXCLUDE_PATTERNS)]
         self.keep_query_keys = set(keep_query_keys or self._csv_env("BROWSER_USE_DISCOVERY_KEEP_QUERY_KEYS") or DEFAULT_KEEP_QUERY_KEYS)
         self.timeout_ms = int((timeout_sec or self._float_env("BROWSER_USE_DISCOVERY_TIMEOUT_SEC") or 20.0) * 1000)
+        self.settle_ms = int(float(os.getenv("BROWSER_USE_DISCOVERY_SETTLE_MS", "500")))
+        self.wait_for_network_idle = self._bool_env("BROWSER_USE_DISCOVERY_WAIT_FOR_NETWORK_IDLE", default=False)
         self.max_pages = max(1, max_pages or self._int_env("BROWSER_USE_DISCOVERY_MAX_PAGES") or 50)
         self.max_depth = max(0, max_depth if max_depth is not None else self._int_env("BROWSER_USE_DISCOVERY_MAX_DEPTH") or 3)
         self.max_clicks_per_page = max(
@@ -280,8 +286,11 @@ class PageDiscoveryCrawler:
         title = ""
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
-            with _suppress_playwright_timeout():
-                await page.wait_for_load_state("networkidle", timeout=min(self.timeout_ms, 5000))
+            if self.settle_ms > 0:
+                await page.wait_for_timeout(min(self.settle_ms, self.timeout_ms))
+            if self.wait_for_network_idle:
+                with _suppress_playwright_timeout():
+                    await page.wait_for_load_state("networkidle", timeout=min(self.timeout_ms, 5000))
             current_url = normalize_discovery_url(str(getattr(page, "url", url)), keep_query_keys=self.keep_query_keys) or url
             title = await self._safe_title(page)
             links = await self._extract_links(page, current_url)
@@ -295,6 +304,8 @@ class PageDiscoveryCrawler:
                 depth=depth,
                 source_url=source_url,
                 source_label=source_label,
+                links=links[:80],
+                click_candidates=[self._candidate_payload(candidate) for candidate in click_candidates[:80]],
                 errors=errors,
             ),
             links,
@@ -311,8 +322,11 @@ class PageDiscoveryCrawler:
         links: list[str] = []
         try:
             await page.goto(source_url, wait_until="domcontentloaded", timeout=self.timeout_ms)
-            with _suppress_playwright_timeout():
-                await page.wait_for_load_state("networkidle", timeout=min(self.timeout_ms, 3000))
+            if self.settle_ms > 0:
+                await page.wait_for_timeout(min(self.settle_ms, self.timeout_ms))
+            if self.wait_for_network_idle:
+                with _suppress_playwright_timeout():
+                    await page.wait_for_load_state("networkidle", timeout=min(self.timeout_ms, 3000))
             candidates = await self._extract_click_candidates(page)
             if candidate_index >= len(candidates):
                 return []
@@ -324,8 +338,9 @@ class PageDiscoveryCrawler:
             await asyncio.sleep(0.3)
             with _suppress_playwright_timeout():
                 await page.wait_for_load_state("domcontentloaded", timeout=min(self.timeout_ms, 3000))
-            with _suppress_playwright_timeout():
-                await page.wait_for_load_state("networkidle", timeout=min(self.timeout_ms, 3000))
+            if self.wait_for_network_idle:
+                with _suppress_playwright_timeout():
+                    await page.wait_for_load_state("networkidle", timeout=min(self.timeout_ms, 3000))
 
             current_url = normalize_discovery_url(str(getattr(page, "url", "")), keep_query_keys=self.keep_query_keys)
             if current_url and current_url != source_url:
@@ -481,6 +496,17 @@ class PageDiscoveryCrawler:
 
     def _candidate_label(self, candidate: dict[str, Any]) -> str:
         return str(candidate.get("text") or candidate.get("aria_label") or "").strip()
+
+    def _candidate_payload(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "label": self._candidate_label(candidate)[:120],
+            "tag": str(candidate.get("tag") or "")[:40],
+            "role": str(candidate.get("role") or "")[:40],
+            "type": str(candidate.get("type") or "")[:40],
+            "href": str(candidate.get("href") or "")[:240],
+            "to": str(candidate.get("to") or "")[:240],
+            "data_route": str(candidate.get("data_route") or "")[:240],
+        }
 
     async def _safe_title(self, page: Any) -> str:
         try:

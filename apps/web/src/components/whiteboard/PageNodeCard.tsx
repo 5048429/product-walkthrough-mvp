@@ -1,8 +1,10 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import type { PageNode } from "../../types/contracts";
+import { backendUrl, runApiPath } from "../../api/paths";
+import type { PageNode, ScreenshotEvidence } from "../../types/contracts";
 
 export interface PageNodeCardData extends Record<string, unknown> {
   node: PageNode;
+  runId: string;
 }
 
 export type PageMapFlowNode = Node<PageNodeCardData, "pageNode">;
@@ -40,31 +42,44 @@ function shortUrl(url: string | null): string {
   }
 }
 
-function compactPurpose(page: PageNode): string {
-  if (page.purpose) {
-    return page.purpose;
+function routeLabel(page: PageNode): string {
+  return page.route ?? page.metadata.normalized_route ?? shortUrl(page.url);
+}
+
+function primaryScreenshot(page: PageNode): ScreenshotEvidence | null {
+  return page.screenshot_evidence.find((shot) => shot.is_primary) ?? page.screenshot_evidence[0] ?? null;
+}
+
+function screenshotUrl(shot: ScreenshotEvidence | null, runId: string): string | null {
+  if (!shot) {
+    return null;
   }
 
-  if (page.key_functions.length) {
-    return page.key_functions[0];
+  const directUrl = shot.screenshot_url ?? shot.content_url;
+  if (directUrl) {
+    return backendUrl(directUrl);
   }
 
-  return "页面结构已记录，等待更多 walkthrough 证据补全。";
+  if (shot.artifact_id) {
+    return runApiPath(runId, `/artifacts/${encodeURIComponent(shot.artifact_id)}/content`);
+  }
+
+  if (shot.path) {
+    const filename = shot.path.split(/[\\/]/).filter(Boolean).pop();
+    return filename ? runApiPath(runId, `/screenshots/${encodeURIComponent(filename)}`) : null;
+  }
+
+  return null;
 }
 
 export function PageNodeCard({ data, selected }: NodeProps<PageMapFlowNode>) {
   const page = data.node;
-  const evidenceCount = page.evidence_ids.length;
+  const shot = primaryScreenshot(page);
+  const imageSrc = screenshotUrl(shot, data.runId);
+  const subtitle = routeLabel(page);
+  const statusText = statusLabels[page.status] ?? page.status;
+  const typeText = typeLabels[page.page_type] ?? page.page_type;
   const issueCount = page.issues.length;
-  const screenshotCount = page.screenshot_evidence.length;
-  const pageEvidenceCount = page.page_evidence.length;
-  const subtitle = page.route ?? page.metadata.normalized_route ?? shortUrl(page.url);
-  const controls = Array.from(new Set([...page.key_controls, ...page.page_evidence.flatMap((item) => item.controls)])).slice(0, 2);
-  const pageEvidenceScreenshotCount = page.page_evidence.reduce(
-    (count, item) => count + item.screenshot_artifact_ids.length + item.screenshot_paths.length,
-    0,
-  );
-  const hasVisualEvidence = screenshotCount > 0 || pageEvidenceScreenshotCount > 0 || Boolean(page.primary_screenshot_artifact_id);
 
   return (
     <article className={`page-node-card page-node-card-${page.status} ${selected ? "page-node-card-selected" : ""}`.trim()}>
@@ -76,6 +91,7 @@ export function PageNodeCard({ data, selected }: NodeProps<PageMapFlowNode>) {
       <Handle id="source-top" type="source" position={Position.Top} className="page-node-handle page-node-handle-top" />
       <Handle id="target-bottom" type="target" position={Position.Bottom} className="page-node-handle page-node-handle-bottom" />
       <Handle id="source-bottom" type="source" position={Position.Bottom} className="page-node-handle page-node-handle-bottom" />
+
       <div className="page-node-browser-bar">
         <span className="page-node-window-dots" aria-hidden="true">
           <i />
@@ -86,24 +102,26 @@ export function PageNodeCard({ data, selected }: NodeProps<PageMapFlowNode>) {
           {subtitle}
         </span>
       </div>
-      <div className="page-node-viewport">
-        <div className="page-node-status-row">
-          <span className={`page-status-dot page-status-dot-${page.status}`} aria-hidden="true" />
-          <span>{statusLabels[page.status]}</span>
-          <span>{typeLabels[page.page_type]}</span>
+
+      <div className="page-node-screenshot-viewport">
+        {imageSrc ? (
+          <img src={imageSrc} alt={`${page.name} screenshot`} loading="lazy" draggable={false} />
+        ) : (
+          <div className="page-node-screenshot-empty">
+            <span className={`page-status-dot page-status-dot-${page.status}`} aria-hidden="true" />
+            <strong>{page.name}</strong>
+            <span>{typeText}</span>
+          </div>
+        )}
+
+        <div className="page-node-shot-overlay">
+          <strong title={page.name}>{page.name}</strong>
+          <span>
+            {statusText} / {typeText}
+          </span>
         </div>
-        <strong title={page.name}>{page.name}</strong>
-        <p title={compactPurpose(page)}>{compactPurpose(page)}</p>
-        <div className="page-node-control-row" aria-label="关键控件">
-          {controls.length ? controls.map((control) => <span key={control}>{control}</span>) : <span>{typeLabels[page.page_type]}</span>}
-        </div>
-      </div>
-      <div className="page-node-meta">
-        <span>{page.visit_count || 0} 次访问</span>
-        <span>{evidenceCount} 条证据</span>
-        {pageEvidenceCount ? <span className="page-node-page-evidence">{pageEvidenceCount} 组页面采集</span> : null}
-        {hasVisualEvidence ? <span>{screenshotCount || 1} 张截图</span> : null}
-        {issueCount ? <span className="page-node-issue">{issueCount} 个问题</span> : null}
+
+        {issueCount ? <span className="page-node-shot-issue">{issueCount}</span> : null}
       </div>
     </article>
   );

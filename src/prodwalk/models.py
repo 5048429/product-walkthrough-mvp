@@ -80,6 +80,7 @@ class ResearchPlan:
     research_goal: str
     products: list[ProductTarget]
     scenarios: list[Scenario]
+    checklist: list[ChecklistItem] = field(default_factory=list)
     evaluation: JsonDict = field(default_factory=dict)
     report_language: ReportLanguage = "en"
 
@@ -137,6 +138,27 @@ class Finding:
     evidence_ids: list[str]
     recommendation: str
     confidence: float = 0.8
+    issue_type: str = "product"
+    priority: str = "P2"
+    page: str = ""
+    current_behavior: str = ""
+    expected_behavior: str = ""
+    repro_steps: list[str] = field(default_factory=list)
+    acceptance_criteria: list[str] = field(default_factory=list)
+    screenshot_refs: list[str] = field(default_factory=list)
+    source: str = "analysis"
+    confidence_reason: str = ""
+
+
+@dataclass(slots=True)
+class ChecklistItem:
+    id: str
+    title: str
+    status: str
+    source: str = "scenario"
+    severity: str = "medium"
+    evidence_ids: list[str] = field(default_factory=list)
+    notes: str = ""
 
 
 @dataclass(slots=True)
@@ -169,3 +191,4 @@ class EvaluationResult:
     scores: JsonDict
     overall_score: float
     notes: list[str]
+    quality_gate_status: str = "pass"

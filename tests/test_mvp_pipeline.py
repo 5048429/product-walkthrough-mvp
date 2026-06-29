@@ -32,12 +32,16 @@ class MvpPipelineTest(unittest.IsolatedAsyncioTestCase):
             paths = await director.run(plan, tmp)
 
             self.assertTrue(paths["evidence"].exists())
+            self.assertTrue(paths["issues"].exists())
             self.assertTrue(paths["report"].exists())
             self.assertTrue(paths["evaluation"].exists())
 
             payload = json.loads(paths["evidence"].read_text(encoding="utf-8"))
             self.assertEqual(len(payload["results"]), len(plan.products) * len(plan.scenarios))
             self.assertGreater(len(payload["evidence"]), 0)
+            issues = json.loads(paths["issues"].read_text(encoding="utf-8"))
+            self.assertIn("issues", issues)
+            self.assertIn("summary", issues)
 
             evaluation = json.loads(paths["evaluation"].read_text(encoding="utf-8"))
             self.assertIn("overall_score", evaluation)
@@ -53,8 +57,8 @@ class MvpPipelineTest(unittest.IsolatedAsyncioTestCase):
             report = paths["report"].read_text(encoding="utf-8")
             payload = json.loads(paths["evidence"].read_text(encoding="utf-8"))
 
-            self.assertIn("# 产品走查调研报告", report)
-            self.assertIn("## 产品发现", report)
+            self.assertIn("# 产品走查问题报告", report)
+            self.assertIn("## 结构化问题板", report)
             self.assertIn("建议", report)
             self.assertEqual(payload["report_language"], "zh")
 
@@ -385,6 +389,85 @@ class BrowserUseLocalWalkerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotEqual(first, second)
         self.assertTrue(first.startswith("browser_use_history_"))
+
+    def test_supported_kwargs_filters_unsupported_parameters(self) -> None:
+        def target(task: str, llm: object, use_vision: bool = True) -> None:
+            pass
+
+        walker = BrowserUseLocalWalker(max_steps=3)
+        filtered = walker._supported_kwargs(
+            target,
+            {
+                "task": "Open https://example.test",
+                "llm": object(),
+                "use_vision": True,
+                "llm_timeout": 30,
+                "step_timeout": 60,
+            },
+        )
+
+        self.assertEqual(set(filtered), {"task", "llm", "use_vision"})
+        self.assertNotIn("llm_timeout", filtered)
+        self.assertNotIn("step_timeout", filtered)
+
+    def test_supported_kwargs_keeps_all_parameters_for_var_kwargs(self) -> None:
+        def target(task: str, **kwargs: object) -> None:
+            pass
+
+        walker = BrowserUseLocalWalker(max_steps=3)
+        kwargs = {
+            "task": "Open https://example.test",
+            "llm_timeout": 30,
+            "step_timeout": 60,
+            "max_failures": 2,
+        }
+
+        self.assertEqual(walker._supported_kwargs(target, kwargs), kwargs)
+
+    def test_agent_timeout_defaults_are_applied(self) -> None:
+        keys = [
+            "BROWSER_USE_LLM_TIMEOUT_SEC",
+            "BROWSER_USE_STEP_TIMEOUT_SEC",
+            "BROWSER_USE_MAX_FAILURES",
+        ]
+        previous = {key: os.environ.get(key) for key in keys}
+        try:
+            for key in keys:
+                os.environ.pop(key, None)
+
+            walker = BrowserUseLocalWalker(max_steps=3)
+
+            self.assertEqual(walker.agent_llm_timeout_sec, 120)
+            self.assertEqual(walker.agent_step_timeout_sec, 180)
+            self.assertEqual(walker.agent_max_failures, 3)
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_agent_timeout_env_config_is_applied(self) -> None:
+        previous = {
+            "BROWSER_USE_LLM_TIMEOUT_SEC": os.environ.get("BROWSER_USE_LLM_TIMEOUT_SEC"),
+            "BROWSER_USE_STEP_TIMEOUT_SEC": os.environ.get("BROWSER_USE_STEP_TIMEOUT_SEC"),
+            "BROWSER_USE_MAX_FAILURES": os.environ.get("BROWSER_USE_MAX_FAILURES"),
+        }
+        os.environ["BROWSER_USE_LLM_TIMEOUT_SEC"] = "45"
+        os.environ["BROWSER_USE_STEP_TIMEOUT_SEC"] = "90"
+        os.environ["BROWSER_USE_MAX_FAILURES"] = "7"
+        try:
+            walker = BrowserUseLocalWalker(max_steps=3)
+
+            self.assertEqual(walker.agent_llm_timeout_sec, 45)
+            self.assertEqual(walker.agent_step_timeout_sec, 90)
+            self.assertEqual(walker.agent_max_failures, 7)
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def test_uses_responses_adapter_for_responses_wire_api(self) -> None:
         walker = BrowserUseLocalWalker(max_steps=3)

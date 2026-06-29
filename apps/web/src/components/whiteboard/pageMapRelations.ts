@@ -33,7 +33,7 @@ export function getPageEdgeRelation(edge: PageEdge, target?: PageNode): PageEdge
     return "blocked";
   }
 
-  if (mapRelation === "walkthrough_path") {
+  if (mapRelation === "walkthrough_path" || mapRelation === "entry_link" || mapRelation === "discovered_from") {
     return edge.kind === "inferred" || edge.confidence < 0.5 ? "inferred" : "navigation";
   }
 

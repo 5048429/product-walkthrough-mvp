@@ -8,6 +8,7 @@ export interface PageMapFiltersState {
   pageType: PageType | "all";
   issuesOnly: boolean;
   screenshotsOnly: boolean;
+  showUncoveredEntries: boolean;
 }
 
 interface PageMapFiltersProps {
@@ -51,7 +52,8 @@ export function PageMapFilters({ filters, pageTypes, onChange, onReset }: PageMa
     filters.statuses.length !== pageStatusOptions.length ||
     filters.pageType !== "all" ||
     filters.issuesOnly ||
-    filters.screenshotsOnly;
+    filters.screenshotsOnly ||
+    filters.showUncoveredEntries;
 
   return (
     <div className="page-map-filters" aria-label="页面地图筛选">
@@ -94,6 +96,14 @@ export function PageMapFilters({ filters, pageTypes, onChange, onReset }: PageMa
             onChange={(event) => update({ screenshotsOnly: event.target.checked })}
           />
           <span>只看有截图</span>
+        </label>
+        <label className="page-map-check page-map-check-entry" title="页面上发现但本次没有实际进入的按钮或菜单入口，不代表报错。">
+          <input
+            type="checkbox"
+            checked={filters.showUncoveredEntries}
+            onChange={(event) => update({ showUncoveredEntries: event.target.checked })}
+          />
+          <span>显示未覆盖入口</span>
         </label>
         <button type="button" onClick={onReset} disabled={!hasActiveFilters}>
           重置

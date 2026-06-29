@@ -28,6 +28,8 @@ export const mockWalkthroughMap: WalkthroughMapResponse = {
     discovered_count: 1,
     external_count: 1,
     screenshot_count: 1,
+    entry_count: 1,
+    unvisited_entry_count: 1,
     confidence: 0.72,
   },
   nodes: [
@@ -45,6 +47,22 @@ export const mockWalkthroughMap: WalkthroughMapResponse = {
       purpose: "Helps a first-time user finish setup and find the first useful dashboard entry point.",
       key_functions: ["Workspace setup checklist", "Sample data entry", "Analytics shortcut"],
       key_controls: ["Complete setup", "Open analytics", "Invite teammate"],
+      entries: [
+        {
+          id: "entry_onboarding_invite",
+          label: "Invite teammate",
+          role: "button",
+          kind: "action",
+          status: "unvisited",
+          source_node_id: "page_our_product_onboarding",
+          target_node_id: null,
+          target_url: null,
+          source: "page_elements",
+          evidence_ids: ["ev-our-product-onboarding-1"],
+          artifact_ids: ["art_page_elements_onboarding"],
+          confidence: 0.68,
+        },
+      ],
       issues: [],
       observations: [
         {
@@ -66,6 +84,7 @@ export const mockWalkthroughMap: WalkthroughMapResponse = {
           summary: "页面采集确认首屏包含设置进度、邀请队友和进入 analytics 的关键入口，可支持 PM 快速判断首登路径。",
           captured_at: "2026-06-16T08:30:59Z",
           controls: ["Complete setup", "Open analytics", "Invite teammate", "Help"],
+          entries: [],
           text_observations: [
             "首屏能看到 onboarding checklist 和 3/5 的完成进度。",
             "Analytics 入口与邀请队友操作都出现在无需滚动的位置。",
@@ -152,6 +171,7 @@ export const mockWalkthroughMap: WalkthroughMapResponse = {
       purpose: "Shows the first business metrics a user reaches after setup.",
       key_functions: ["Metric summary", "Trend chart", "Date range filter"],
       key_controls: ["Date range", "Export", "View report"],
+      entries: [],
       issues: [],
       observations: [
         {
@@ -193,6 +213,7 @@ export const mockWalkthroughMap: WalkthroughMapResponse = {
       purpose: "Collects project setup information before the user reaches a workspace.",
       key_functions: ["Project naming", "Template selection", "Workspace creation"],
       key_controls: ["Template picker", "Create project", "Back"],
+      entries: [],
       issues: [
         {
           id: "ins_template_friction",
@@ -235,6 +256,7 @@ export const mockWalkthroughMap: WalkthroughMapResponse = {
       purpose: "Retry path for payment recovery, currently interrupted by verification.",
       key_functions: ["Payment retry", "Verification challenge"],
       key_controls: ["Retry payment", "Verify identity"],
+      entries: [],
       issues: [
         {
           id: "ins_checkout_verification",
@@ -277,6 +299,7 @@ export const mockWalkthroughMap: WalkthroughMapResponse = {
       purpose: "Account settings surface found during the run, with partial evidence only.",
       key_functions: ["Profile settings", "Team permissions"],
       key_controls: ["Save", "Members"],
+      entries: [],
       issues: [
         {
           id: "ins_legacy_screenshot_missing",
@@ -319,6 +342,7 @@ export const mockWalkthroughMap: WalkthroughMapResponse = {
       purpose: "External help destination linked from onboarding.",
       key_functions: ["Getting started guide"],
       key_controls: ["Search docs"],
+      entries: [],
       issues: [],
       observations: [],
       page_evidence: [],

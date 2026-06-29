@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .models import ProductTarget, ResearchPlan, Scenario, normalize_report_language, slugify
+from .models import ChecklistItem, ProductTarget, ResearchPlan, Scenario, normalize_report_language, slugify
 
 
 class ConfigError(ValueError):
@@ -31,6 +31,7 @@ def parse_research_plan(data: dict[str, Any]) -> ResearchPlan:
 
     products = [_parse_product(item) for item in products_data]
     scenarios = [_parse_scenario(item) for item in data.get("scenarios", [])]
+    checklist = _parse_checklist(data.get("checklist"))
     evaluation = data.get("evaluation") if isinstance(data.get("evaluation"), dict) else {}
     try:
         report_language = normalize_report_language(data.get("report_language") or data.get("language"))
@@ -41,6 +42,7 @@ def parse_research_plan(data: dict[str, Any]) -> ResearchPlan:
         research_goal=research_goal,
         products=products,
         scenarios=scenarios,
+        checklist=checklist,
         evaluation=evaluation,
         report_language=report_language,
     )
@@ -78,3 +80,32 @@ def _parse_scenario(item: dict[str, Any]) -> Scenario:
         observation_points=[str(point) for point in item.get("observation_points", [])],
         risk_level=str(item.get("risk_level") or "normal"),
     )
+
+
+def _parse_checklist(value: Any) -> list[ChecklistItem]:
+    raw_items = value if isinstance(value, list) else []
+    checklist: list[ChecklistItem] = []
+    for index, item in enumerate(raw_items, start=1):
+        if isinstance(item, str):
+            title = item.strip()
+            raw: dict[str, Any] = {}
+        elif isinstance(item, dict):
+            raw = item
+            title = str(item.get("title") or item.get("expected") or item.get("check") or "").strip()
+        else:
+            continue
+        if not title:
+            continue
+        check_id = str(raw.get("id") or raw.get("check_id") or f"check-{index}-{slugify(title)[:32]}")
+        checklist.append(
+            ChecklistItem(
+                id=check_id,
+                title=title,
+                status=str(raw.get("status") or "untested"),
+                source=str(raw.get("source") or "plan"),
+                severity=str(raw.get("severity") or "medium"),
+                evidence_ids=[str(item) for item in raw.get("evidence_ids", []) if str(item)] if isinstance(raw.get("evidence_ids"), list) else [],
+                notes=str(raw.get("notes") or ""),
+            )
+        )
+    return checklist

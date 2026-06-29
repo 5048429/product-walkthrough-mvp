@@ -6,12 +6,20 @@ export interface PageMapPosition {
   depth: number;
 }
 
-const nodeWidth = 304;
-const nodeHeight = 188;
+const nodeWidth = 344;
+const nodeHeight = 226;
 const columnGap = 126;
 const rowGap = 58;
 const laneGap = 390;
 const sideColumnGap = 170;
+const presetCollisionPadding = 18;
+
+interface LayoutBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 const detailPageTypes = new Set<PageNode["page_type"]>(["detail", "settings", "form", "auth"]);
 type LayoutRole = "entry" | "primary" | "detail" | "settings" | "task" | "external";
@@ -54,6 +62,62 @@ function hasPresetLayout(layout: WalkthroughMapResponse["layout"] | undefined, n
   const hasTightColumns = positiveXGaps.some((gap) => gap < nodeWidth + 48);
 
   return !hasTightColumns && !(spanX > nodeWidth * 2 && (spanY < nodeHeight * 0.8 || uniqueYCount <= 2));
+}
+
+function layoutBoxesOverlap(a: LayoutBox, b: LayoutBox, padding = 0): boolean {
+  return !(
+    a.x + a.width + padding <= b.x ||
+    b.x + b.width + padding <= a.x ||
+    a.y + a.height + padding <= b.y ||
+    b.y + b.height + padding <= a.y
+  );
+}
+
+function getDeoverlappedPresetLayout(
+  nodes: PageNode[],
+  layout: NonNullable<WalkthroughMapResponse["layout"]>,
+): Record<string, PageMapPosition> {
+  const placedBoxes: LayoutBox[] = [];
+  const result: Record<string, PageMapPosition> = {};
+  const orderedNodes = [...nodes].sort((a, b) => {
+    const aPosition = layout.nodes?.[a.id];
+    const bPosition = layout.nodes?.[b.id];
+
+    return (
+      (aPosition?.x ?? 0) - (bPosition?.x ?? 0) ||
+      (aPosition?.y ?? 0) - (bPosition?.y ?? 0) ||
+      (aPosition?.depth ?? 0) - (bPosition?.depth ?? 0) ||
+      sortNodes(a, b)
+    );
+  });
+
+  for (const node of orderedNodes) {
+    const position = layout.nodes?.[node.id];
+    if (!position) {
+      continue;
+    }
+
+    let y = position.y;
+    for (let attempt = 0; attempt < nodes.length + 8; attempt += 1) {
+      const candidate = { x: position.x, y, width: nodeWidth, height: nodeHeight };
+      const colliders = placedBoxes.filter((box) => layoutBoxesOverlap(candidate, box, presetCollisionPadding));
+
+      if (!colliders.length) {
+        break;
+      }
+
+      y = Math.max(y + 1, ...colliders.map((box) => box.y + box.height + presetCollisionPadding));
+    }
+
+    result[node.id] = {
+      x: position.x,
+      y,
+      depth: position.depth,
+    };
+    placedBoxes.push({ x: position.x, y, width: nodeWidth, height: nodeHeight });
+  }
+
+  return result;
 }
 
 function getLayeredDepths(nodes: PageNode[], edges: PageEdge[]): Map<string, number> {
@@ -431,19 +495,7 @@ export function getPageMapLayout(
   layout?: WalkthroughMapResponse["layout"],
 ): Record<string, PageMapPosition> {
   if (hasPresetLayout(layout, nodes)) {
-    return Object.fromEntries(
-      nodes.map((node) => {
-        const position = layout!.nodes[node.id];
-        return [
-          node.id,
-          {
-            x: position.x,
-            y: position.y,
-            depth: position.depth,
-          },
-        ];
-      }),
-    );
+    return getDeoverlappedPresetLayout(nodes, layout!);
   }
 
   return getStructuredFallbackLayout(nodes, edges);
