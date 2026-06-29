@@ -12,7 +12,7 @@ from ..models import slugify, utc_now
 
 
 SCHEMA_VERSION = "1.0"
-BUILD_VERSION = "2026-06-26-real-screenshot-v3"
+BUILD_VERSION = "2026-06-29-auth-ready-real-screenshot-v4"
 WALKTHROUGH_MAP_ARTIFACT_ID = "art_walkthrough_map"
 
 TRACKING_QUERY_KEYS = {
@@ -940,10 +940,11 @@ def _finalize_node(node: dict[str, Any]) -> None:
     node["screenshot_evidence"] = screenshots
     screenshots.sort(key=lambda item: (item.get("step_index") is None, item.get("step_index") or -1, item.get("path") or ""))
     if screenshots:
+        primary = _best_screenshot_for_map(screenshots)
         for item in screenshots:
             item["is_primary"] = False
-        screenshots[-1]["is_primary"] = True
-        node["primary_screenshot_artifact_id"] = screenshots[-1].get("artifact_id")
+        primary["is_primary"] = True
+        node["primary_screenshot_artifact_id"] = primary.get("artifact_id")
     if not node["key_controls"]:
         route_control = _name_from_route(str(node.get("route") or ""), "")
         if route_control and route_control != "Home":
@@ -983,10 +984,10 @@ def _screenshot_preference_key(item: dict[str, Any]) -> tuple[int, int, str]:
     path = str(item.get("path") or item.get("title") or "").lower()
     size = _int_or_none(item.get("size_bytes")) or 0
     rank = 0
-    if "full" in path or "full_page" in path or "full-page" in path:
+    if re.search(r"[-_]step[-_]\d+\.png$", path):
+        rank = 6
+    elif "full" in path or "full_page" in path or "full-page" in path:
         rank = 5
-    elif re.search(r"-step-\d+\.png$", path):
-        rank = 4
     elif "page-shot-2" in path or "shot-2" in path:
         rank = 3
     elif "page-shot" in path:

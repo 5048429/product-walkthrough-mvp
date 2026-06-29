@@ -2185,6 +2185,13 @@ class RunRuntime:
                     "verification_timeout_sec must be between 1 and 3600.",
                     {"verification_timeout_sec": request.verification_timeout_sec},
                 )
+            if request.target_url and not request.auth_session_id and not request.browser_storage_state:
+                raise ApiError(
+                    400,
+                    "AUTH_SESSION_REQUIRED",
+                    "Manual login must be completed before starting a full-site browser-use walkthrough.",
+                    {"target_url": request.target_url, "auth_status": "auth_not_ready"},
+                )
             if request.auth_session_id:
                 session = self._ready_auth_session_for_run(request.auth_session_id)
                 auth_session_id = str(session["id"])
@@ -2709,6 +2716,7 @@ class RunRuntime:
             out=out,
             concurrency=1,
             report_language=report_language,
+            auth_session_id=str(session.get("id") or session.get("session_id") or ""),
             browser_model=params.get("browser_model") if isinstance(params.get("browser_model"), str) else None,
             browser_max_steps=int(params.get("browser_max_steps") or 25),
             browser_timeout_sec=float(params.get("browser_timeout_sec") or 600),
@@ -3041,7 +3049,9 @@ class RunRuntime:
         state = self._runs.get(run_id)
         if state:
             record = self._normalize_run_record(dict(state["run"]))
-            return self._reconcile_browser_use_terminal_status(run_id, Path(state["run_dir"]), record)
+            run_dir = Path(state["run_dir"])
+            record = self._reconcile_orphaned_active_status(run_id, run_dir, record)
+            return self._reconcile_browser_use_terminal_status(run_id, run_dir, record)
         run_dir = self._run_dir_for_id(run_id)
         record = self._read_run_record(run_dir)
         if not record:
@@ -3070,12 +3080,26 @@ class RunRuntime:
                     payload["id"] = run_dir.name
                     payload["run_dir"] = self._relative_path(run_dir)
                     record = self._normalize_run_record(payload)
+                    record = self._reconcile_orphaned_active_status(run_dir.name, run_dir, record)
                     return self._reconcile_browser_use_terminal_status(run_dir.name, run_dir, record)
             except Exception:
                 return None
         return self._infer_run_record(run_dir)
 
     def _normalize_run_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        if record.get("status") == "succeeded":
+            normalized = dict(record)
+            progress = dict(normalized.get("progress") if isinstance(normalized.get("progress"), dict) else {})
+            total = max(0, int(progress.get("total_scenarios") or 0))
+            if total > 0:
+                progress["completed_scenarios"] = total
+                progress["failed_scenarios"] = 0
+                progress["current_stage"] = "succeeded"
+                progress["current_stage_label"] = self._terminal_message("succeeded")
+                progress["current_stage_status"] = "succeeded"
+                progress["completed_stage_count"] = progress.get("total_stage_count", progress.get("completed_stage_count", 0))
+            normalized["progress"] = progress
+            return normalized
         if record.get("status") != "awaiting_verification":
             return record
         normalized = dict(record)
@@ -3084,23 +3108,101 @@ class RunRuntime:
         normalized["completed_at"] = None
         return normalized
 
+    def _reconcile_orphaned_active_status(
+        self,
+        run_id: str,
+        run_dir: Path,
+        record: dict[str, Any],
+    ) -> dict[str, Any]:
+        status = str(record.get("status") or "")
+        if status not in {"queued", "starting", "running", "finalizing", "canceling"}:
+            return record
+        task = self._tasks.get(run_id)
+        if task is not None and not task.done():
+            return record
+
+        mode = str(record.get("mode") or record.get("params", {}).get("mode") or "")
+        final_status = "canceled" if status == "canceling" else "failed"
+        final_error: dict[str, Any] | None = {
+            "message": "Run was interrupted before completion. Start a new walkthrough after completing manual login.",
+            "type": "interrupted",
+        }
+        if mode in BROWSER_USE_MODES and (run_dir / "evidence.json").exists():
+            final_status, final_error = self._final_status_from_evidence(run_id, run_dir, record=record)
+
+        reconciled = dict(record)
+        progress = dict(reconciled.get("progress") if isinstance(reconciled.get("progress"), dict) else {})
+        progress.update(
+            {
+                "current_stage": final_status,
+                "current_stage_label": self._terminal_message(final_status),
+                "current_stage_status": final_status,
+                "completed_stage_count": progress.get("total_stage_count", progress.get("completed_stage_count", 0)),
+            }
+        )
+        if final_status == "succeeded":
+            total = max(0, int(progress.get("total_scenarios") or 0))
+            if total > 0:
+                progress["completed_scenarios"] = total
+                progress["failed_scenarios"] = 0
+        if final_status == "awaiting_verification":
+            progress = self._progress_for_awaiting_verification(progress)
+            completed_at = None
+        else:
+            completed_at = reconciled.get("completed_at") or utc_now()
+        reconciled.update({"status": final_status, "progress": progress, "completed_at": completed_at, "error": final_error})
+        if self._active_browser_run_id == run_id:
+            self._active_browser_run_id = None
+        self._write_json(run_dir / "run.json", reconciled)
+        state = self._runs.get(run_id)
+        if state:
+            state["run"] = reconciled
+        return reconciled
+
     def _reconcile_browser_use_terminal_status(
         self,
         run_id: str,
         run_dir: Path,
         record: dict[str, Any],
     ) -> dict[str, Any]:
-        if str(record.get("status") or "") != "timeout":
+        status = str(record.get("status") or "")
+        if status not in {"timeout", "awaiting_verification"}:
             return record
         mode = str(record.get("mode") or record.get("params", {}).get("mode") or "")
         if mode not in BROWSER_USE_MODES:
             return record
-        final_status, _ = self._final_status_from_evidence(run_id, run_dir, record=record)
-        if final_status != "succeeded":
+        final_status, final_error = self._final_status_from_evidence(run_id, run_dir, record=record)
+        if status == "timeout" and final_status != "succeeded":
             return record
+        if status == "awaiting_verification" and final_status == "awaiting_verification":
+            return record
+        if final_status == "succeeded":
+            final_error = None
         reconciled = dict(record)
-        reconciled["status"] = "succeeded"
-        reconciled["error"] = None
+        progress = dict(reconciled.get("progress") if isinstance(reconciled.get("progress"), dict) else {})
+        progress.update(
+            {
+                "current_stage": final_status,
+                "current_stage_label": self._terminal_message(final_status),
+                "current_stage_status": final_status,
+                "completed_stage_count": progress.get("total_stage_count", progress.get("completed_stage_count", 0)),
+            }
+        )
+        if final_status == "succeeded":
+            total = max(0, int(progress.get("total_scenarios") or 0))
+            if total > 0:
+                progress["completed_scenarios"] = total
+                progress["failed_scenarios"] = 0
+        if final_status == "awaiting_verification":
+            progress = self._progress_for_awaiting_verification(progress)
+            completed_at = None
+        else:
+            completed_at = reconciled.get("completed_at") or utc_now()
+        reconciled.update({"status": final_status, "error": final_error, "progress": progress, "completed_at": completed_at})
+        self._write_json(run_dir / "run.json", reconciled)
+        state = self._runs.get(run_id)
+        if state:
+            state["run"] = reconciled
         return reconciled
 
     def _infer_run_record(self, run_dir: Path) -> dict[str, Any] | None:
@@ -4020,6 +4122,7 @@ class RunRuntime:
         params: Any,
     ) -> dict[str, Any] | None:
         params = params if isinstance(params, dict) else {}
+        results = payload.get("results") if isinstance(payload.get("results"), list) else []
         text = self._browser_status_text(payload)
         lower_text = text.lower()
 
@@ -4028,9 +4131,16 @@ class RunRuntime:
             return manual_signal
 
         success_seen = self._verification_success_seen(payload, params, lower_text)
-        login_url_signal = self._browser_login_url_signal(payload, params, lower_text)
+        login_url_signal = self._browser_login_url_signal(payload, params)
         if login_url_signal and not success_seen:
             return login_url_signal
+
+        if self._browser_results_completed(results):
+            return None
+
+        challenge_signal = self._browser_challenge_text_signal(lower_text)
+        if challenge_signal:
+            return challenge_signal
 
         login_text_signal = self._browser_login_text_signal(lower_text)
         if login_text_signal and not success_seen:
@@ -4069,7 +4179,6 @@ class RunRuntime:
         self,
         payload: dict[str, Any],
         params: dict[str, Any],
-        lower_text: str,
     ) -> dict[str, Any] | None:
         marker = str(params.get("verification_login_url_contains") or "").strip().lower()
         if not marker:
@@ -4077,8 +4186,6 @@ class RunRuntime:
         for url in self._browser_observed_urls(payload):
             if marker in url.lower():
                 return {"signal": "login_url", "verification_login_url_contains": marker}
-        if marker in lower_text:
-            return {"signal": "login_url", "verification_login_url_contains": marker}
         return None
 
     def _browser_login_text_signal(self, lower_text: str) -> dict[str, Any] | None:
@@ -4093,6 +4200,12 @@ class RunRuntime:
             if re.search(pattern, lower_text):
                 return {"signal": "login_required"}
         return None
+
+    def _browser_results_completed(self, results: list[Any]) -> bool:
+        browser_results = [result for result in results if isinstance(result, dict)]
+        return bool(browser_results) and all(
+            str(result.get("status") or "").lower() in {"completed", "succeeded"} for result in browser_results
+        )
 
     def _verification_success_seen(
         self,

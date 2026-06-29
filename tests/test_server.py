@@ -452,9 +452,22 @@ def test_target_url_defaults_to_browser_use_full_site_walkthrough(tmp_path: Path
         "_browser_use_readiness_errors",
         lambda self, request, *, user_data_dir, storage_state: [],
     )
+    storage_state = tmp_path / ".prodwalk" / "browser-profiles" / "target-url" / "state.json"
+    storage_state.parent.mkdir(parents=True)
+    storage_state.write_text('{"cookies":[],"origins":[]}', encoding="utf-8")
 
     with _client(tmp_path) as client:
-        response = client.post("/api/runs", json={"target_url": "https://example.test", "out": "runs"})
+        blocked_response = client.post("/api/runs", json={"target_url": "https://example.test", "out": "runs"})
+        response = client.post(
+            "/api/runs",
+            json={
+                "target_url": "https://example.test",
+                "out": "runs",
+                "browser_storage_state": ".prodwalk/browser-profiles/target-url/state.json",
+            },
+        )
+        assert blocked_response.status_code == 400
+        assert blocked_response.json()["error"]["code"] == "AUTH_SESSION_REQUIRED"
         assert response.status_code == 200
         run_id = response.json()["run_id"]
 
@@ -804,6 +817,44 @@ def test_browser_use_auto_verification_ignores_incidental_login_copy(tmp_path: P
     assert "run.awaiting_verification" not in [event["type"] for event in events.json()["items"]]
 
 
+def test_browser_use_auto_verification_ignores_completed_login_recommendation(tmp_path: Path, monkeypatch) -> None:
+    _write_plan(tmp_path)
+    monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
+    monkeypatch.setattr(
+        runtime_module.RunRuntime,
+        "_browser_use_readiness_errors",
+        lambda self, request, *, user_data_dir, storage_state: [],
+    )
+    _FakeBrowserUseWalker.result_status = "completed"
+    _FakeBrowserUseWalker.final_output = (
+        '{"completed": true, "manual_verification_required": false, '
+        '"recommendation": "Redirect unauthenticated sessions to a login page before showing dashboard content."}'
+    )
+    _FakeBrowserUseWalker.errors = []
+    _FakeBrowserUseWalker.timed_out = False
+    _FakeBrowserUseWalker.screenshot_path = None
+    _FakeBrowserUseWalker.history_path = None
+
+    with _client(tmp_path) as client:
+        response = client.post(
+            "/api/runs",
+            json={
+                "plan_name": "smoke_plan.json",
+                "mode": "browser-use",
+                "out": "runs",
+                "verification_mode": "auto",
+            },
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+        detail = _wait_for_terminal(client, run_id)
+        events = client.get(f"/api/runs/{run_id}/events")
+
+    assert detail["status"] == "succeeded"
+    assert "run.completed" in [event["type"] for event in events.json()["items"]]
+    assert "run.awaiting_verification" not in [event["type"] for event in events.json()["items"]]
+
+
 def test_browser_use_auto_verification_ignores_completed_captcha_copy(tmp_path: Path, monkeypatch) -> None:
     _write_plan(tmp_path)
     monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
@@ -1042,6 +1093,124 @@ def test_browser_use_historical_timeout_reconciles_from_completed_evidence(tmp_p
     assert runs.json()["items"][0]["status"] == "succeeded"
 
 
+def test_browser_use_historical_awaiting_verification_reconciles_from_completed_evidence(tmp_path: Path) -> None:
+    run_id = "run-20260102-030405-browser-awaiting"
+    run_dir = tmp_path / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    run_record = {
+        "id": run_id,
+        "status": "awaiting_verification",
+        "mode": "browser-use",
+        "research_goal": "Historical browser-use walkthrough.",
+        "run_dir": f"runs/{run_id}",
+        "created_at": "2026-01-02T03:04:05Z",
+        "started_at": "2026-01-02T03:04:06Z",
+        "completed_at": None,
+        "progress": {"total_scenarios": 1, "completed_scenarios": 0, "failed_scenarios": 0},
+        "params": {"mode": "browser-use", "verification_mode": "auto"},
+        "artifact_ids": [],
+        "error": {"message": "Browser-use reported that manual verification is required.", "type": "awaiting_verification"},
+        "metadata": {},
+    }
+    evidence = {
+        "created_at": "2026-01-02T03:05:05Z",
+        "report_language": "en",
+        "plan": {"research_goal": "Historical browser-use walkthrough."},
+        "results": [
+            {
+                "status": "completed",
+                "steps": [
+                    {
+                        "index": 1,
+                        "status": "passed",
+                        "url": "https://example.test/dashboard",
+                        "observation": "Recommend redirecting unauthenticated users to a login page.",
+                        "evidence_ids": ["ev-browser"],
+                    }
+                ],
+                "metrics": {"timed_out": False},
+                "errors": [],
+            }
+        ],
+        "evidence": [
+            {
+                "id": "ev-browser",
+                "kind": "browser_run",
+                "summary": "Recommend redirecting unauthenticated users to a login page.",
+                "url": "https://example.test/dashboard",
+                "data": {
+                    "final_output": (
+                        '{"completed": true, "manual_verification_required": false, '
+                        '"recommendation": "Redirect unauthenticated sessions to a login page."}'
+                    ),
+                    "timed_out": False,
+                    "errors": [],
+                },
+            }
+        ],
+    }
+    (run_dir / "run.json").write_text(json.dumps(run_record), encoding="utf-8")
+    (run_dir / "evidence.json").write_text(json.dumps(evidence), encoding="utf-8")
+    (run_dir / "report.md").write_text("# Browser report\n\nReady.", encoding="utf-8")
+    (run_dir / "evaluation.json").write_text('{"overall_score": 1.0, "notes": []}', encoding="utf-8")
+    (run_dir / "events.jsonl").write_text("", encoding="utf-8")
+
+    with _client(tmp_path) as client:
+        detail = client.get(f"/api/runs/{run_id}")
+
+    persisted = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert detail.status_code == 200
+    assert detail.json()["run"]["status"] == "succeeded"
+    assert detail.json()["run"]["error"] is None
+    assert detail.json()["run"]["progress"]["completed_scenarios"] == 1
+    assert persisted["status"] == "succeeded"
+    assert persisted["completed_at"] is not None
+
+
+def test_orphaned_running_browser_use_run_is_marked_failed(tmp_path: Path) -> None:
+    run_id = "run-20260102-030405-orphaned"
+    run_dir = tmp_path / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    run_record = {
+        "id": run_id,
+        "status": "running",
+        "mode": "browser-use",
+        "research_goal": "Interrupted run",
+        "run_dir": f"runs/{run_id}",
+        "created_at": "2026-01-02T03:04:05Z",
+        "started_at": "2026-01-02T03:04:06Z",
+        "completed_at": None,
+        "params": {"mode": "browser-use"},
+        "progress": {
+            "total_scenarios": 1,
+            "completed_scenarios": 0,
+            "failed_scenarios": 0,
+            "current_stage": "walker",
+            "current_stage_label": "Browser-use walkthrough",
+            "current_stage_status": "running",
+            "completed_stage_count": 1,
+            "total_stage_count": 8,
+        },
+        "artifact_ids": [],
+        "error": None,
+        "metadata": {},
+    }
+    (run_dir / "run.json").write_text(json.dumps(run_record), encoding="utf-8")
+    (run_dir / "events.jsonl").write_text("", encoding="utf-8")
+
+    with _client(tmp_path) as client:
+        detail = client.get(f"/api/runs/{run_id}")
+        runs = client.get("/api/runs")
+
+    persisted = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert detail.status_code == 200
+    assert detail.json()["run"]["status"] == "failed"
+    assert detail.json()["run"]["error"]["type"] == "interrupted"
+    assert persisted["status"] == "failed"
+    assert runs.status_code == 200
+    assert runs.json()["items"][0]["status"] == "failed"
+
+
 def test_auth_session_create_validates_request_and_path_safety(tmp_path: Path, monkeypatch) -> None:
     _write_plan(tmp_path)
     monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
@@ -1267,6 +1436,10 @@ def test_auth_session_confirm_then_retry_starts_new_browser_use_run(tmp_path: Pa
         auth_artifacts = client.get(f"/api/runs/{run_id}/artifacts").json()["items"]
 
     assert retry_detail["status"] == "succeeded"
+    assert retry_detail["params"]["auth_session_id"] == session_id
+    assert retry_detail["params"]["auth_status"] == "auth_ready"
+    assert retry_detail["metadata"]["auth_session_id"] == session_id
+    assert retry_detail["metadata"]["auth_status"] == "auth_ready"
     assert retry_detail["metadata"]["retry_of_run_id"] == run_id
     assert retry_detail["metadata"]["verification_session_id"] == session_id
     assert original_detail["metadata"]["retry_run_id"] == retry_run_id

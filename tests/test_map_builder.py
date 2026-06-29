@@ -189,6 +189,7 @@ def test_build_map_prefers_real_page_screenshot_over_browser_state_thumbnail() -
                         "title": "Balances",
                         "screenshot_paths": [
                             "screenshots/ev-example-step-1-shot-1.png",
+                            "screenshots/ev-example-step-1-full-page.png",
                             "screenshots/ev-example-step-1.png",
                         ],
                     }
@@ -205,6 +206,17 @@ def test_build_map_prefers_real_page_screenshot_over_browser_state_thumbnail() -
             "path": "screenshots/ev-example-step-1-shot-1.png",
             "media_type": "image/png",
             "size_bytes": 7200,
+            "created_at": "2026-06-24T00:00:01Z",
+            "metadata": {},
+        },
+        {
+            "id": "art_loading_full_page",
+            "run_id": "run-screenshot-choice",
+            "type": "screenshot",
+            "title": "ev-example-step-1-full-page.png",
+            "path": "screenshots/ev-example-step-1-full-page.png",
+            "media_type": "image/png",
+            "size_bytes": 98000,
             "created_at": "2026-06-24T00:00:01Z",
             "metadata": {},
         },
