@@ -776,12 +776,16 @@ function RunProgressPanel({
 interface QuickStartPanelProps {
   plans: PlanSummary[];
   targetUrl: string;
+  loginAuthStatus: AuthReadinessStatus;
   selectedPlan: PlanSummary | undefined;
   selectedPlanId: string;
   source: ConsoleDataSource;
   loading: boolean;
+  verificationLoading: boolean;
   planLoading: boolean;
   planError: string | null;
+  startError: string | null;
+  verificationError: string | null;
   onTargetUrlChange: (value: string) => void;
   onPlanChange: (planId: string) => void;
   onStartFullRun: () => void;
@@ -791,12 +795,16 @@ interface QuickStartPanelProps {
 function QuickStartPanel({
   plans,
   targetUrl,
+  loginAuthStatus,
   selectedPlan,
   selectedPlanId,
   source,
   loading,
+  verificationLoading,
   planLoading,
   planError,
+  startError,
+  verificationError,
   onTargetUrlChange,
   onPlanChange,
   onStartFullRun,
@@ -804,13 +812,17 @@ function QuickStartPanel({
 }: QuickStartPanelProps) {
   const needsPlan = source === "api" && !selectedPlan;
   const hasTargetUrl = targetUrl.trim().length > 0;
+  const loginReady = loginAuthStatus === "auth_ready";
+  const awaitingLogin = loginAuthStatus === "awaiting_manual_login";
+  const primaryLabel = loginReady ? "开始全量走查" : awaitingLogin ? "等待登录确认" : "打开浏览器登录";
+  const primaryBusy = loading || verificationLoading;
 
   return (
     <section className="panel compact-panel" aria-labelledby="quick-start-title">
       <div className="panel-header">
         <div>
           <h2 id="quick-start-title">一键全量走查</h2>
-          <p>输入目标网站 URL，系统会自动生成只读全站计划并开始发现页面、记录证据和输出产品问题。</p>
+          <p>输入目标网站 URL，先完成手动登录，再由系统自动生成只读全站计划并输出产品问题。</p>
         </div>
       </div>
 
@@ -831,12 +843,20 @@ function QuickStartPanel({
             onChange={(event) => onTargetUrlChange(event.target.value)}
           />
         </label>
-        <button type="submit" className="primary-action" disabled={loading || !hasTargetUrl}>
-          {loading ? "启动中..." : "开始全量走查"}
+        <button type="submit" className="primary-action" disabled={primaryBusy || !hasTargetUrl || awaitingLogin}>
+          {loading ? "启动中..." : verificationLoading ? "处理中..." : primaryLabel}
         </button>
       </form>
 
-      <p className="empty-copy">默认使用真实浏览器全站发现，不需要手动设置步骤数、超时、页面深度或并发。</p>
+      <p className="empty-copy">
+        {loginReady
+          ? "登录态已就绪；启动后会自动使用真实浏览器全站发现，不需要手动设置步骤数、超时、页面深度或并发。"
+          : awaitingLogin
+            ? "请在已打开的浏览器完成登录，然后在右侧点击“我已完成登录”。"
+            : "默认先打开浏览器让你完成登录，避免未登录状态下误启动真实走查。"}
+      </p>
+      {startError ? <p className="inline-warning">{startError}</p> : null}
+      {verificationError ? <p className="inline-warning">{verificationError}</p> : null}
 
       <details className="debug-details quickstart-advanced">
         <summary>
@@ -1146,7 +1166,14 @@ export function ConsolePage() {
   };
 
   const startFullSiteRun = () => {
-    void console.startRun({ targetUrl: console.targetUrl });
+    if (console.loginAuthStatus === "auth_ready") {
+      void console.startAuthenticatedRun();
+      return;
+    }
+
+    if (console.loginAuthStatus !== "awaiting_manual_login") {
+      void console.startManualLogin();
+    }
   };
 
   const selectRunForReview = (runId: string) => {
@@ -1291,12 +1318,16 @@ export function ConsolePage() {
           <QuickStartPanel
             plans={console.plans}
             targetUrl={console.targetUrl}
+            loginAuthStatus={console.loginAuthStatus}
             selectedPlan={console.selectedPlan}
             selectedPlanId={console.selectedPlanId}
             source={console.source}
             loading={console.loading.start}
+            verificationLoading={console.loading.verification}
             planLoading={console.loading.planDetail}
             planError={console.errors.planDetail}
+            startError={console.errors.start}
+            verificationError={console.errors.verification}
             onTargetUrlChange={console.setTargetUrl}
             onPlanChange={console.setSelectedPlanId}
             onStartFullRun={startFullSiteRun}

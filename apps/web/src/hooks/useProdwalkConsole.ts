@@ -628,6 +628,19 @@ export function useProdwalkConsole() {
     setErrors((current) => ({ ...current, ...patch }));
   }, []);
 
+  const updateTargetUrl = useCallback(
+    (value: string) => {
+      const previous = targetUrl.trim();
+      const next = value.trim();
+      setTargetUrl(value);
+      if (previous !== next) {
+        setLoginSession(null);
+        updateErrors({ start: null, verification: null });
+      }
+    },
+    [targetUrl, updateErrors],
+  );
+
   const setActiveRunIdAndStore = useCallback((runId: string | null) => {
     setActiveRunId(runId);
     storeActiveRunId(runId);
@@ -1207,8 +1220,6 @@ export function useProdwalkConsole() {
         return;
       }
 
-      updateLoading({ start: true });
-
       const isBrowserUse = runMode === "browser-use";
       const reportLanguage = options.reportLanguage ?? selectedPlan?.report_language ?? "zh";
       const browserMaxSteps = options.browserMaxSteps ?? (requestTargetUrl ? 80 : 25);
@@ -1221,6 +1232,14 @@ export function useProdwalkConsole() {
       const verificationSuccessUrlContains = options.verificationSuccessUrlContains ?? [];
       const verificationLoginUrlContains = options.verificationLoginUrlContains || "/auth/login";
       const concurrency = isBrowserUse ? 1 : options.concurrency ?? 3;
+      const authSessionId = isBrowserUse ? options.authSessionId?.trim() || null : null;
+
+      if (requestTargetUrl && isBrowserUse && !authSessionId) {
+        updateErrors({ start: "请先完成手动登录并确认登录态，再开始全量走查。" });
+        return;
+      }
+
+      updateLoading({ start: true });
 
       const request: RunCreateRequest = {
         config_path: requestTargetUrl ? null : planPath,
@@ -1240,7 +1259,7 @@ export function useProdwalkConsole() {
         browser_discovery_max_depth: browserDiscoveryMaxDepth,
         browser_user_data_dir: options.browserUserDataDir?.trim() || null,
         browser_storage_state: options.browserStorageState?.trim() || null,
-        auth_session_id: isBrowserUse ? options.authSessionId?.trim() || null : null,
+        auth_session_id: authSessionId,
         verification_mode: verificationMode,
         verification_timeout_sec: verificationTimeoutSec,
         verification_success_url_contains: verificationSuccessUrlContains,
@@ -1404,6 +1423,20 @@ export function useProdwalkConsole() {
     if (!loginSession || loginSession.auth_status !== "auth_ready") {
       updateErrors({ start: "请先完成手动登录，等状态变为“登录态已就绪”后再开始真实走查。" });
       return;
+    }
+
+    if (targetUrl.trim()) {
+      try {
+        const expectedUrl = normalizeTargetUrlForRequest(targetUrl);
+        const sessionUrl = normalizeTargetUrlForRequest(loginSession.url);
+        if (expectedUrl !== sessionUrl) {
+          updateErrors({ start: `当前登录态属于 ${loginSession.url}，请重新为 ${expectedUrl} 完成登录。` });
+          return;
+        }
+      } catch (error) {
+        updateErrors({ start: errorMessage(error) });
+        return;
+      }
     }
 
     await startRun({
@@ -1904,7 +1937,7 @@ export function useProdwalkConsole() {
     selectRun,
     clearHistorySelection,
     refreshRunHistory,
-    setTargetUrl,
+    setTargetUrl: updateTargetUrl,
     setSelectedPlanId,
     setMockPreviewStatus,
     retryApi,
