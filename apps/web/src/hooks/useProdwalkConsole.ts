@@ -65,9 +65,12 @@ const agentStatuses = new Set<AgentStatus>([
 export type ConsoleDataSource = "api" | "mock";
 
 export interface StartRunOptions {
-  mode: RunMode;
-  concurrency: number;
-  reportLanguage: string;
+  targetUrl?: string | null;
+  targetName?: string | null;
+  targetCredentialsRef?: string | null;
+  mode?: RunMode;
+  concurrency?: number;
+  reportLanguage?: string;
   browserMaxSteps?: number;
   browserTimeoutSec?: number;
   browserDiscoverAllPages?: boolean | null;
@@ -191,6 +194,50 @@ function firstProductAuthTarget(plan: unknown): { url: string; credentialsRef: s
   }
 
   return null;
+}
+
+function normalizeTargetUrlForRequest(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("请输入要走查的网站 URL。");
+  }
+  if (/\s/.test(trimmed)) {
+    throw new Error("网站 URL 不能包含空格。");
+  }
+
+  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed);
+  const schemeLike = trimmed.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):(.*)$/);
+  if (schemeLike && !hasScheme && !/^\d+(?:\/|$)/.test(schemeLike[2])) {
+    throw new Error("网站 URL 只支持 http 或 https。");
+  }
+
+  const candidate = hasScheme ? trimmed : `https://${trimmed}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new Error("请输入有效的网站 URL，例如 https://example.com。");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("网站 URL 只支持 http 或 https。");
+  }
+  if (!parsed.hostname) {
+    throw new Error("网站 URL 需要包含有效域名。");
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error("网站 URL 不要包含账号或密码，请使用登录准备流程保存登录态。");
+  }
+
+  return parsed.toString();
+}
+
+function successMarkersForUrl(url: string): string[] {
+  try {
+    const parsed = new URL(url);
+    return parsed.pathname && parsed.pathname !== "/" ? [parsed.pathname] : [];
+  } catch {
+    return [];
+  }
 }
 
 function authReadinessFromSession(session: AuthSessionDetail | null): AuthReadinessStatus {
@@ -499,6 +546,7 @@ export function useProdwalkConsole() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [plans, setPlans] = useState<PlanSummary[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState("");
+  const [targetUrl, setTargetUrl] = useState("");
   const [selectedPlanDetail, setSelectedPlanDetail] = useState<PlanDetailResponse | null>(null);
   const [recentRuns, setRecentRuns] = useState<RunSummary[]>([]);
   const [activeRunId, setActiveRunId] = useState<string | null>(() => readStoredActiveRunId());
@@ -1127,46 +1175,63 @@ export function useProdwalkConsole() {
   }, [activeRun?.status, activeRunId, appendEvents, handleFreshEvents, hasTerminalRunEvent, source]);
 
   const startRun = useCallback(
-    async (options: StartRunOptions) => {
+    async (options: StartRunOptions = {}) => {
       updateErrors({ start: null, verification: null });
 
-      if (source === "mock") {
-        if (options.mode === "mock") {
-          activateMockFallback("Mock fallback preview is active because the API is not connected.", "running");
-        } else {
-          updateErrors({ start: "Browser-use runs require the FastAPI backend. Reconnect the API before starting a local browser run." });
+      const targetInput = (options.targetUrl ?? targetUrl).trim();
+      let requestTargetUrl: string | null = null;
+      if (targetInput) {
+        try {
+          requestTargetUrl = normalizeTargetUrlForRequest(targetInput);
+        } catch (error) {
+          updateErrors({ start: errorMessage(error) });
+          return;
         }
+      }
+
+      const planPath = requestTargetUrl ? "" : selectedPlan?.path ?? selectedPlanId;
+      if (!requestTargetUrl && !planPath) {
+        updateErrors({ start: "请输入网站 URL，或在高级区域选择一个本地走查计划。" });
         return;
       }
 
-      const planPath = selectedPlan?.path ?? selectedPlanId;
+      const requestedMode = options.mode && options.mode !== "unknown" ? options.mode : undefined;
+      const runMode = requestedMode ?? (requestTargetUrl ? "browser-use" : "mock");
 
-      if (!planPath) {
-        updateErrors({ start: "Select a local plan before starting a run." });
+      if (source === "mock") {
+        if (runMode === "mock") {
+          activateMockFallback("Mock fallback preview is active because the API is not connected.", "running");
+        } else {
+          updateErrors({ start: "真实全量走查需要连接 FastAPI 后端，请启动后端后再运行。" });
+        }
         return;
       }
 
       updateLoading({ start: true });
 
-      const isBrowserUse = options.mode === "browser-use";
-      const browserMaxSteps = options.browserMaxSteps ?? 25;
-      const browserTimeoutSec = options.browserTimeoutSec ?? 600;
+      const isBrowserUse = runMode === "browser-use";
+      const reportLanguage = options.reportLanguage ?? selectedPlan?.report_language ?? "zh";
+      const browserMaxSteps = options.browserMaxSteps ?? (requestTargetUrl ? 80 : 25);
+      const browserTimeoutSec = options.browserTimeoutSec ?? (requestTargetUrl ? 1800 : 600);
       const browserDiscoverAllPages = isBrowserUse ? options.browserDiscoverAllPages ?? true : null;
-      const browserDiscoveryMaxPages = isBrowserUse ? options.browserDiscoveryMaxPages ?? 120 : null;
+      const browserDiscoveryMaxPages = isBrowserUse ? options.browserDiscoveryMaxPages ?? (requestTargetUrl ? 150 : 120) : null;
       const browserDiscoveryMaxDepth = isBrowserUse ? options.browserDiscoveryMaxDepth ?? 4 : null;
       const verificationMode = isBrowserUse ? options.verificationMode ?? "off" : "off";
       const verificationTimeoutSec = options.verificationTimeoutSec ?? 300;
       const verificationSuccessUrlContains = options.verificationSuccessUrlContains ?? [];
       const verificationLoginUrlContains = options.verificationLoginUrlContains || "/auth/login";
-      const concurrency = isBrowserUse ? 1 : options.concurrency;
+      const concurrency = isBrowserUse ? 1 : options.concurrency ?? 3;
 
       const request: RunCreateRequest = {
-        config_path: planPath,
+        config_path: requestTargetUrl ? null : planPath,
         plan: null,
-        mode: isBrowserUse ? "browser-use" : "mock",
+        target_url: requestTargetUrl,
+        target_name: options.targetName?.trim() || null,
+        target_credentials_ref: options.targetCredentialsRef?.trim() || null,
+        mode: runMode,
         out: "runs",
         concurrency,
-        report_language: options.reportLanguage,
+        report_language: reportLanguage,
         browser_model: null,
         browser_max_steps: browserMaxSteps,
         browser_timeout_sec: browserTimeoutSec,
@@ -1195,9 +1260,13 @@ export function useProdwalkConsole() {
         setActiveRun({
           ...response.run,
           params: {
-            mode: request.mode,
+            mode: runMode,
             concurrency,
-            report_language: options.reportLanguage,
+            report_language: reportLanguage,
+            plan_source: requestTargetUrl ? "target_url" : "plan",
+            target_url: requestTargetUrl,
+            target_name: request.target_name,
+            target_credentials_ref: request.target_credentials_ref,
             browser_model: null,
             browser_max_steps: browserMaxSteps,
             browser_timeout_sec: browserTimeoutSec,
@@ -1242,9 +1311,11 @@ export function useProdwalkConsole() {
       refreshRunHistory,
       clearHistorySelection,
       selectedPlan?.path,
+      selectedPlan?.report_language,
       selectedPlanId,
       setActiveRunIdAndStore,
       source,
+      targetUrl,
       updateErrors,
       updateLoading,
     ],
@@ -1258,9 +1329,24 @@ export function useProdwalkConsole() {
       return;
     }
 
-    const target = firstProductAuthTarget(selectedPlanDetail?.plan);
+    let target = firstProductAuthTarget(selectedPlanDetail?.plan);
+    const targetInput = targetUrl.trim();
+    if (targetInput) {
+      try {
+        const normalizedUrl = normalizeTargetUrlForRequest(targetInput);
+        target = {
+          url: normalizedUrl,
+          credentialsRef: null,
+          successMarkers: successMarkersForUrl(normalizedUrl),
+        };
+      } catch (error) {
+        updateErrors({ verification: errorMessage(error) });
+        return;
+      }
+    }
+
     if (!target) {
-      updateErrors({ verification: "当前计划没有可用于登录准备的产品 URL。" });
+      updateErrors({ verification: "请先输入要走查的网站 URL，或在高级区域选择包含产品 URL 的本地计划。" });
       return;
     }
 
@@ -1283,7 +1369,7 @@ export function useProdwalkConsole() {
     } finally {
       updateLoading({ verification: false });
     }
-  }, [selectedPlanDetail?.plan, source, updateErrors, updateLoading]);
+  }, [selectedPlanDetail?.plan, source, targetUrl, updateErrors, updateLoading]);
 
   const confirmManualLogin = useCallback(async () => {
     updateErrors({ verification: null, start: null });
@@ -1321,13 +1407,14 @@ export function useProdwalkConsole() {
     }
 
     await startRun({
+      targetUrl,
       mode: "browser-use",
       concurrency: 1,
       reportLanguage: selectedPlan?.report_language ?? "zh",
-      browserMaxSteps: 60,
-      browserTimeoutSec: 1200,
+      browserMaxSteps: 80,
+      browserTimeoutSec: 1800,
       browserDiscoverAllPages: true,
-      browserDiscoveryMaxPages: 120,
+      browserDiscoveryMaxPages: 150,
       browserDiscoveryMaxDepth: 4,
       authSessionId: loginSession.session_id,
       verificationMode: "auto",
@@ -1335,7 +1422,7 @@ export function useProdwalkConsole() {
       verificationSuccessUrlContains: loginSession.success_url_contains,
       verificationLoginUrlContains: loginSession.login_url_contains || "/auth/login",
     });
-  }, [loginSession, selectedPlan?.report_language, startRun, updateErrors]);
+  }, [loginSession, selectedPlan?.report_language, startRun, targetUrl, updateErrors]);
 
   const stopActiveRun = useCallback(async () => {
     updateErrors({ activeRun: null });
@@ -1769,6 +1856,7 @@ export function useProdwalkConsole() {
     source,
     health,
     plans,
+    targetUrl,
     selectedPlan,
     selectedPlanId,
     selectedPlanDetail,
@@ -1816,6 +1904,7 @@ export function useProdwalkConsole() {
     selectRun,
     clearHistorySelection,
     refreshRunHistory,
+    setTargetUrl,
     setSelectedPlanId,
     setMockPreviewStatus,
     retryApi,

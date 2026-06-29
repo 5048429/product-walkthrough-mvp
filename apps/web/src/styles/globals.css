@@ -974,6 +974,26 @@ img {
   margin-bottom: 12px;
 }
 
+.url-run-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+  min-width: 0;
+}
+
+.url-run-form .field {
+  margin-bottom: 0;
+}
+
+.url-run-form button {
+  min-width: 132px;
+}
+
+.quickstart-advanced {
+  margin-top: 12px;
+}
+
 .launcher-config-grid {
   display: grid;
   grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
@@ -3858,7 +3878,8 @@ dd {
   .run-row,
   .run-recent-events li,
   .event-row,
-  .source-banner {
+  .source-banner,
+  .url-run-form {
     grid-template-columns: minmax(0, 1fr);
   }
 

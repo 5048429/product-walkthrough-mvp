@@ -775,48 +775,83 @@ function RunProgressPanel({
 
 interface QuickStartPanelProps {
   plans: PlanSummary[];
+  targetUrl: string;
   selectedPlan: PlanSummary | undefined;
   selectedPlanId: string;
   source: ConsoleDataSource;
   loading: boolean;
   planLoading: boolean;
   planError: string | null;
+  onTargetUrlChange: (value: string) => void;
   onPlanChange: (planId: string) => void;
+  onStartFullRun: () => void;
   onStartMock: () => void;
 }
 
 function QuickStartPanel({
   plans,
+  targetUrl,
   selectedPlan,
   selectedPlanId,
   source,
   loading,
   planLoading,
   planError,
+  onTargetUrlChange,
   onPlanChange,
+  onStartFullRun,
   onStartMock,
 }: QuickStartPanelProps) {
   const needsPlan = source === "api" && !selectedPlan;
+  const hasTargetUrl = targetUrl.trim().length > 0;
 
   return (
     <section className="panel compact-panel" aria-labelledby="quick-start-title">
       <div className="panel-header">
         <div>
-          <h2 id="quick-start-title">全站走查</h2>
-          <p>{selectedPlan ? "选定计划后，先完成登录，再启动一次全站只读走查。" : "先选择走查计划，或使用离线预览数据。"}</p>
+          <h2 id="quick-start-title">一键全量走查</h2>
+          <p>输入目标网站 URL，系统会自动生成只读全站计划并开始发现页面、记录证据和输出产品问题。</p>
         </div>
       </div>
 
-      <PlanSelector plans={plans} selectedPlanId={selectedPlanId} onPlanChange={onPlanChange} />
-      {planLoading ? <p className="loading-line">正在读取计划详情...</p> : null}
-      {planError ? <p className="inline-warning">{planError}</p> : null}
-
-      <div className="button-row">
-        <button type="button" className="primary-action" onClick={onStartMock} disabled={loading || needsPlan}>
-          {loading ? "启动中..." : "启动离线模拟"}
+      <form
+        className="url-run-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onStartFullRun();
+        }}
+      >
+        <label className="field">
+          <span>目标网站</span>
+          <input
+            value={targetUrl}
+            inputMode="url"
+            placeholder="https://example.com 或 example.com/app"
+            autoComplete="url"
+            onChange={(event) => onTargetUrlChange(event.target.value)}
+          />
+        </label>
+        <button type="submit" className="primary-action" disabled={loading || !hasTargetUrl}>
+          {loading ? "启动中..." : "开始全量走查"}
         </button>
-      </div>
-      <p className="empty-copy">真实走查会自动使用全站只读默认参数，不需要手动设置步骤数、超时或浏览器状态。</p>
+      </form>
+
+      <p className="empty-copy">默认使用真实浏览器全站发现，不需要手动设置步骤数、超时、页面深度或并发。</p>
+
+      <details className="debug-details quickstart-advanced">
+        <summary>
+          <strong>高级：本地计划和离线模拟</strong>
+        </summary>
+        <PlanSelector plans={plans} selectedPlanId={selectedPlanId} onPlanChange={onPlanChange} />
+        {planLoading ? <p className="loading-line">正在读取计划详情...</p> : null}
+        {planError ? <p className="inline-warning">{planError}</p> : null}
+
+        <div className="button-row">
+          <button type="button" onClick={onStartMock} disabled={loading || needsPlan}>
+            {loading ? "启动中..." : "启动离线模拟"}
+          </button>
+        </div>
+      </details>
     </section>
   );
 }
@@ -850,6 +885,7 @@ function loginStatusCopy(status: AuthReadinessStatus, session: AuthSessionDetail
 }
 
 interface LoginPreparationPanelProps {
+  targetUrl: string;
   selectedPlan: PlanSummary | undefined;
   source: ConsoleDataSource;
   loginSession: AuthSessionDetail | null;
@@ -864,6 +900,7 @@ interface LoginPreparationPanelProps {
 }
 
 function LoginPreparationPanel({
+  targetUrl,
   selectedPlan,
   source,
   loginSession,
@@ -877,10 +914,11 @@ function LoginPreparationPanel({
   onStartAuthenticatedRun,
 }: LoginPreparationPanelProps) {
   const copy = loginStatusCopy(loginAuthStatus, loginSession);
-  const needsPlan = source === "api" && !selectedPlan;
-  const canOpenLogin = source === "api" && !needsPlan && loginAuthStatus !== "awaiting_manual_login";
+  const hasTarget = targetUrl.trim().length > 0 || Boolean(selectedPlan);
+  const needsTarget = source === "api" && !hasTarget;
+  const canOpenLogin = source === "api" && !needsTarget && loginAuthStatus !== "awaiting_manual_login";
   const canConfirmLogin = loginAuthStatus === "awaiting_manual_login";
-  const canStartRealRun = source === "api" && !needsPlan && loginAuthStatus === "auth_ready";
+  const canStartRealRun = source === "api" && !needsTarget && loginAuthStatus === "auth_ready";
 
   return (
     <section className="panel login-prep-panel" aria-labelledby="login-prep-title">
@@ -894,8 +932,8 @@ function LoginPreparationPanel({
 
       <div className="active-summary login-prep-summary">
         <div>
-          <div className="section-title">目标计划</div>
-          <strong>{selectedPlan?.title ?? "未选择计划"}</strong>
+          <div className="section-title">目标网站</div>
+          <strong>{targetUrl.trim() || selectedPlan?.title || "未输入 URL"}</strong>
         </div>
         <div>
           <div className="section-title">登录会话</div>
@@ -920,7 +958,7 @@ function LoginPreparationPanel({
         </button>
       </div>
 
-      {needsPlan ? <p className="inline-warning">请先选择一个本地走查计划。</p> : null}
+      {needsTarget ? <p className="inline-warning">请先输入要走查的网站 URL。</p> : null}
       {error ? <p className="inline-warning">{error}</p> : null}
       {startError ? <p className="inline-warning">{startError}</p> : null}
     </section>
@@ -1107,6 +1145,10 @@ export function ConsolePage() {
     });
   };
 
+  const startFullSiteRun = () => {
+    void console.startRun({ targetUrl: console.targetUrl });
+  };
+
   const selectRunForReview = (runId: string) => {
     console.selectRun(runId);
     setActiveView("report");
@@ -1248,16 +1290,20 @@ export function ConsolePage() {
         <div className="dashboard-command-row">
           <QuickStartPanel
             plans={console.plans}
+            targetUrl={console.targetUrl}
             selectedPlan={console.selectedPlan}
             selectedPlanId={console.selectedPlanId}
             source={console.source}
             loading={console.loading.start}
             planLoading={console.loading.planDetail}
             planError={console.errors.planDetail}
+            onTargetUrlChange={console.setTargetUrl}
             onPlanChange={console.setSelectedPlanId}
+            onStartFullRun={startFullSiteRun}
             onStartMock={startTopMockRun}
           />
           <LoginPreparationPanel
+            targetUrl={console.targetUrl}
             selectedPlan={console.selectedPlan}
             source={console.source}
             loginSession={console.loginSession}
@@ -1325,6 +1371,7 @@ export function ConsolePage() {
       topBar={
         <TopRunContextBar
           activeRun={console.activeRun}
+          targetUrl={console.targetUrl}
           selectedPlan={console.selectedPlan}
           consoleStatus={console.consoleStatus}
           onStartMock={startTopMockRun}

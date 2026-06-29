@@ -163,7 +163,10 @@ class RunStartRequest(BaseModel):
     config_path: str | None = None
     plan_name: str | None = None
     plan: dict[str, Any] | None = None
-    mode: str = "mock"
+    target_url: str | None = None
+    target_name: str | None = None
+    target_credentials_ref: str | None = None
+    mode: str | None = None
     out: str = "runs"
     concurrency: int | None = None
     report_language: str | None = None

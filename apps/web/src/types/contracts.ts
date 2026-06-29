@@ -140,6 +140,10 @@ export interface RunParams {
   mode: RunMode;
   concurrency: number;
   report_language: string;
+  plan_source?: "plan" | "target_url" | string | null;
+  target_url?: string | null;
+  target_name?: string | null;
+  target_credentials_ref?: string | null;
   browser_model?: string | null;
   browser_max_steps?: number;
   browser_timeout_sec?: number;
@@ -183,7 +187,10 @@ export interface RunDetail extends RunSummary {
 export interface RunCreateRequest {
   config_path: string | null;
   plan: unknown | null;
-  mode: RunMode;
+  target_url?: string | null;
+  target_name?: string | null;
+  target_credentials_ref?: string | null;
+  mode?: RunMode | null;
   out: string;
   concurrency: number;
   report_language: string;

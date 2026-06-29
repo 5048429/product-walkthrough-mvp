@@ -4,6 +4,7 @@ import { labelMode } from "../../i18n/zh";
 
 interface TopRunContextBarProps {
   activeRun: RunDetail | null;
+  targetUrl: string;
   selectedPlan: PlanSummary | undefined;
   consoleStatus: ConsoleStatus;
   onStartMock: () => void;
@@ -49,6 +50,7 @@ function formatProgress(run: RunDetail | null): string {
 
 export function TopRunContextBar({
   activeRun,
+  targetUrl,
   selectedPlan,
   consoleStatus,
   onStartMock,
@@ -58,17 +60,20 @@ export function TopRunContextBar({
   startDisabled = false,
   stopDisabled = false,
 }: TopRunContextBarProps) {
+  const targetLabel = activeRun?.params.target_url || targetUrl.trim() || selectedPlan?.title || "输入网站 URL 后开始全量走查";
+  const targetDetail = activeRun?.params.target_url || targetUrl.trim() || selectedPlan?.path || "未设置目标";
+
   return (
     <div className="top-context-bar">
       <div className="brand-block">
         <div className="app-title">Prodwalk 产品走查工作台</div>
-        <div className="app-subtitle">{selectedPlan?.title ?? "选择一个本地走查计划"}</div>
+        <div className="app-subtitle">{targetLabel}</div>
       </div>
 
       <div className="context-grid">
         <div>
-          <span className="context-label">计划</span>
-          <strong>{selectedPlan?.path ?? "未选择计划"}</strong>
+          <span className="context-label">目标</span>
+          <strong>{targetDetail}</strong>
         </div>
         <div>
           <span className="context-label">模式</span>

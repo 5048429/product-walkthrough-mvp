@@ -417,6 +417,78 @@ def test_post_runs_starts_mock_run_and_artifacts_are_readable(tmp_path: Path) ->
         assert listed["screenshot_count"] == 0
 
 
+def test_post_runs_accepts_target_url_without_local_plan(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        response = client.post(
+            "/api/runs",
+            json={"target_url": "example.test/app", "mode": "mock", "out": "runs", "concurrency": 1},
+        )
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+
+        detail = _wait_for_terminal(client, run_id)
+
+    assert detail["status"] == "succeeded"
+    assert detail["research_goal"] == "对 example.test 进行一次全量产品走查，发现可复现问题并提出产品改进建议。"
+    assert detail["params"]["plan_source"] == "target_url"
+    assert detail["params"]["target_url"] == "https://example.test/app"
+    assert detail["params"]["target_name"] == "example.test"
+    assert detail["params"]["target_credentials_ref"] is None
+
+    plan_path = tmp_path / detail["run_dir"] / "plan.json"
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert plan["report_language"] == "zh"
+    assert plan["products"][0]["url"] == "https://example.test/app"
+    assert plan["products"][0]["kind"] == "owned"
+    assert plan["scenarios"][0]["id"] == "full-site-walkthrough"
+    assert "只读" in plan["scenarios"][0]["title"]
+
+
+def test_target_url_defaults_to_browser_use_full_site_walkthrough(tmp_path: Path, monkeypatch) -> None:
+    _FakeBrowserUseWalker.init_args = None
+    monkeypatch.setattr(runtime_module, "BrowserUseLocalWalker", _FakeBrowserUseWalker)
+    monkeypatch.setattr(
+        runtime_module.RunRuntime,
+        "_browser_use_readiness_errors",
+        lambda self, request, *, user_data_dir, storage_state: [],
+    )
+
+    with _client(tmp_path) as client:
+        response = client.post("/api/runs", json={"target_url": "https://example.test", "out": "runs"})
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+
+        detail = _wait_for_terminal(client, run_id)
+
+    assert detail["status"] == "succeeded"
+    assert detail["mode"] == "browser-use"
+    assert detail["params"]["mode"] == "browser-use"
+    assert detail["params"]["concurrency"] == 1
+    assert detail["params"]["browser_discover_all_pages"] is True
+    assert detail["params"]["browser_discovery_max_pages"] == 120
+    assert detail["params"]["browser_discovery_max_depth"] == 4
+    assert detail["params"]["target_url"] == "https://example.test"
+    assert _FakeBrowserUseWalker.init_args is not None
+
+
+def test_target_url_validation_is_clear(tmp_path: Path) -> None:
+    _write_plan(tmp_path)
+    with _client(tmp_path) as client:
+        invalid_scheme = client.post("/api/runs", json={"target_url": "javascript:alert(1)", "mode": "mock"})
+        embedded_credentials = client.post("/api/runs", json={"target_url": "https://user:pass@example.test", "mode": "mock"})
+        mixed_plan = client.post(
+            "/api/runs",
+            json={"target_url": "https://example.test", "plan_name": "smoke_plan.json", "mode": "mock"},
+        )
+
+    assert invalid_scheme.status_code == 400
+    assert "target_url" in invalid_scheme.json()["error"]["message"]
+    assert embedded_credentials.status_code == 400
+    assert "username or password" in embedded_credentials.json()["error"]["message"]
+    assert mixed_plan.status_code == 400
+    assert "target_url" in mixed_plan.json()["error"]["message"]
+
+
 def test_browser_use_mode_unavailable_returns_clear_error(tmp_path: Path, monkeypatch) -> None:
     _write_plan(tmp_path)
     monkeypatch.setattr(

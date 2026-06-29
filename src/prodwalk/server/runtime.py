@@ -808,8 +808,8 @@ class RunRuntime:
         return PlanDetailResponse(id=rel_path, name=bundle.name, path=rel_path, plan=bundle.raw)
 
     async def start_run(self, request: RunStartRequest) -> RunStartResponse:
-        mode = self._normalize_run_mode(request.mode)
         bundle = self._resolve_request_plan(request)
+        mode = self._normalize_run_mode(request.mode, target_url=request.target_url)
         out_root = self._resolve_output_root(request.out)
         scenarios = ScenarioPlanner().plan(bundle.plan)
         total_scenarios = len(bundle.plan.products) * len(scenarios)
@@ -2100,8 +2100,9 @@ class RunRuntime:
             )
         return MockBrowserWalker()
 
-    def _normalize_run_mode(self, mode: str) -> str:
-        normalized = (mode or "mock").strip().lower()
+    def _normalize_run_mode(self, mode: str | None, *, target_url: str | None = None) -> str:
+        default_mode = "browser-use" if target_url else "mock"
+        normalized = (mode or default_mode).strip().lower()
         if normalized not in {"mock", *BROWSER_USE_MODES}:
             raise ApiError(
                 400,
@@ -2806,6 +2807,14 @@ class RunRuntime:
             request.config if isinstance(request.config, str) else None,
         ]
         provided = [item for item in identifiers if item]
+        target_fields = [request.target_url, request.target_name, request.target_credentials_ref]
+        target_requested = any(str(item or "").strip() for item in target_fields)
+        if target_requested and (inline or provided):
+            raise ApiError(400, "BAD_REQUEST", "Pass either target_url or a local/inline plan, not both.")
+        if target_requested and not str(request.target_url or "").strip():
+            raise ApiError(400, "BAD_REQUEST", "target_url is required when target fields are provided.")
+        if target_requested:
+            return self._build_target_url_plan(request)
         if inline and provided:
             raise ApiError(400, "BAD_REQUEST", "Pass either an inline plan/config or a local plan name, not both.")
         if len(provided) > 1:
@@ -2817,8 +2826,110 @@ class RunRuntime:
                 raise ApiError(400, "PLAN_INVALID", str(exc)) from exc
             return PlanBundle(id="inline", name="inline", path=None, plan=plan, raw=inline)
         if not provided:
-            raise ApiError(400, "BAD_REQUEST", "config, config_path, plan_name, or plan is required.")
+            raise ApiError(400, "BAD_REQUEST", "config, config_path, plan_name, plan, or target_url is required.")
         return self._load_plan_from_name(str(provided[0]))
+
+    def _build_target_url_plan(self, request: RunStartRequest) -> PlanBundle:
+        target_url = self._normalize_target_url(request.target_url)
+        target_name = self._target_name_for_url(target_url, request.target_name)
+        credentials_ref = str(request.target_credentials_ref or "").strip() or None
+
+        raw: dict[str, Any] = {
+            "research_goal": f"对 {target_name} 进行一次全量产品走查，发现可复现问题并提出产品改进建议。",
+            "report_language": "zh",
+            "products": [
+                {
+                    "name": target_name,
+                    "url": target_url,
+                    "kind": "owned",
+                    "credentials_ref": credentials_ref,
+                    "notes": "由控制台 URL 一键走查自动生成。",
+                    "tags": ["url-full-site", "auto-generated"],
+                }
+            ],
+            "scenarios": [
+                {
+                    "id": "full-site-walkthrough",
+                    "title": "全量只读产品走查",
+                    "persona": "产品经理和真实用户",
+                    "goal": (
+                        "从入口 URL 出发，自动发现同站页面和核心路径，复核可访问性、信息架构、"
+                        "关键操作、异常状态和转化阻塞。"
+                    ),
+                    "steps": [
+                        "打开目标网站入口页，记录首屏、导航结构和核心入口。",
+                        "自动发现并访问同域可达页面，优先覆盖主导航、页脚、列表、详情、登录注册、定价、设置和帮助区域。",
+                        "检查每个页面的加载错误、空态/异常态、表单校验、按钮可用性、文案一致性和桌面/移动适配风险。",
+                        "遇到登录、支付、删除、发送消息或修改数据等动作时，只记录入口、阻塞和风险，不提交破坏性或不可逆操作。",
+                        "汇总问题、影响范围、优先级、复现步骤、证据截图和产品改进建议。",
+                    ],
+                    "success_criteria": [
+                        "生成覆盖主要同站页面的地图、证据和报告。",
+                        "报告按优先级给出问题、复现步骤、预期行为和验收标准。",
+                        "全程保持只读，不执行破坏性或不可逆操作。",
+                    ],
+                    "observation_points": [
+                        "页面是否可访问、可理解、可继续操作。",
+                        "核心路径是否存在断点、误导、重复劳动或反馈缺失。",
+                        "表单、导航、按钮、链接、空态、错误态和权限态是否符合真实用户预期。",
+                        "报告中每个问题是否有页面、证据和可落地建议。",
+                    ],
+                    "risk_level": "high",
+                }
+            ],
+            "evaluation": {"min_evidence_per_result": 1},
+        }
+        try:
+            plan = parse_research_plan(raw)
+        except ConfigError as exc:
+            raise ApiError(400, "PLAN_INVALID", str(exc)) from exc
+
+        request.target_url = target_url
+        request.target_name = target_name
+        request.target_credentials_ref = credentials_ref
+        bundle_name = f"{slugify(target_name)}-full-site"
+        return PlanBundle(id="target-url", name=bundle_name, path=None, plan=plan, raw=raw)
+
+    def _normalize_target_url(self, value: str | None) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            raise ApiError(400, "BAD_REQUEST", "target_url is required.")
+        if re.search(r"\s", raw):
+            raise ApiError(400, "BAD_REQUEST", "target_url must not contain whitespace.", {"target_url": value})
+
+        has_explicit_scheme = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", raw) is not None
+        scheme_like = re.match(r"^([a-zA-Z][a-zA-Z0-9+.-]*):(.*)$", raw)
+        if scheme_like and not has_explicit_scheme and not re.match(r"^\d+(?:/|$)", scheme_like.group(2)):
+            raise ApiError(400, "BAD_REQUEST", "target_url must use http or https.", {"target_url": value})
+        candidate = raw if has_explicit_scheme else f"https://{raw}"
+        parsed = urlparse(candidate)
+        scheme = parsed.scheme.lower()
+        if scheme not in {"http", "https"}:
+            raise ApiError(400, "BAD_REQUEST", "target_url must use http or https.", {"target_url": value})
+        if not parsed.netloc or not parsed.hostname:
+            raise ApiError(400, "BAD_REQUEST", "target_url must include a valid host.", {"target_url": value})
+        try:
+            parsed.port
+        except ValueError as exc:
+            raise ApiError(400, "BAD_REQUEST", "target_url must include a valid host.", {"target_url": value}) from exc
+        if parsed.username or parsed.password:
+            raise ApiError(
+                400,
+                "BAD_REQUEST",
+                "target_url must not include username or password credentials.",
+                {"target_url": self._safe_url_for_logs(candidate)},
+            )
+
+        return urlunparse((scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+
+    def _target_name_for_url(self, target_url: str, override: str | None) -> str:
+        explicit = str(override or "").strip()
+        if explicit:
+            return explicit
+        host = urlparse(target_url).hostname or target_url
+        if host.startswith("www."):
+            host = host[4:]
+        return host or "target-site"
 
     def _load_plan_from_name(self, name: str) -> PlanBundle:
         path = self._resolve_plan_path(name)
@@ -2875,6 +2986,10 @@ class RunRuntime:
             "mode": options.mode,
             "concurrency": options.concurrency,
             "report_language": options.report_language,
+            "plan_source": "target_url" if request.target_url else "plan",
+            "target_url": request.target_url,
+            "target_name": request.target_name,
+            "target_credentials_ref": request.target_credentials_ref,
             "browser_model": request.browser_model,
             "browser_max_steps": request.browser_max_steps,
             "browser_timeout_sec": request.browser_timeout_sec,
