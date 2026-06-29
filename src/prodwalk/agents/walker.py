@@ -418,6 +418,13 @@ Success criteria:
 Observation points:
 {points}
 
+Coverage discipline:
+- Systematically open visible primary navigation, side navigation, top navigation, tabs, and non-destructive submenu items.
+- When a navigation group expands in place, inspect the newly revealed entries and open safe read-only destinations.
+- After every navigation or tab change, wait until the main content area has loaded meaningful text/table/card content before observing or taking the next action.
+- Treat screens that only show a logo, spinner, skeleton, or mostly blank content as not ready; wait or retry the read-only navigation once before recording a blocker.
+- Prefer covering breadth across distinct product surfaces before spending many steps on one page.
+
 Return exactly one valid JSON object and no prose outside it. Use this schema:
 {{
   "completed": true,
@@ -679,6 +686,11 @@ meaningful browser steps.
                             self._redact_sensitive_jsonish(candidate, sensitive_data)
                             for candidate in page.get("click_candidates") or []
                             if isinstance(candidate, dict)
+                        ][:80],
+                        "click_results": [
+                            self._redact_sensitive_jsonish(result, sensitive_data)
+                            for result in page.get("click_results") or []
+                            if isinstance(result, dict)
                         ][:80],
                     },
                 }

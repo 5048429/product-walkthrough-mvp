@@ -62,6 +62,7 @@ class DiscoveryPage:
     source_label: str = ""
     links: list[str] = field(default_factory=list)
     click_candidates: list[dict[str, Any]] = field(default_factory=list)
+    click_results: list[dict[str, Any]] = field(default_factory=list)
     discovered_at: str = field(default_factory=utc_now)
     errors: list[str] = field(default_factory=list)
 
@@ -82,6 +83,7 @@ class DiscoveryPage:
                 "source_label": self.source_label,
                 "links": list(self.links),
                 "click_candidates": list(self.click_candidates),
+                "click_results": list(self.click_results),
             },
         }
 
@@ -157,7 +159,7 @@ class PageDiscoveryCrawler:
             0,
             max_clicks_per_page
             if max_clicks_per_page is not None
-            else self._int_env("BROWSER_USE_DISCOVERY_MAX_CLICKS_PER_PAGE") or 20,
+            else self._int_env("BROWSER_USE_DISCOVERY_MAX_CLICKS_PER_PAGE") or 50,
         )
         self.click_navigation = (
             click_navigation
@@ -208,7 +210,9 @@ class PageDiscoveryCrawler:
                     for index, candidate in enumerate(candidates):
                         if len(pages) + len(queue) >= self.max_pages * 2:
                             break
-                        clicked_links = await self._links_after_click(page, discovered.url, index, candidate)
+                        clicked_links, click_result = await self._click_candidate(page, discovered.url, index, candidate)
+                        if click_result:
+                            discovered.click_results.append(click_result)
                         self._enqueue_links(
                             queue,
                             queued,
@@ -312,14 +316,22 @@ class PageDiscoveryCrawler:
             click_candidates,
         )
 
-    async def _links_after_click(
+    async def _click_candidate(
         self,
         page: Any,
         source_url: str,
         candidate_index: int,
         candidate: dict[str, Any],
-    ) -> list[str]:
+    ) -> tuple[list[str], dict[str, Any]]:
         links: list[str] = []
+        result = {
+            **self._candidate_payload(candidate),
+            "status": "blocked",
+            "target_url": None,
+            "same_url": False,
+            "link_count": 0,
+            "error": "",
+        }
         try:
             await page.goto(source_url, wait_until="domcontentloaded", timeout=self.timeout_ms)
             if self.settle_ms > 0:
@@ -329,10 +341,12 @@ class PageDiscoveryCrawler:
                     await page.wait_for_load_state("networkidle", timeout=min(self.timeout_ms, 3000))
             candidates = await self._extract_click_candidates(page)
             if candidate_index >= len(candidates):
-                return []
+                result["error"] = "Candidate was no longer available after reload."
+                return links, result
             refreshed = candidates[candidate_index]
             if self._candidate_label(refreshed) != self._candidate_label(candidate):
-                return []
+                result["error"] = "Candidate label changed after reload."
+                return links, result
             selector = f'[data-prodwalk-discovery-id="{refreshed["id"]}"]'
             await page.locator(selector).first.click(timeout=min(self.timeout_ms, 3000))
             await asyncio.sleep(0.3)
@@ -345,10 +359,17 @@ class PageDiscoveryCrawler:
             current_url = normalize_discovery_url(str(getattr(page, "url", "")), keep_query_keys=self.keep_query_keys)
             if current_url and current_url != source_url:
                 links.append(current_url)
+                result["target_url"] = current_url
+            elif current_url:
+                result["target_url"] = current_url
+                result["same_url"] = True
             links.extend(await self._extract_links(page, current_url or source_url))
+            result["status"] = "visited"
+            result["link_count"] = len(links)
         except Exception:
-            return links
-        return links
+            result["error"] = "Click did not complete within discovery timeout."
+            return links, result
+        return links, result
 
     async def _extract_links(self, page: Any, base_url: str) -> list[str]:
         script = r"""

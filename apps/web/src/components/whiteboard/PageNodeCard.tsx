@@ -1,4 +1,5 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
+import { useEffect, useState } from "react";
 import { backendUrl, runApiPath } from "../../api/paths";
 import type { PageNode, ScreenshotEvidence } from "../../types/contracts";
 
@@ -76,10 +77,15 @@ export function PageNodeCard({ data, selected }: NodeProps<PageMapFlowNode>) {
   const page = data.node;
   const shot = primaryScreenshot(page);
   const imageSrc = screenshotUrl(shot, data.runId);
+  const [imageFailed, setImageFailed] = useState(false);
   const subtitle = routeLabel(page);
   const statusText = statusLabels[page.status] ?? page.status;
   const typeText = typeLabels[page.page_type] ?? page.page_type;
   const issueCount = page.issues.length;
+
+  useEffect(() => {
+    setImageFailed(false);
+  }, [imageSrc]);
 
   return (
     <article className={`page-node-card page-node-card-${page.status} ${selected ? "page-node-card-selected" : ""}`.trim()}>
@@ -104,13 +110,19 @@ export function PageNodeCard({ data, selected }: NodeProps<PageMapFlowNode>) {
       </div>
 
       <div className="page-node-screenshot-viewport">
-        {imageSrc ? (
-          <img src={imageSrc} alt={`${page.name} screenshot`} loading="lazy" draggable={false} />
+        {imageSrc && !imageFailed ? (
+          <img
+            src={imageSrc}
+            alt={`${page.name} screenshot`}
+            loading="lazy"
+            draggable={false}
+            onError={() => setImageFailed(true)}
+          />
         ) : (
           <div className="page-node-screenshot-empty">
             <span className={`page-status-dot page-status-dot-${page.status}`} aria-hidden="true" />
             <strong>{page.name}</strong>
-            <span>{typeText}</span>
+            <span>{imageSrc ? "截图加载失败" : typeText}</span>
           </div>
         )}
 

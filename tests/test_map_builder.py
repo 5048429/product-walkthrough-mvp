@@ -823,6 +823,16 @@ def test_build_map_marks_crawler_only_pages_as_discovered() -> None:
                         "source_label": "Team Settings",
                         "links": ["https://example.test/settings/team/members"],
                         "click_candidates": [{"label": "Invite member", "tag": "button", "role": "button"}],
+                        "click_results": [
+                            {
+                                "label": "Invite member",
+                                "tag": "button",
+                                "role": "button",
+                                "status": "visited",
+                                "target_url": "https://example.test/settings/team",
+                                "same_url": True,
+                            }
+                        ],
                     }
                 },
             }
@@ -842,7 +852,7 @@ def test_build_map_marks_crawler_only_pages_as_discovered() -> None:
     assert node["status"] == "discovered"
     assert node["metadata"]["discovered_from_node_id"] == dashboard["id"]
     assert any(entry["label"] == "Members" and entry["target_url"] == "https://example.test/settings/team/members" for entry in node["entries"])
-    assert any(entry["label"] == "Invite member" and entry["status"] == "unvisited" for entry in node["entries"])
+    assert any(entry["label"] == "Invite member" and entry["status"] == "visited" for entry in node["entries"])
     assert any(
         edge["source"] == dashboard["id"]
         and edge["target"] == node["id"]
@@ -851,6 +861,43 @@ def test_build_map_marks_crawler_only_pages_as_discovered() -> None:
         for edge in walkthrough_map["edges"]
     )
     assert walkthrough_map["summary"]["discovered_count"] == 1
+
+
+def test_build_map_does_not_create_fake_unvisited_entries_from_route_controls() -> None:
+    payload = {
+        "plan": {"products": [{"name": "Example", "kind": "owned", "url": "https://example.test/analytics"}]},
+        "results": [
+            {
+                "product": "Example",
+                "product_kind": "owned",
+                "scenario_id": "visited-page",
+                "status": "completed",
+                "steps": [
+                    {
+                        "index": 1,
+                        "action": "navigate",
+                        "status": "passed",
+                        "observation": "Opened analytics page.",
+                        "url": "https://example.test/analytics",
+                    }
+                ],
+            }
+        ],
+        "evidence": [],
+    }
+
+    walkthrough_map = build_walkthrough_map(
+        run_id="run-no-fake-entry",
+        evidence_payload=payload,
+        artifacts=[],
+        browser_histories=[],
+        generated_at="2026-06-24T00:00:00Z",
+    )
+
+    analytics = next(item for item in walkthrough_map["nodes"] if item["route"] == "/analytics")
+    assert analytics["status"] == "visited"
+    assert analytics["entries"] == []
+    assert walkthrough_map["summary"]["unvisited_entry_count"] == 0
 
 
 def test_build_map_links_page_entries_to_existing_target_nodes() -> None:

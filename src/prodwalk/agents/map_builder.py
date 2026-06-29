@@ -948,19 +948,6 @@ def _finalize_node(node: dict[str, Any]) -> None:
         route_control = _name_from_route(str(node.get("route") or ""), "")
         if route_control and route_control != "Home":
             node["key_controls"].append(route_control)
-    if not node.get("entries") and node.get("key_controls"):
-        for control in node["key_controls"][:8]:
-            entry = _new_entry(
-                label=_safe_text(control, limit=100),
-                role="unknown",
-                kind="unknown",
-                status="unvisited",
-                target_url=None,
-                source="heuristic_controls",
-                confidence=0.38,
-            )
-            entry["source_node_id"] = node.get("id")
-            _append_entry(node.setdefault("entries", []), entry, limit=8)
     node["key_functions"] = _key_functions(node)
     node["purpose"] = _purpose(node)
     confidence = 0.58
@@ -2028,6 +2015,11 @@ def _entries_from_page_discovery(page_discovery: dict[str, Any], *, source_url: 
         entry = _entry_from_discovery_candidate(candidate, source_url)
         if entry:
             _append_entry(entries, entry, limit=32)
+    click_results = page_discovery.get("click_results") if isinstance(page_discovery.get("click_results"), list) else []
+    for result in click_results:
+        entry = _entry_from_discovery_candidate(result, source_url)
+        if entry:
+            _append_entry(entries, entry, limit=32)
     return entries[:32]
 
 
@@ -2062,7 +2054,9 @@ def _entry_from_discovery_candidate(value: Any, source_url: str) -> dict[str, An
         role=str(candidate.get("role") or "").lower(),
         input_type=str(candidate.get("type") or "").lower(),
     )
-    status = "unsafe" if label and DESTRUCTIVE_ENTRY_RE.search(label) else "unvisited"
+    status = _safe_entry_status(candidate.get("status"))
+    if status == "unvisited" and label and DESTRUCTIVE_ENTRY_RE.search(label):
+        status = "unsafe"
     kind = "destructive" if status == "unsafe" else _infer_entry_kind(label, role, target_url, input_type=str(candidate.get("type") or ""))
     return _new_entry(
         label=label or _label_from_target_url(target_url),
@@ -2071,7 +2065,7 @@ def _entry_from_discovery_candidate(value: Any, source_url: str) -> dict[str, An
         status=status,
         target_url=target_url,
         source="page_discovery",
-        confidence=0.62 if target_url else 0.5,
+        confidence=0.74 if status == "visited" else 0.62 if target_url else 0.5,
     )
 
 

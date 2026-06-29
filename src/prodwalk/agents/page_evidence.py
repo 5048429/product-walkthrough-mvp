@@ -165,6 +165,7 @@ class PageEvidenceCollector:
             await page.goto(target["url"], wait_until="domcontentloaded", timeout=self.timeout_ms)
             if self.settle_ms > 0:
                 await page.wait_for_timeout(min(self.settle_ms, self.timeout_ms))
+            await self._wait_for_page_ready(page)
             if self.wait_for_network_idle:
                 with suppress_timeout():
                     await page.wait_for_load_state("networkidle", timeout=min(self.timeout_ms, 5000))
@@ -243,6 +244,23 @@ class PageEvidenceCollector:
             return str(await page.title())
         except Exception:
             return ""
+
+    async def _wait_for_page_ready(self, page: Any) -> None:
+        ready_script = r"""
+() => {
+  const body = document.body;
+  if (!body) return false;
+  const text = (body.innerText || "").replace(/\s+/g, " ").trim();
+  const interactiveCount = document.querySelectorAll('a, button, input, select, textarea, [role], [aria-label], summary').length;
+  const loadingText = /^(clink|loading|加载中|请稍候|please wait)$/i.test(text);
+  return (text.length > 30 || interactiveCount > 2) && !loadingText;
+}
+"""
+        deadline_ms = min(self.timeout_ms, int(float(os.getenv("BROWSER_USE_PAGE_EVIDENCE_READY_TIMEOUT_SEC", "8")) * 1000))
+        if deadline_ms <= 0:
+            return
+        with suppress_timeout():
+            await page.wait_for_function(ready_script, timeout=deadline_ms, polling=250)
 
     async def _safe_viewport(self, page: Any) -> dict[str, Any]:
         try:

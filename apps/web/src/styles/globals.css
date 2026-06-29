@@ -3118,17 +3118,19 @@ dd {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  display: grid;
+  place-items: center;
   background:
-    linear-gradient(135deg, rgb(229 235 244 / 72%), rgb(248 250 252 / 92%)),
-    #eef3f8;
+    linear-gradient(135deg, rgb(240 244 248 / 72%), rgb(255 255 255 / 94%)),
+    #ffffff;
 }
 
 .page-node-screenshot-viewport img {
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: cover;
-  object-position: top left;
+  object-fit: contain;
+  object-position: center top;
   user-select: none;
 }
 
